@@ -41,6 +41,13 @@
             "-w"
             "-X main.version=${version}"
           ];
+          # Also expose the bundled agent skill as a file in the output, so a
+          # downstream flake / home-manager can install it from the store
+          # (${okftool}/share/okftool/SKILL.md) without running the binary. It is
+          # the same markdown go:embed builds into `okftool skill`.
+          postInstall = ''
+            install -Dm644 internal/command/skill.md "$out/share/okftool/SKILL.md"
+          '';
           meta = {
             description = "Deterministic CLI for authoring and maintaining Open Knowledge Format bundles";
             mainProgram = "okftool";

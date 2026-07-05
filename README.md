@@ -32,7 +32,9 @@ okftool skill                               # print the bundled agent SKILL.md
 
 `okftool skill` emits a Claude Code skill teaching an agent how and when to use
 the tool — install it with `okftool skill > .claude/skills/okftool/SKILL.md`, so
-the guidance versions with the binary.
+the guidance versions with the binary. The Nix package also installs the same
+file at `share/okftool/SKILL.md` for consumers that prefer to reference it from
+the store.
 
 Every command takes `--bundle <dir>` (else auto-discover), `--config <path>`
 (else `okf.toml` at the bundle root), and `--format human|json`. Run it via the
