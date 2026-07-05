@@ -52,11 +52,19 @@ func TestRuleTriggers(t *testing.T) {
 		fixture, rule string
 	}{
 		{"okf001", "OKF001"},
+		{"okf002", "OKF002"},
+		{"okf003", "OKF003"},
+		{"okf004", "OKF004"},
 		{"okf101", "OKF101"},
 		{"okf102", "OKF102"},
+		{"okf103", "OKF103"},
+		{"okf104", "OKF104"},
 		{"okf105", "OKF105"},
 		{"okf106", "OKF106"},
+		{"okf107", "OKF107"},
+		{"okf201", "OKF201"},
 		{"okf202", "OKF202"},
+		{"okf206", "OKF206"},
 	}
 	for _, c := range cases {
 		t.Run(c.fixture, func(t *testing.T) {
@@ -74,6 +82,7 @@ func TestAutofixResolves(t *testing.T) {
 	cases := []struct{ fixture, rule string }{
 		{"okf101", "OKF101"},
 		{"okf102", "OKF102"},
+		{"okf104", "OKF104"},
 		{"okf105", "OKF105"},
 		{"okf106", "OKF106"},
 	}
