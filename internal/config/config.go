@@ -5,6 +5,9 @@
 package config
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/BurntSushi/toml"
 )
 
@@ -66,8 +69,8 @@ type Worklist struct {
 }
 
 // QMD configures the optional, qmd-backed worklist rules (OKF203/OKF204). They
-// require a fresh local qmd index and are OFF unless Enabled is set, so the core
-// of okf lint stays dependency-free. (Rules not yet implemented.)
+// require a fresh local qmd index (and the qmd binary on PATH) and are OFF unless
+// Enabled is set, so the core of okf lint stays dependency-free.
 type QMD struct {
 	Enabled                bool    `toml:"enabled"`                  // master opt-in for OKF203/OKF204
 	NearDuplicates         string  `toml:"near_duplicates"`          // OKF203 severity
@@ -132,7 +135,50 @@ func Load(path string) (*Config, error) {
 		c.Rules = map[string]string{}
 	}
 	c.Path = path
+	if err := c.Validate(); err != nil {
+		return nil, err
+	}
 	return c, nil
+}
+
+var severities = []string{"off", "info", "warning", "error"}
+
+// Validate rejects unknown enum values so typos surface loudly instead of being
+// silently ignored.
+func (c *Config) Validate() error {
+	checks := []struct {
+		key, val string
+		allowed  []string
+	}{
+		{"links.style", c.Links.Style, []string{"relative", "absolute", "any"}},
+		{"links.check_broken", c.Links.CheckBroken, []string{"info", "off"}},
+		{"filenames.case", c.Filenames.Case, []string{"kebab", "any"}},
+		{"filenames.severity", c.Filenames.Severity, severities},
+		{"frontmatter.timestamp_format", c.Frontmatter.TimestampFormat, []string{"rfc3339", "date"}},
+		{"worklist.orphans", c.Worklist.Orphans, severities},
+		{"qmd.near_duplicates", c.QMD.NearDuplicates, severities},
+		{"qmd.staleness", c.QMD.Staleness, severities},
+	}
+	for _, ck := range checks {
+		if !oneOf(ck.val, ck.allowed) {
+			return fmt.Errorf("okf.toml: %s = %q is not one of %s", ck.key, ck.val, strings.Join(ck.allowed, "|"))
+		}
+	}
+	for id, sev := range c.Rules {
+		if !oneOf(sev, severities) {
+			return fmt.Errorf("okf.toml: [rules] %s = %q is not one of %s", id, sev, strings.Join(severities, "|"))
+		}
+	}
+	return nil
+}
+
+func oneOf(v string, allowed []string) bool {
+	for _, a := range allowed {
+		if v == a {
+			return true
+		}
+	}
+	return false
 }
 
 // ReservedSet returns the reserved filenames as a set for quick membership tests.

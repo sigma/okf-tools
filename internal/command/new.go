@@ -37,12 +37,13 @@ func New(args []string) (int, error) {
 		return 1, fmt.Errorf("%s already exists", target)
 	}
 
+	var root, cfgPath string
 	cfg := config.Default()
-	if root, cfgPath, err := bundle.Discover(filepath.Dir(target), g.bundle, g.config); err == nil {
+	if r, cp, err := bundle.Discover(filepath.Dir(target), g.bundle, g.config); err == nil {
+		root, cfgPath = r, cp
 		if c, e := config.Load(cfgPath); e == nil {
 			cfg = c
 		}
-		_ = root
 	}
 
 	base := filepath.Base(target)
@@ -65,7 +66,31 @@ func New(args []string) (int, error) {
 		return 1, err
 	}
 	fmt.Fprintf(os.Stdout, "created %s\n", target)
+	hintIndexSync(root, cfgPath, target)
 	return 0, nil
+}
+
+// hintIndexSync nudges the user to regenerate the index when the new page falls
+// under an index's scope, so it doesn't silently drift out of sync.
+func hintIndexSync(root, cfgPath, target string) {
+	if root == "" {
+		return
+	}
+	b, err := bundle.Load(root, cfgPath)
+	if err != nil {
+		return
+	}
+	abs, err := filepath.Abs(target)
+	if err != nil {
+		return
+	}
+	rel := b.Rel(abs)
+	for _, d := range b.Concepts {
+		if d.Rel == rel && b.Owner(d) != nil {
+			fmt.Fprintln(os.Stderr, "note: run 'okftool index --write' to list it in the index")
+			return
+		}
+	}
 }
 
 func scaffold(typ, title string) string {
