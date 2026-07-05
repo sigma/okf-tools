@@ -1,0 +1,17 @@
+[links]
+style = "relative"
+
+[filenames]
+case = "kebab"
+severity = "warning"
+
+[frontmatter]
+require_description = true
+timestamp_format = "date"
+
+[citations]
+heading = "# Citations"
+
+[index]
+check_sync = true
+descriptions_from_frontmatter = true

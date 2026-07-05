@@ -1,0 +1,3 @@
+[index]
+check_sync = true
+descriptions_from_frontmatter = true
