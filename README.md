@@ -27,6 +27,7 @@ okftool index --check   # verify index.md is in sync   (--write regenerates it)
 okftool fmt   --check   # normalize frontmatter/timestamps/citations/link-style (--write applies)
 okftool new <path> --type <T> [--title …]   # scaffold a conformant concept page
 okftool graph --format json|dot             # emit the concept link graph
+okftool gaps <concept>                      # concepts near <concept> but unlinked (needs qmd)
 okftool skill                               # print the bundled agent SKILL.md
 ```
 

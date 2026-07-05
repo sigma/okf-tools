@@ -1,11 +1,12 @@
 # okf-tools — design
 
-Status: **implemented.** `okftool` (`lint`/`index`/`fmt`/`new`/`graph`/`skill`)
-is built to this spec — conformance `OKF001`–`OKF004`, policy `OKF101`–`OKF107`,
-worklist `OKF201`/`OKF202`/`OKF206`, and the optional qmd-backed
-`OKF203`/`OKF204` — with autofix, `okf.toml` config, human/JSON/SARIF output, a
-per-package test suite, CI, and flake `package`/`app`/`devShell`/`checks`. Still
-open: Claude Code hook wiring (M5). This document and [RULES.md](RULES.md) remain
+Status: **implemented.** `okftool`
+(`lint`/`index`/`fmt`/`new`/`graph`/`gaps`/`skill`) is built to this spec —
+conformance `OKF001`–`OKF004`, policy `OKF101`–`OKF107`, worklist
+`OKF201`/`OKF202`/`OKF206`, the optional qmd-backed `OKF203`/`OKF204`, and
+seed-driven content-gap analysis (`gaps`) — with autofix, `okf.toml` config,
+human/JSON/SARIF output, a per-package test suite, CI, and flake
+`package`/`app`/`devShell`/`checks`. Still open: Claude Code hook wiring (M5). This document and [RULES.md](RULES.md) remain
 the canonical spec.
 
 ## What this is
@@ -56,6 +57,7 @@ bundle root), `--format human|json`.
 | `okftool new <path> --type <T> [--title …]` | Scaffold a conformant concept page (frontmatter + `# Citations` stub). Prevents drift at creation. |
 | `okftool graph [--format json\|dot]` | Emit the concept link graph. Powers orphan/backlink analysis internally; can feed a visualizer. |
 | `okftool skill` | Print the bundled agent skill (a Claude Code `SKILL.md`) to stdout, e.g. `okftool skill > .claude/skills/okftool/SKILL.md`. |
+| `okftool gaps <concept>` | Seed-driven content-gap analysis: concepts semantically near `<concept>` but not linked to it (`--depth`, `--top`, `--min-sim`, `--exclude-types`). Needs qmd. Spec: [gaps.md](gaps.md). |
 
 `lint` is the anchor. `index` and `fmt` are the same parser pointed at repair.
 `new` and `graph` are cheap wins that fall out of having the model in memory.
@@ -160,6 +162,9 @@ scanning; JSON is the pragmatic default for agent/editor/CI use.
 5. **M5 — worklist + graph + hooks.** ✅ `okftool graph`, worklist
    `OKF201`/`OKF202`/`OKF206`, and the optional qmd-backed `OKF203`/`OKF204`.
    Still open: the Claude Code hook wiring (a consuming-bundle artifact).
+6. **M6 — content-gap analysis.** ✅ `okftool gaps <concept>`: seed-driven
+   detection of near-but-unlinked concepts (direct gaps + neighborhood holes),
+   reusing the qmd integration and link graph. Spec in [gaps.md](gaps.md).
 
 ## Decisions
 

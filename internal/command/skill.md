@@ -59,6 +59,25 @@ the genuinely semantic work it can't do.
   source, whether two near-duplicate pages should merge, whether a mentioned
   concept deserves its own page. The tool surfaces candidates; you decide.
 
+## Refining a topic — `gaps`
+
+When you are working on a concept and want to know **what is missing** — which
+other pages it *should* connect to but does not — ask:
+
+```
+okftool gaps <concept> --format json
+```
+
+It returns concepts semantically **near** the seed but **not linked** to it
+(`direct`), and with `--depth neighborhood`, unlinked pairs among the seed's
+neighbors (`holes`). These are candidate cross-links / bridges: the tool finds
+the discrepancy between the *authored* link graph and the *semantic* one; **you**
+decide whether the connection is worth writing. Needs `qmd.enabled` and a fresh
+qmd index (same requirement as `OKF203`).
+
+Use it after drafting or editing a page, or when asked "what should this page
+reference?" / "what's underdeveloped about this topic?"
+
 ## Rule categories
 
 - `OKF0xx` **conformance** — always on, always `error`. A bundle is not OKF until
@@ -80,6 +99,7 @@ okftool index --check     # verify index.md is in sync   (--write regenerates)
 okftool fmt --check       # check formatting              (--write applies)
 okftool new <path> --type <T> [--title ...]   # scaffold a conformant page
 okftool graph --format json|dot               # concept link graph
+okftool gaps <concept>    # near-but-unlinked concepts to refine a topic (needs qmd)
 ```
 
 Global flags: `--bundle <dir>` (else auto-discover), `--config <path>` (else
