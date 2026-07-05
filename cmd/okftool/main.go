@@ -1,5 +1,5 @@
-// Command okf is a small, deterministic CLI for authoring and maintaining Open
-// Knowledge Format (OKF) bundles. See docs/DESIGN.md and docs/RULES.md.
+// Command okftool is a small, deterministic CLI for authoring and maintaining
+// Open Knowledge Format (OKF) bundles. See docs/DESIGN.md and docs/RULES.md.
 package main
 
 import (
@@ -32,20 +32,20 @@ func main() {
 	case "graph":
 		run = command.Graph
 	case "version", "--version", "-v":
-		fmt.Println("okf " + version)
+		fmt.Println("okftool " + version)
 		return
 	case "help", "-h", "--help":
 		usage(os.Stdout)
 		return
 	default:
-		fmt.Fprintf(os.Stderr, "okf: unknown command %q\n\n", cmd)
+		fmt.Fprintf(os.Stderr, "okftool: unknown command %q\n\n", cmd)
 		usage(os.Stderr)
 		os.Exit(2)
 	}
 
 	code, err := run(args)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "okf: "+err.Error())
+		fmt.Fprintln(os.Stderr, "okftool: "+err.Error())
 		if code == 0 {
 			code = 1
 		}
@@ -54,10 +54,10 @@ func main() {
 }
 
 func usage(w *os.File) {
-	fmt.Fprint(w, `okf — Open Knowledge Format bundle tools
+	fmt.Fprint(w, `okftool — Open Knowledge Format bundle tools
 
 Usage:
-  okf <command> [flags] [paths...]
+  okftool <command> [flags] [paths...]
 
 Commands:
   lint    Run the rule catalog (OKF001–OKF206) over the bundle.
@@ -72,6 +72,6 @@ Global flags:
   --config <path>   Config file (default: okf.toml at bundle root).
   --format <fmt>    Output format: human|json (graph also: dot).
 
-Run "okf <command> -h" for command-specific flags.
+Run "okftool <command> -h" for command-specific flags.
 `)
 }

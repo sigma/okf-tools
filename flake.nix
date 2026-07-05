@@ -1,5 +1,5 @@
 {
-  description = "okf-tools: the okf CLI for OKF bundles, plus a dev shell bundling qmd (llm-toolchain) from the firefly toolbox";
+  description = "okf-tools: the okftool CLI for OKF bundles, plus a dev shell bundling qmd (llm-toolchain) from the firefly toolbox";
 
   inputs.toolbox.url = "github:firefly-engineering/toolbox";
 
@@ -7,7 +7,7 @@
     { toolbox, ... }:
     let
       # Reuse the toolbox's own nixpkgs so llm-toolchain stays a binary-cache
-      # hit and okf builds against the same pinned toolchain.
+      # hit and okftool builds against the same pinned toolchain.
       nixpkgs = toolbox.inputs.nixpkgs;
       inherit (nixpkgs) lib;
 
@@ -21,20 +21,20 @@
 
       version = "0.1.0";
 
-      okfFor =
+      okftoolFor =
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
         in
         pkgs.buildGoModule {
-          pname = "okf";
+          pname = "okftool";
           inherit version;
           src = lib.cleanSource ./.;
-          # Recomputed with `nix build .#okf` (copy the hash from the mismatch).
-          vendorHash = "sha256-arnjLHFW0fHy6P93g5GQC9ixEU0ld3eP3T3mNQzB+tg=";
-          # Only cmd/okf is a main package, so `go install ./...` yields just the
-          # okf binary; leaving subPackages unset lets checkPhase run the full
-          # `go test ./...` (parser, rules, and golden fixture bundles).
+          # Recomputed with `nix build .#okftool` (copy the hash from the mismatch).
+          vendorHash = "sha256-tGQvZsSidf04fciYXI/5OpvG9BKYlnFmdoJmLh+af7Q=";
+          # Only cmd/okftool is a main package, so `go install ./...` yields just
+          # the okftool binary; leaving subPackages unset lets checkPhase run the
+          # full `go test ./...` (parser, rules, and golden fixture bundles).
           doCheck = true;
           ldflags = [
             "-s"
@@ -43,24 +43,24 @@
           ];
           meta = {
             description = "Deterministic CLI for authoring and maintaining Open Knowledge Format bundles";
-            mainProgram = "okf";
+            mainProgram = "okftool";
           };
         };
     in
     {
       packages = forAllSystems (system: {
-        okf = okfFor system;
-        default = okfFor system;
+        okftool = okftoolFor system;
+        default = okftoolFor system;
       });
 
       apps = forAllSystems (system: {
-        okf = {
+        okftool = {
           type = "app";
-          program = "${okfFor system}/bin/okf";
+          program = "${okftoolFor system}/bin/okftool";
         };
         default = {
           type = "app";
-          program = "${okfFor system}/bin/okf";
+          program = "${okftoolFor system}/bin/okftool";
         };
       });
 
@@ -74,15 +74,15 @@
             name = "okf-tools";
             packages = [
               toolbox.packages.${system}.llm-toolchain
-              (okfFor system)
+              (okftoolFor system)
             ];
           };
         }
       );
 
-      # `nix flake check` builds okf and runs its test suite (doCheck).
+      # `nix flake check` builds okftool and runs its test suite (doCheck).
       checks = forAllSystems (system: {
-        okf = okfFor system;
+        okftool = okftoolFor system;
       });
     };
 }

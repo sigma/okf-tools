@@ -1,8 +1,8 @@
 package command
 
 import (
-	"flag"
 	"fmt"
+	"github.com/spf13/pflag"
 	"os"
 
 	"github.com/sigma/okf-tools/internal/rules"
@@ -10,7 +10,7 @@ import (
 
 // Index verifies (--check, default) or regenerates (--write) index.md files.
 func Index(args []string) (int, error) {
-	fs := flag.NewFlagSet("index", flag.ContinueOnError)
+	fs := pflag.NewFlagSet("index", pflag.ContinueOnError)
 	var g globals
 	registerGlobals(fs, &g)
 	write := fs.Bool("write", false, "regenerate index.md files in place")

@@ -2,8 +2,8 @@ package command
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
+	"github.com/spf13/pflag"
 	"os"
 	"strings"
 
@@ -12,7 +12,7 @@ import (
 
 // Graph emits the concept link graph as JSON (--format json) or Graphviz dot.
 func Graph(args []string) (int, error) {
-	fs := flag.NewFlagSet("graph", flag.ContinueOnError)
+	fs := pflag.NewFlagSet("graph", pflag.ContinueOnError)
 	var g globals
 	registerGlobals(fs, &g)
 	paths, code, ok := parseFlags(fs, args)

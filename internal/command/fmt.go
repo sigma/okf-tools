@@ -2,8 +2,8 @@ package command
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
+	"github.com/spf13/pflag"
 	"os"
 )
 
@@ -11,7 +11,7 @@ import (
 // style. --check reports which files would change (non-zero exit if any);
 // --write applies them.
 func Fmt(args []string) (int, error) {
-	fs := flag.NewFlagSet("fmt", flag.ContinueOnError)
+	fs := pflag.NewFlagSet("fmt", pflag.ContinueOnError)
 	var g globals
 	registerGlobals(fs, &g)
 	write := fs.Bool("write", false, "rewrite files in place")

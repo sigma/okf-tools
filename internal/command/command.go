@@ -5,7 +5,7 @@ package command
 
 import (
 	"encoding/json"
-	"flag"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +14,7 @@ import (
 
 	"github.com/sigma/okf-tools/internal/bundle"
 	"github.com/sigma/okf-tools/internal/rules"
+	"github.com/spf13/pflag"
 )
 
 // globals are the flags every subcommand accepts.
@@ -23,30 +24,24 @@ type globals struct {
 	format string
 }
 
-// parseFlags parses args, allowing flags and positional arguments to be
-// interspersed (the stdlib flag package otherwise stops at the first
-// positional). It returns the collected positionals. ok is false when the
-// caller should return the given code without doing work (parse error → 2,
-// -h/--help → 0).
-func parseFlags(fs *flag.FlagSet, args []string) (positionals []string, code int, ok bool) {
-	for {
-		switch err := fs.Parse(args); err {
-		case nil:
-			// keep going
-		case flag.ErrHelp:
-			return nil, 0, false
-		default:
-			return nil, 2, false
-		}
-		if fs.NArg() == 0 {
-			return positionals, 0, true
-		}
-		positionals = append(positionals, fs.Arg(0))
-		args = fs.Args()[1:]
+// parseFlags parses args and returns the positional arguments. pflag interleaves
+// flags and positionals natively, so no manual reordering is needed. ok is false
+// when the caller should return the given code without doing work (parse error →
+// 2, -h/--help → 0).
+func parseFlags(fs *pflag.FlagSet, args []string) (positionals []string, code int, ok bool) {
+	err := fs.Parse(args)
+	switch {
+	case err == nil:
+		return fs.Args(), 0, true
+	case errors.Is(err, pflag.ErrHelp):
+		return nil, 0, false
+	default:
+		fmt.Fprintln(os.Stderr, "okftool: "+err.Error())
+		return nil, 2, false
 	}
 }
 
-func registerGlobals(fs *flag.FlagSet, g *globals) {
+func registerGlobals(fs *pflag.FlagSet, g *globals) {
 	fs.StringVar(&g.bundle, "bundle", "", "bundle root directory (default: auto-discover)")
 	fs.StringVar(&g.config, "config", "", "config file (default: okf.toml at bundle root)")
 	fs.StringVar(&g.format, "format", "human", "output format: human|json")

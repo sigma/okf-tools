@@ -1,8 +1,8 @@
 package command
 
 import (
-	"flag"
 	"fmt"
+	"github.com/spf13/pflag"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +14,7 @@ import (
 // New scaffolds a conformant concept page (frontmatter + a Citations stub),
 // preventing drift at creation.
 func New(args []string) (int, error) {
-	fs := flag.NewFlagSet("new", flag.ContinueOnError)
+	fs := pflag.NewFlagSet("new", pflag.ContinueOnError)
 	var g globals
 	registerGlobals(fs, &g)
 	typ := fs.String("type", "", "concept type (required)")

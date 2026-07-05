@@ -1,7 +1,7 @@
 package command
 
 import (
-	"flag"
+	"github.com/spf13/pflag"
 	"os"
 
 	"github.com/sigma/okf-tools/internal/bundle"
@@ -10,7 +10,7 @@ import (
 
 // Lint runs the rule catalog over the bundle. It is the anchor command.
 func Lint(args []string) (int, error) {
-	fs := flag.NewFlagSet("lint", flag.ContinueOnError)
+	fs := pflag.NewFlagSet("lint", pflag.ContinueOnError)
 	var g globals
 	registerGlobals(fs, &g)
 	fix := fs.Bool("fix", false, "apply autofixable rules in place")
