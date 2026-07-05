@@ -31,6 +31,8 @@ func main() {
 		run = command.New
 	case "graph":
 		run = command.Graph
+	case "skill":
+		run = command.Skill
 	case "version", "--version", "-v":
 		fmt.Println("okftool " + version)
 		return
@@ -65,6 +67,7 @@ Commands:
   fmt     Normalize frontmatter, timestamps, citations and link style.
   new     Scaffold a conformant concept page.
   graph   Emit the concept link graph (--format json|dot).
+  skill   Print the bundled agent skill (SKILL.md) to stdout.
   version Print the version.
 
 Global flags:
