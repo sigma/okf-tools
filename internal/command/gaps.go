@@ -47,10 +47,11 @@ func Gaps(args []string) (int, error) {
 	fs := pflag.NewFlagSet("gaps", pflag.ContinueOnError)
 	var g globals
 	registerGlobals(fs, &g)
-	depth := fs.String("depth", "direct", "direct|neighborhood")
-	top := fs.Int("top", 10, "neighbors to consider")
-	minSim := fs.Float64("min-sim", 0.4, "similarity floor")
-	excludeTypes := fs.String("exclude-types", "", "skip node types (comma-separated), e.g. Person")
+	// Flags override the config defaults ([gaps]); unset flags fall back to config.
+	depthFlag := fs.String("depth", "", "direct|neighborhood (default: config gaps.depth)")
+	topFlag := fs.Int("top", 0, "neighbors to consider (default: config gaps.top)")
+	minSimFlag := fs.Float64("min-sim", 0, "similarity floor (default: config gaps.min_sim)")
+	excludeFlag := fs.String("exclude-types", "", "skip node types, comma-separated (e.g. Person)")
 	rest, code, ok := parseFlags(fs, args)
 	if !ok {
 		return code, nil
@@ -61,9 +62,6 @@ func Gaps(args []string) (int, error) {
 	if err := validateFormat(g.format, "human", "json"); err != nil {
 		return 2, err
 	}
-	if *depth != "direct" && *depth != "neighborhood" {
-		return 2, fmt.Errorf("--depth must be 'direct' or 'neighborhood'")
-	}
 
 	b, err := loadBundle(&g, nil)
 	if err != nil {
@@ -72,12 +70,32 @@ func Gaps(args []string) (int, error) {
 	if !b.Config.QMD.Enabled {
 		return 1, fmt.Errorf("gaps requires qmd; set qmd.enabled = true in okf.toml")
 	}
+
+	gc := b.Config.Gaps
+	depth, top, minSim := gc.Depth, gc.Top, gc.MinSim
+	exclude := typeSetFrom(gc.ExcludeTypes)
+	if fs.Changed("depth") {
+		depth = *depthFlag
+	}
+	if fs.Changed("top") {
+		top = *topFlag
+	}
+	if fs.Changed("min-sim") {
+		minSim = *minSimFlag
+	}
+	if fs.Changed("exclude-types") {
+		exclude = parseTypeSet(*excludeFlag)
+	}
+	if depth != "direct" && depth != "neighborhood" {
+		return 2, fmt.Errorf("--depth must be 'direct' or 'neighborhood'")
+	}
+
 	seed := b.ResolveWikilink(rest[0])
 	if seed == nil {
 		return 1, fmt.Errorf("concept not found in the bundle: %s", rest[0])
 	}
 
-	res, err := computeGaps(b, seed, *depth, *top, *minSim, parseTypeSet(*excludeTypes))
+	res, err := computeGaps(b, seed, depth, top, minSim, exclude)
 	if err != nil {
 		return 1, err
 	}
@@ -269,10 +287,14 @@ func seedLinks(b *bundle.Bundle, seedRel string) []string {
 }
 
 func parseTypeSet(csv string) map[string]bool {
+	return typeSetFrom(strings.Split(csv, ","))
+}
+
+func typeSetFrom(types []string) map[string]bool {
 	set := map[string]bool{}
-	for _, p := range strings.Split(csv, ",") {
-		if t := strings.ToLower(strings.TrimSpace(p)); t != "" {
-			set[t] = true
+	for _, t := range types {
+		if tt := strings.ToLower(strings.TrimSpace(t)); tt != "" {
+			set[tt] = true
 		}
 	}
 	return set

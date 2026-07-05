@@ -76,6 +76,16 @@ near_duplicates = "info"          # OKF203 (semantic near-duplicate candidates)
 near_duplicate_threshold = 0.85
 staleness = "info"                # OKF204 (qmd index out of date)
 
+[gaps]
+# Defaults for `okftool gaps <concept>` (also qmd-backed). CLI flags override
+# these. Set depth = "neighborhood" if indirect bridges (open triangles among a
+# page's neighbors) matter as much as direct near-but-unlinked concepts — at the
+# cost of one extra qmd query per neighbor.
+depth = "direct"                  # direct | neighborhood
+top = 10                          # neighbors to consider
+min_sim = 0.4                     # similarity floor
+# exclude_types = ["Person"]      # node types to skip (hubs near much of the bundle)
+
 # Per-rule overrides. Use to turn a rule off or re-level it (conformance rules
 # OKF001–OKF004 are exempt and ignored here).
 [rules]

@@ -23,6 +23,9 @@ func TestDefault(t *testing.T) {
 	if c.QMD.NearDuplicateThreshold != 0.85 {
 		t.Errorf("NearDuplicateThreshold = %v, want 0.85", c.QMD.NearDuplicateThreshold)
 	}
+	if c.Gaps.Depth != "direct" || c.Gaps.Top != 10 || c.Gaps.MinSim != 0.4 {
+		t.Errorf("Gaps defaults = %+v, want direct/10/0.4", c.Gaps)
+	}
 }
 
 func writeConfig(t *testing.T, body string) string {
@@ -70,6 +73,7 @@ func TestLoadValidateError(t *testing.T) {
 	for _, body := range []string{
 		"[links]\nstyle = \"sideways\"\n",
 		"[frontmatter]\ntimestamp_format = \"iso\"\n",
+		"[gaps]\ndepth = \"sideways\"\n",
 		"[rules]\nOKF102 = \"loud\"\n",
 	} {
 		if _, err := Load(writeConfig(t, body)); err == nil {

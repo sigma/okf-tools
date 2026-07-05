@@ -21,6 +21,7 @@ type Config struct {
 	Index       Index             `toml:"index"`
 	Worklist    Worklist          `toml:"worklist"`
 	QMD         QMD               `toml:"qmd"`
+	Gaps        Gaps              `toml:"gaps"`
 	Rules       map[string]string `toml:"rules"`
 
 	// Path is the file this config was loaded from; empty when using defaults.
@@ -80,6 +81,16 @@ type QMD struct {
 	Staleness              string  `toml:"staleness"`                // OKF204 severity
 }
 
+// Gaps configures defaults for `okftool gaps`. CLI flags override these; the
+// config lets a bundle set its own defaults (e.g. depth = "neighborhood" when
+// indirect bridges matter more than direct ones).
+type Gaps struct {
+	Depth        string   `toml:"depth"`         // direct|neighborhood
+	Top          int      `toml:"top"`           // neighbors to consider
+	MinSim       float64  `toml:"min_sim"`       // similarity floor
+	ExcludeTypes []string `toml:"exclude_types"` // node types to skip
+}
+
 // Default returns the spec-aligned default configuration.
 func Default() *Config {
 	return &Config{
@@ -121,6 +132,11 @@ func Default() *Config {
 			NearDuplicateThreshold: 0.85,
 			Staleness:              "info",
 		},
+		Gaps: Gaps{
+			Depth:  "direct",
+			Top:    10,
+			MinSim: 0.4,
+		},
 		Rules: map[string]string{},
 	}
 }
@@ -160,6 +176,7 @@ func (c *Config) Validate() error {
 		{"filenames.severity", c.Filenames.Severity, severities},
 		{"frontmatter.timestamp_format", c.Frontmatter.TimestampFormat, []string{"rfc3339", "date"}},
 		{"citations.style", c.Citations.Style, []string{"numbered", "footnote"}},
+		{"gaps.depth", c.Gaps.Depth, []string{"direct", "neighborhood"}},
 		{"worklist.orphans", c.Worklist.Orphans, severities},
 		{"qmd.near_duplicates", c.QMD.NearDuplicates, severities},
 		{"qmd.staleness", c.QMD.Staleness, severities},
