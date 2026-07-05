@@ -72,12 +72,17 @@ collection.
 
 ```
 okftool gaps <concept> [flags]
-  --depth direct|neighborhood   default: direct
-  --top <k>                     neighbors to consider (default 10)
-  --min-sim <τ>                 similarity floor (default ~0.4; see calibration)
+  --depth direct|neighborhood   default: config gaps.depth (built-in: direct)
+  --top <k>                     neighbors to consider (default: gaps.top, 10)
+  --min-sim <τ>                 similarity floor (default: gaps.min_sim, ~0.4)
   --exclude-types <T,...>       skip node types (e.g. Person) in the hole pass
   --format human|json           default: human
 ```
+
+Defaults come from the `[gaps]` section of `okf.toml` (`depth`, `top`,
+`min_sim`, `exclude_types`); the flags above override them per invocation. A
+bundle that cares more about indirect bridges than direct ones sets
+`gaps.depth = "neighborhood"`.
 
 Global flags (`--bundle`, `--config`) as elsewhere. Like `OKF203`/`OKF204`, this
 depends on **qmd** (a fresh index + the `qmd` binary on `PATH`, honoring
@@ -88,13 +93,13 @@ clearly rather than silently returning nothing.
 
 ```json
 {
-  "seed": "content-gap-analysis.md",
+  "seed": "seed.md",
   "neighbors": [
-    {"page": "graphrag.md", "sim": 0.53, "linked": false},
-    {"page": "infranodus.md", "sim": 0.61, "linked": true}
+    {"page": "linked.md", "sim": 0.61, "linked": true},
+    {"page": "near.md", "sim": 0.53, "linked": false}
   ],
-  "direct": [{"page": "graphrag.md", "sim": 0.53}],
-  "holes":  [{"a": "fix-llm-wiki-with-knowledge-graph.md", "b": "graphrag.md", "sim": 0.5}]
+  "direct": [{"page": "near.md", "sim": 0.53}],
+  "holes":  [{"a": "linked.md", "b": "near.md", "sim": 0.50}]
 }
 ```
 
@@ -103,24 +108,24 @@ Human output lists the seed's existing links, its ranked neighbors marked
 
 ## Evidence
 
-A public-interface prototype (`okftool graph --format json` + `qmd vsearch --json`
-per seed) run against the OKF wiki bundle:
+A public-interface prototype (`okftool graph --format json` + `qmd vsearch
+--format json` per seed) validated against a real OKF bundle. The findings that
+shaped the defaults and filters:
 
-- **Real find** — `gaps content-gap-analysis.md` surfaced **`graphrag.md`
-  (sim 0.53)** as a near-but-unlinked concept: both are about knowledge graphs,
-  for opposite purposes (retrieval vs. finding absences). A sensible bridge that
-  did not exist.
-- **Low false positives** — `gaps jujutsu.md` came back essentially clean: every
-  strong neighbor was already linked (the jj cluster is dense). The tool does not
-  cry wolf on well-connected clusters.
-- **Why the filters exist** — `index.md` appeared as a "gap" for every seed
-  (~0.51–0.53), motivating the reserved-file filter; a `Person` hub
-  (`andrej-karpathy.md`) inflated the neighborhood-hole pass, motivating hub
-  handling.
+- **Real find** — seeding one page surfaced a near-but-unlinked concept at
+  sim ~0.53: two pages about the same area for opposite purposes — a sensible
+  bridge that did not yet exist.
+- **Low false positives** — seeding a page inside a dense, well-connected cluster
+  came back essentially clean: every strong neighbor was already linked. The tool
+  does not cry wolf on tightly-linked clusters.
+- **Why the filters exist** — the generated `index.md` scored as a "gap" for
+  *every* seed (~0.51–0.53) because it holds every page's description; this
+  motivated the reserved-file filter. A `Person`-typed hub node — near much of the
+  bundle by nature — inflated the neighborhood-hole pass, motivating hub handling.
 - **Calibration** — similarity bands were informative: *intra-cluster* ~0.60–0.77,
   *cross-topic adjacency* (the interesting gaps) ~0.45–0.55. A `τ` around 0.4 with
   the reserved/hub filters worked better than tuning `τ` alone.
-- **Cost** — full run (direct + holes) on one seed = 1 + ~10 qmd queries; direct
+- **Cost** — full run (direct + holes) on one seed = 1 + ~k qmd queries; direct
   only = 1. Confirms the seed-driven complexity.
 
 ## Relationship to OKF203
@@ -157,7 +162,8 @@ Never a global batch. Two natural drivers:
 
 - **After ingest** — run `gaps` on the pages just created/changed (they are the
   natural seeds; their neighborhoods are where new gaps appear). This sweeps the
-  whole bundle over time at O(1) per interaction — the compounding-wiki spirit.
+  whole bundle over time at O(1) per interaction — the compounding-knowledge
+  spirit.
 - **On demand** — an MCP tool / agent call ("gaps for X") while working on a
   concept.
 
@@ -171,8 +177,9 @@ Never a global batch. Two natural drivers:
 
 ## Open questions
 
-1. Default `--depth`: `direct` (1 query, clean) vs `neighborhood` (richer, needs
-   the hub filter to be worth it).
+1. ~~Default `--depth`.~~ Resolved: configurable via `gaps.depth` (built-in
+   default `direct`, the cheap/clean shape); a bundle sets `neighborhood` when
+   indirect bridges matter.
 2. Ship a global `OKF2xx` variant too, or keep it command-only?
 3. Default `τ` and `k`; whether to disable qmd expansion by default.
 4. Hub handling: exclude `Person`/high-degree nodes, down-weight, or leave to
