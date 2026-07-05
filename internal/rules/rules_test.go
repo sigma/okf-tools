@@ -126,3 +126,21 @@ func TestQMDRules(t *testing.T) {
 		t.Error("expected OKF204 staleness finding")
 	}
 }
+
+func TestNeedsQMD(t *testing.T) {
+	off := config.Default() // qmd disabled by default
+	if NeedsQMD(off, nil, nil) {
+		t.Error("qmd disabled: NeedsQMD should be false")
+	}
+	on := config.Default()
+	on.QMD.Enabled = true
+	if !NeedsQMD(on, nil, nil) {
+		t.Error("qmd enabled: NeedsQMD should be true")
+	}
+	if NeedsQMD(on, nil, map[string]bool{"OKF203": true, "OKF204": true}) {
+		t.Error("both qmd rules ignored: NeedsQMD should be false")
+	}
+	if NeedsQMD(on, map[string]bool{"OKF001": true}, nil) {
+		t.Error("selecting only OKF001: NeedsQMD should be false")
+	}
+}

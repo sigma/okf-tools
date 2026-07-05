@@ -187,6 +187,28 @@ func Run(ctx *Context, selected, ignored map[string]bool) []Finding {
 	return out
 }
 
+// qmdBackedRules need ctx.QMD (the qmd analysis); kept in sync with docs/RULES.md.
+var qmdBackedRules = []string{"OKF203", "OKF204"}
+
+// NeedsQMD reports whether any qmd-backed rule will actually run under cfg and the
+// given CLI selection. The command layer uses it to skip the expensive qmd
+// analysis when those rules are disabled, deselected, or ignored (e.g.
+// `--ignore OKF203,OKF204`), so a routine lint pays no qmd cost.
+func NeedsQMD(cfg *config.Config, selected, ignored map[string]bool) bool {
+	for _, id := range qmdBackedRules {
+		if len(selected) > 0 && !selected[id] {
+			continue
+		}
+		if ignored[id] {
+			continue
+		}
+		if r := Get(id); r != nil && Effective(r, cfg) != Off {
+			return true
+		}
+	}
+	return false
+}
+
 // Summary counts findings by severity.
 type Summary struct {
 	Error   int `json:"error"`
