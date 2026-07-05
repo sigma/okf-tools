@@ -9,6 +9,7 @@ import (
 
 	"github.com/sigma/okf-tools/internal/bundle"
 	"github.com/sigma/okf-tools/internal/config"
+	"github.com/sigma/okf-tools/internal/qmd"
 )
 
 // Severity ranks a finding. The zero value is Off (disabled).
@@ -77,6 +78,7 @@ type Finding struct {
 type Context struct {
 	Bundle *bundle.Bundle
 	Config *config.Config
+	QMD    *qmd.Result // qmd analysis for OKF203/OKF204; nil when qmd.enabled is off
 }
 
 // Rule is one catalog entry.
