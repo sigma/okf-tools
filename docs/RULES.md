@@ -1,6 +1,6 @@
-# okf lint — rule catalog
+# okftool lint — rule catalog
 
-Canonical reference for the rules enforced by `okf lint`. Each rule has a
+Canonical reference for the rules enforced by `okftool lint`. Each rule has a
 stable ID, a category, a default severity, and a note on whether it is
 autofixable. This document is the source of truth; the implementation must not
 add or renumber rules without updating it.
@@ -13,16 +13,20 @@ add or renumber rules without updating it.
    [Out of scope](#out-of-scope). The linter's job is to be perfectly
    reproducible and to hand the semantic layer (an agent) a stable worklist.
 
-2. **Three categories, three postures.**
-   - **Conformance (`OKF0xx`)** — straight from [SPEC.md](../../wiki/SPEC.md) §9.
-     Always on. Severity fixed at **error**. These define whether a bundle *is*
-     OKF; they are not configurable.
+2. **Categories and postures.**
+   - **Conformance (`OKF0xx`)** — straight from the
+     [OKF spec](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
+     §9. Always on. Severity fixed at **error**. These define whether a bundle
+     *is* OKF; they are not configurable.
    - **Policy (`OKF1xx`)** — bundle-local conventions and SPEC "SHOULD"s.
-     Configurable via `okf.toml`. Defaults are **spec-aligned**, not
-     wiki-specific — a bundle opts into stricter policy (see
+     Configurable via `okf.toml`. Defaults are **spec-aligned**, not tied to any
+     one bundle — a bundle opts into stricter policy (see
      [okf.example.toml](okf.example.toml)).
    - **Worklist (`OKF2xx`)** — advisory. Severity **info**. **Never** fails a
      build. These are candidates the agent resolves.
+   - **Optional qmd-backed (`OKF203`/`OKF204`)** — advisory like the worklist,
+     but they require a fresh `qmd` index. **Off unless the bundle sets
+     `qmd.enabled`**, so core linting stays dependency-free.
 
 3. **Broken links are not errors.** SPEC §5.3/§9 explicitly bless links to
    not-yet-written concepts. `OKF202` is `info`, hard-capped — it can never be
@@ -46,7 +50,7 @@ add or renumber rules without updating it.
 | `warning`| Policy violation | yes if `--fail-on warning` (default: error only) |
 | `info`   | Worklist item for the agent/human | never |
 
-`okf lint` exits non-zero when any finding is at or above the `--fail-on`
+`okftool lint` exits non-zero when any finding is at or above the `--fail-on`
 threshold (default `error`). `--exit-zero` reports without failing (useful when
 piping JSON to an agent). Rules can be turned off or re-leveled per bundle in
 `okf.toml`, **except** conformance rules, whose severity is fixed.
@@ -70,7 +74,7 @@ The frontmatter contains a `type` key with a non-empty string value.
 `index.md` files carry **no frontmatter**, except the bundle-root `index.md`,
 which MAY carry exactly one key: `okf_version`. The body is one or more heading-
 grouped bullet lists of links.
-*SPEC §6, §9.3, §11. Autofix: partial (via `okf index --write`).*
+*SPEC §6, §9.3, §11. Autofix: partial (via `okftool index --write`).*
 
 ### `OKF004` log-structure
 `log.md` files use `## YYYY-MM-DD` ISO date headings, ordered newest-first, with
@@ -82,11 +86,10 @@ prose bullet entries.
 ## Category B — Policy (`OKF1xx`)
 
 Configurable. Defaults below are **spec-aligned**; a bundle tightens them in
-`okf.toml`. The "wiki value" column shows what *this* project's bundle sets,
-derived from its `CLAUDE.md`.
+`okf.toml`. The "Strict example" column shows values a stricter bundle might set.
 
-| Rule | Default | Wiki value | Autofix |
-|------|---------|-----------|---------|
+| Rule | Default | Strict example | Autofix |
+|------|---------|----------------|---------|
 | `OKF101` no-wikilinks | warning | warning | partial |
 | `OKF102` link-style | **off** (SPEC recommends absolute) | relative → on | yes |
 | `OKF103` filename-case | info (kebab) | warning (kebab) | no |
@@ -104,8 +107,8 @@ manual repair. *Config: `links.allow_wikilinks`.*
 ### `OKF102` link-style
 Enforce the configured concept-cross-link style. **Off by default** because SPEC
 §5.1 *recommends* bundle-absolute (`/path.md`) links. A bundle whose consumer
-resolves `/` against the wrong root (this wiki: Obsidian resolves against the
-vault root, not the inner bundle root) sets `links.style = "relative"`, which
+resolves `/` against a different root than the bundle root (for example an editor
+that resolves against its own vault root) sets `links.style = "relative"`, which
 then flags any `/`-absolute cross-link and any relative link that escapes the
 bundle. Autofix rewrites between styles by recomputing the path against the
 bundle root. *Config: `links.style` = `relative` | `absolute` | `any`.*
@@ -121,9 +124,8 @@ If `timestamp` is present it must match the configured format. Default
 may relax to `date` to allow `YYYY-MM-DD`. Presence itself is governed by
 `frontmatter.require_timestamp` (default off). Autofix normalizes a parseable
 value to the canonical format. *Config: `frontmatter.timestamp_format`,
-`frontmatter.require_timestamp`. **Note:** this wiki's existing pages use
-date-only stamps while its `CLAUDE.md` example shows a datetime — see
-[Open questions](DESIGN.md#open-questions).*
+`frontmatter.require_timestamp`. A bundle whose pages use date-only stamps sets
+`timestamp_format = "date"` (see [Decisions](DESIGN.md#decisions)).*
 
 ### `OKF105` citations-format
 When the body makes sourced claims, sources appear under a `# Citations`
@@ -135,7 +137,7 @@ malformed sequence but will not invent missing citations. *Config:
 Each `index.md` enumerates every concept in its scope, contains no entries for
 files that don't exist, and (when `index.descriptions_from_frontmatter`) each
 entry's description matches the target's frontmatter `description`. Fully
-autofixable — `okf index --write` regenerates it. This rule turns a recurring,
+autofixable — `okftool index --write` regenerates it. This rule turns a recurring,
 easily-forgotten manual step into a checkable invariant. *Config:
 `index.check_sync`, `index.descriptions_from_frontmatter`.*
 
@@ -160,22 +162,33 @@ page — but worth a look for graph connectivity.
 A concept cross-link whose target does not resolve inside the bundle. **`info`,
 hard-capped — never an error** (SPEC §5.3: may be not-yet-written knowledge).
 
-### `OKF203` near-duplicate
-Pairs of concepts with high semantic overlap, from a `qmd` similarity query
-above a threshold. Detection is reproducible *relative to a given qmd index
-snapshot*; the merge/keep decision is the agent's. Requires a fresh index
-(see `OKF204`). *Config: `worklist.near_duplicates`, threshold.*
-
-### `OKF204` qmd-staleness
-The `.qmd` index is out of date: some concept's current content hash is absent
-from the index. Signals that `qmd update && qmd embed` is needed before trusting
-`OKF203` or any semantic recall. *Config: `worklist.qmd_staleness`.*
-
 ### `OKF206` citation-target-exists *(optional, off by default)*
 A `# Citations` link with an on-disk path (e.g. `../import/x.md`) points to a
 file that exists. Catches typo'd source filenames. Distinct from `OKF202`
 because citations legitimately point *outside* the bundle. *Config:
 `citations.check_targets`.*
+
+---
+
+## Category D — qmd-backed *(optional, opt-in)*
+
+Advisory (severity **info**, never fails a build), like the worklist — but these
+rules need a fresh [`qmd`](https://github.com/firefly-engineering/toolbox) index,
+so they are the one place `okftool` reaches for an external tool. They are
+**off unless the bundle opts in** with `qmd.enabled = true`; the rest of
+`okftool lint` stays dependency-free. Enable them per project when you want
+semantic near-duplicate detection.
+
+### `OKF203` near-duplicate
+Pairs of concepts with high semantic overlap, from a `qmd` similarity query above
+a threshold. Detection is reproducible *relative to a given qmd index snapshot*;
+the merge/keep decision is the agent's. Requires a fresh index (see `OKF204`).
+*Config: `qmd.near_duplicates`, `qmd.near_duplicate_threshold`.*
+
+### `OKF204` qmd-staleness
+The `qmd` index is out of date: some concept's current content hash is absent
+from the index. Signals that `qmd update && qmd embed` is needed before trusting
+`OKF203` or any semantic recall. *Config: `qmd.staleness`.*
 
 ---
 
@@ -190,7 +203,7 @@ judgment, not parsing. They remain the agent's job, fed by the worklist above:
 - **"Concept mentioned but not written"** beyond trivial proper-noun heuristics —
   deciding a phrase *deserves* its own page is editorial.
 - **"Each change has a log entry"** — needs a VCS diff, not a snapshot; a future
-  `okf lint --since <rev>` mode could cover it where the bundle is in git/jj.
+  `okftool lint --since <rev>` mode could cover it where the bundle is in git/jj.
 
 Keeping these out is a feature: it is precisely the line between what should be
 reproducible tooling and what should stay agent judgment.
