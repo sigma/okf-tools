@@ -174,7 +174,8 @@ Settled during design/implementation — recorded rather than left implicit:
    category, **off** unless a bundle sets `qmd.enabled = true`. `lint` runs the
    qmd analysis (via the `internal/qmd` package, which shells out to `qmd`) only
    when enabled and hands the result to the pure rules through `Context.QMD`; the
-   core stays dependency-free. Needs `qmd` on `PATH` and a fresh index.
+   core stays dependency-free. Needs the `qmd` binary (on `PATH`, or set
+   `qmd.path`) and a fresh index.
 4. **Scope of `okftool` vs. `qmd`.** Sibling binaries from `okf-tools` with
    different concerns — authoring/conformance vs. search — not subcommands of one
    another.

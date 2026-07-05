@@ -73,6 +73,7 @@ type Worklist struct {
 // Enabled is set, so the core of okf lint stays dependency-free.
 type QMD struct {
 	Enabled                bool    `toml:"enabled"`                  // master opt-in for OKF203/OKF204
+	Path                   string  `toml:"path"`                     // qmd binary; default "qmd" (resolved on PATH)
 	NearDuplicates         string  `toml:"near_duplicates"`          // OKF203 severity
 	NearDuplicateThreshold float64 `toml:"near_duplicate_threshold"` // OKF203
 	Staleness              string  `toml:"staleness"`                // OKF204 severity
@@ -113,6 +114,7 @@ func Default() *Config {
 		},
 		QMD: QMD{
 			Enabled:                false,
+			Path:                   "qmd",
 			NearDuplicates:         "info",
 			NearDuplicateThreshold: 0.85,
 			Staleness:              "info",

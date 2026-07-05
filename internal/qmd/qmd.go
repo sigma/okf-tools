@@ -23,15 +23,19 @@ import (
 // tests so they can feed recorded output instead of a live qmd index.
 type Runner func(dir string, args ...string) ([]byte, error)
 
-func execRunner(dir string, args ...string) ([]byte, error) {
-	cmd := exec.Command("qmd", args...)
-	cmd.Dir = dir
-	var out, errb bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &errb
-	if err := cmd.Run(); err != nil {
-		return out.Bytes(), fmt.Errorf("qmd %s: %v: %s", strings.Join(args, " "), err, lastLine(errb.String()))
+// execRunnerFor runs the qmd binary at bin (a name resolved on PATH, or an
+// absolute path from qmd.path).
+func execRunnerFor(bin string) Runner {
+	return func(dir string, args ...string) ([]byte, error) {
+		cmd := exec.Command(bin, args...)
+		cmd.Dir = dir
+		var out, errb bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &out, &errb
+		if err := cmd.Run(); err != nil {
+			return out.Bytes(), fmt.Errorf("%s %s: %v: %s", bin, strings.Join(args, " "), err, lastLine(errb.String()))
+		}
+		return out.Bytes(), nil
 	}
-	return out.Bytes(), nil
 }
 
 // Concept is the minimal per-page input Analyze needs from the bundle.
@@ -59,10 +63,14 @@ type Result struct {
 // runner to use the real qmd binary.
 func Analyze(root string, concepts []Concept, cfg *config.QMD, run Runner) *Result {
 	if run == nil {
-		if _, err := exec.LookPath("qmd"); err != nil {
-			return &Result{Unavailable: "qmd not found on PATH (install qmd or set qmd.enabled=false)"}
+		bin := cfg.Path
+		if bin == "" {
+			bin = "qmd"
 		}
-		run = execRunner
+		if _, err := exec.LookPath(bin); err != nil {
+			return &Result{Unavailable: fmt.Sprintf("qmd binary %q not found (set qmd.path, add it to PATH, or qmd.enabled=false)", bin)}
+		}
+		run = execRunnerFor(bin)
 	}
 
 	statusOut, err := run(root, "status")

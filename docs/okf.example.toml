@@ -65,6 +65,9 @@ orphans = "info"           # OKF201
 # core of `okf lint` stays dependency-free. Enable per project when you want
 # semantic near-duplicate detection.
 enabled = false
+# The qmd binary. Default "qmd" (resolved on PATH); set an absolute path when qmd
+# isn't on PATH — e.g. a Nix store path or a project-local build.
+path = "qmd"
 near_duplicates = "info"          # OKF203 (semantic near-duplicate candidates)
 near_duplicate_threshold = 0.85
 staleness = "info"                # OKF204 (qmd index out of date)

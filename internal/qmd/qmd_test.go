@@ -2,10 +2,19 @@ package qmd
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/sigma/okf-tools/internal/config"
 )
+
+func TestAnalyzeConfiguredBinaryMissing(t *testing.T) {
+	// run == nil forces the real PATH lookup of the configured binary.
+	res := Analyze("/b", nil, &config.QMD{Path: "okf-nonexistent-qmd-xyz"}, nil)
+	if res.Unavailable == "" || !strings.Contains(res.Unavailable, "okf-nonexistent-qmd-xyz") {
+		t.Errorf("expected unavailable naming the configured path, got %q", res.Unavailable)
+	}
+}
 
 var testConcepts = []Concept{
 	{Rel: "neo4j.md", Abs: "/b/neo4j.md", Text: "graph database"},

@@ -66,8 +66,8 @@ the genuinely semantic work it can't do.
 - `OKF2xx` **worklist** — advisory `info`; never fails a build. `OKF202`
   (broken links) is hard-capped at `info` on purpose.
 - `OKF203`/`OKF204` **qmd-backed** — optional semantic checks (near-duplicate
-  pages, stale index), off unless the bundle sets `qmd.enabled` and `qmd` is on
-  `PATH`.
+  pages, stale index), off unless the bundle sets `qmd.enabled` and `qmd` is
+  available (on `PATH`, or via `qmd.path`).
 
 ## Commands
 
