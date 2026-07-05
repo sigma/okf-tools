@@ -59,18 +59,28 @@ type Result struct {
 	StaleReason string // OKF204 ("" = fresh)
 }
 
+// resolveRunner returns run if non-nil, else a runner for the configured qmd
+// binary (erroring when it is not found on PATH).
+func resolveRunner(cfg *config.QMD, run Runner) (Runner, error) {
+	if run != nil {
+		return run, nil
+	}
+	bin := cfg.Path
+	if bin == "" {
+		bin = "qmd"
+	}
+	if _, err := exec.LookPath(bin); err != nil {
+		return nil, fmt.Errorf("qmd binary %q not found (set qmd.path, add it to PATH, or qmd.enabled=false)", bin)
+	}
+	return execRunnerFor(bin), nil
+}
+
 // Analyze runs the qmd-backed checks over concepts, rooted at root. Pass a nil
 // runner to use the real qmd binary.
 func Analyze(root string, concepts []Concept, cfg *config.QMD, run Runner) *Result {
-	if run == nil {
-		bin := cfg.Path
-		if bin == "" {
-			bin = "qmd"
-		}
-		if _, err := exec.LookPath(bin); err != nil {
-			return &Result{Unavailable: fmt.Sprintf("qmd binary %q not found (set qmd.path, add it to PATH, or qmd.enabled=false)", bin)}
-		}
-		run = execRunnerFor(bin)
+	run, err := resolveRunner(cfg, run)
+	if err != nil {
+		return &Result{Unavailable: err.Error()}
 	}
 
 	statusOut, err := run(root, "status")
@@ -100,38 +110,20 @@ func nearDuplicates(root string, concepts []Concept, cfg *config.QMD, run Runner
 	if threshold <= 0 {
 		threshold = 0.85
 	}
-	byAbs := make(map[string]string, len(concepts))
-	for _, c := range concepts {
-		byAbs[filepath.Clean(c.Abs)] = c.Rel
-	}
+	byAbs := absIndex(concepts)
 
 	seen := map[string]bool{}
 	var pairs []Pair
 	for _, c := range concepts {
-		q := c.Text
-		if len(q) > 4000 { // keep the query arg bounded
-			q = q[:4000]
-		}
-		out, err := run(root, "vsearch", q, "--format", "json", "--full-path", "--all",
-			"--min-score", strconv.FormatFloat(threshold, 'f', 2, 64))
+		ns, err := queryPages(root, boundedQuery(c.Text), byAbs, threshold, run)
 		if err != nil {
 			continue
 		}
-		best := map[string]float64{}
-		for _, h := range parseHits(out) {
-			rel, ok := byAbs[resolveAbs(root, h.File)]
-			if !ok || rel == c.Rel {
+		for _, n := range ns {
+			if n.Rel == c.Rel {
 				continue
 			}
-			if h.Score > best[rel] {
-				best[rel] = h.Score
-			}
-		}
-		for rel, score := range best {
-			if score < threshold {
-				continue
-			}
-			a, b := c.Rel, rel
+			a, b := c.Rel, n.Rel
 			if a > b {
 				a, b = b, a
 			}
@@ -140,7 +132,7 @@ func nearDuplicates(root string, concepts []Concept, cfg *config.QMD, run Runner
 				continue
 			}
 			seen[key] = true
-			pairs = append(pairs, Pair{A: a, B: b, Score: score})
+			pairs = append(pairs, Pair{A: a, B: b, Score: n.Score})
 		}
 	}
 	sort.Slice(pairs, func(i, j int) bool {
@@ -150,6 +142,70 @@ func nearDuplicates(root string, concepts []Concept, cfg *config.QMD, run Runner
 		return pairs[i].B < pairs[j].B
 	})
 	return pairs
+}
+
+// Neighbor is a bundle page and its similarity to a query.
+type Neighbor struct {
+	Rel   string  `json:"page"`
+	Score float64 `json:"sim"`
+}
+
+// Neighbors runs a single qmd vector search for query and returns the bundle
+// pages most similar to it — page-level (max over chunks), filtered to >= minSim,
+// sorted by score desc. run==nil resolves the qmd binary from cfg.Path.
+func Neighbors(root, query string, concepts []Concept, minSim float64, cfg *config.QMD, run Runner) ([]Neighbor, error) {
+	run, err := resolveRunner(cfg, run)
+	if err != nil {
+		return nil, err
+	}
+	return queryPages(root, boundedQuery(query), absIndex(concepts), minSim, run)
+}
+
+// queryPages runs one vsearch and aggregates chunk hits to page-level neighbors.
+func queryPages(root, query string, byAbs map[string]string, minSim float64, run Runner) ([]Neighbor, error) {
+	if minSim < 0 {
+		minSim = 0
+	}
+	out, err := run(root, "vsearch", query, "--format", "json", "--full-path", "--all",
+		"--min-score", strconv.FormatFloat(minSim, 'f', 2, 64))
+	if err != nil {
+		return nil, err
+	}
+	best := map[string]float64{}
+	for _, h := range parseHits(out) {
+		if rel, ok := byAbs[resolveAbs(root, h.File)]; ok && h.Score > best[rel] {
+			best[rel] = h.Score
+		}
+	}
+	var ns []Neighbor
+	for rel, s := range best {
+		if s >= minSim {
+			ns = append(ns, Neighbor{Rel: rel, Score: s})
+		}
+	}
+	sort.Slice(ns, func(i, j int) bool {
+		if ns[i].Score != ns[j].Score {
+			return ns[i].Score > ns[j].Score
+		}
+		return ns[i].Rel < ns[j].Rel
+	})
+	return ns, nil
+}
+
+func absIndex(concepts []Concept) map[string]string {
+	m := make(map[string]string, len(concepts))
+	for _, c := range concepts {
+		m[filepath.Clean(c.Abs)] = c.Rel
+	}
+	return m
+}
+
+// boundedQuery keeps the query argument to a sane length for the exec call.
+func boundedQuery(q string) string {
+	if len(q) > 4000 {
+		return q[:4000]
+	}
+	return q
 }
 
 // hit mirrors one entry of `qmd vsearch --format json`.

@@ -87,6 +87,22 @@ func TestAnalyzeStatusError(t *testing.T) {
 	}
 }
 
+func TestNeighbors(t *testing.T) {
+	run := func(dir string, args ...string) ([]byte, error) {
+		return []byte(`[{"score":0.90,"file":"./graphrag.md"},{"score":0.30,"file":"./widget.md"},{"score":0.99,"file":"./neo4j.md"}]`), nil
+	}
+	ns, err := Neighbors("/b", "graph database", testConcepts, 0.5, &config.QMD{}, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ns) != 2 { // widget (0.30) filtered by minSim
+		t.Fatalf("got %d neighbors, want 2: %+v", len(ns), ns)
+	}
+	if ns[0].Rel != "neo4j.md" || ns[1].Rel != "graphrag.md" {
+		t.Errorf("neighbors not sorted desc: %+v", ns)
+	}
+}
+
 func TestParseStatusCounts(t *testing.T) {
 	i, e, ok := parseStatusCounts([]byte("Documents\n  Total:    7 files indexed\n  Vectors:  5 embedded\n"))
 	if !ok || i != 7 || e != 5 {
