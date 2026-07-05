@@ -1,11 +1,12 @@
 # okf-tools — design
 
-Status: **implemented.** `okftool` (`lint`/`index`/`fmt`/`new`/`graph`) is built
-to this spec — conformance `OKF001`–`OKF004`, policy `OKF101`–`OKF107`, and
-worklist `OKF201`/`OKF202`/`OKF206`, with autofix, `okf.toml` config, JSON+human
-output, golden-fixture tests, and flake `package`/`app`/`devShell`/`checks`.
-Still open: the optional qmd-backed rules `OKF203`/`OKF204` and Claude Code hook
-wiring (M5). This document and [RULES.md](RULES.md) remain the canonical spec.
+Status: **implemented.** `okftool` (`lint`/`index`/`fmt`/`new`/`graph`/`skill`)
+is built to this spec — conformance `OKF001`–`OKF004`, policy `OKF101`–`OKF107`,
+worklist `OKF201`/`OKF202`/`OKF206`, and the optional qmd-backed
+`OKF203`/`OKF204` — with autofix, `okf.toml` config, human/JSON/SARIF output, a
+per-package test suite, CI, and flake `package`/`app`/`devShell`/`checks`. Still
+open: Claude Code hook wiring (M5). This document and [RULES.md](RULES.md) remain
+the canonical spec.
 
 ## What this is
 
@@ -106,8 +107,8 @@ A stable envelope so consumers don't scrape human text:
 }
 ```
 
-SARIF output (for GitHub code scanning) is a later, additive option; JSON is the
-pragmatic default for agent/editor/CI use.
+`--format sarif` emits SARIF 2.1.0 so CI can upload findings to GitHub code
+scanning; JSON is the pragmatic default for agent/editor/CI use.
 
 ## Integration with the workflow
 
@@ -129,8 +130,9 @@ pragmatic default for agent/editor/CI use.
   The rules stop living in prose that drifts. `okftool` ships that guidance as a
   bundled skill — `okftool skill` prints a `SKILL.md` a project can install, so
   the usage instructions version with the binary instead of being copied by hand.
-- **CI.** `okf-tools` itself is a jj/git repo whose tests run in CI, and OKF
-  bundles kept in git can gate PRs on `okftool lint`.
+- **CI.** `okf-tools` runs `nix flake check` (build + full test suite) and a
+  gofmt/vet/test gate in GitHub Actions; OKF bundles kept in git can gate PRs on
+  `okftool lint` (uploading `--format sarif` to code scanning if they like).
 
 ## Implementation
 
@@ -155,9 +157,9 @@ pragmatic default for agent/editor/CI use.
    `--select/--ignore`, `--fix` for the safe ones.
 3. **M3 — index.** ✅ `okftool index --check/--write` (`OKF106`).
 4. **M4 — fmt + new.** ✅ Authoring ergonomics.
-5. **M5 — remaining worklist + hooks.** `okftool graph` and worklist
-   `OKF201`/`OKF202`/`OKF206` are done. Still open: the optional qmd-backed rules
-   `OKF203`/`OKF204` and the Claude Code hook wiring.
+5. **M5 — worklist + graph + hooks.** ✅ `okftool graph`, worklist
+   `OKF201`/`OKF202`/`OKF206`, and the optional qmd-backed `OKF203`/`OKF204`.
+   Still open: the Claude Code hook wiring (a consuming-bundle artifact).
 
 ## Decisions
 
@@ -168,10 +170,11 @@ Settled during design/implementation — recorded rather than left implicit:
    `YYYY-MM-DD`. `okftool fmt` normalizes existing pages to the configured form.
 2. **Filename-case default severity.** `info` out of the box; a bundle raises it
    to `warning` via config.
-3. **qmd coupling.** `OKF203`/`OKF204` are split into a separate, **optional**
-   qmd-backed category, **off** unless a bundle sets `qmd.enabled = true`. This
-   keeps `okftool lint` dependency-free by default; only bundles that want
-   semantic near-duplicate detection pull in `qmd`.
+3. **qmd coupling.** `OKF203`/`OKF204` are a separate, **optional** qmd-backed
+   category, **off** unless a bundle sets `qmd.enabled = true`. `lint` runs the
+   qmd analysis (via the `internal/qmd` package, which shells out to `qmd`) only
+   when enabled and hands the result to the pure rules through `Context.QMD`; the
+   core stays dependency-free. Needs `qmd` on `PATH` and a fresh index.
 4. **Scope of `okftool` vs. `qmd`.** Sibling binaries from `okf-tools` with
    different concerns — authoring/conformance vs. search — not subcommands of one
    another.

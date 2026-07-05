@@ -37,15 +37,15 @@ file at `share/okftool/SKILL.md` for consumers that prefer to reference it from
 the store.
 
 Every command takes `--bundle <dir>` (else auto-discover), `--config <path>`
-(else `okf.toml` at the bundle root), and `--format human|json`. Run it via the
-flake — `nix run github:sigma/okf-tools#okftool -- lint`, or on `PATH` inside the
-dev shell.
+(else `okf.toml` at the bundle root), and `--format human|json` (`lint` also
+`sarif`). Run it via the flake — `nix run github:sigma/okf-tools#okftool -- lint`,
+or on `PATH` inside the dev shell.
 
 Implemented: conformance rules `OKF001`–`OKF004`, policy `OKF101`–`OKF107`, and
 worklist `OKF201`/`OKF202`/`OKF206`, with autofix for the safe ones. Optional and
-opt-in: the qmd-backed rules `OKF203`/`OKF204` (semantic near-duplicate
-detection), off unless a bundle sets `qmd.enabled`. Not yet built: the qmd rules
-themselves and the Claude Code hook wiring.
+opt-in: the qmd-backed rules `OKF203`/`OKF204` (semantic near-duplicate detection
+and index staleness), off unless a bundle sets `qmd.enabled` and needs `qmd` on
+`PATH`. Not yet built: the Claude Code hook wiring (a consuming-bundle artifact).
 
 Reference:
 

@@ -65,14 +65,16 @@ the genuinely semantic work it can't do.
 - `OKF1xx` **policy** — configurable per bundle via `okf.toml`; usually `warning`.
 - `OKF2xx` **worklist** — advisory `info`; never fails a build. `OKF202`
   (broken links) is hard-capped at `info` on purpose.
-- `OKF203`/`OKF204` **qmd-backed** — optional semantic checks, off unless the
-  bundle sets `qmd.enabled`.
+- `OKF203`/`OKF204` **qmd-backed** — optional semantic checks (near-duplicate
+  pages, stale index), off unless the bundle sets `qmd.enabled` and `qmd` is on
+  `PATH`.
 
 ## Commands
 
 ```
 okftool lint [paths...]   # run the rules; --fix, --fail-on error|warning,
-                          # --select/--ignore OKFxxx, --exit-zero, --format json
+                          # --select/--ignore OKFxxx, --exit-zero,
+                          # --format human|json|sarif
 okftool index --check     # verify index.md is in sync   (--write regenerates)
 okftool fmt --check       # check formatting              (--write applies)
 okftool new <path> --type <T> [--title ...]   # scaffold a conformant page
