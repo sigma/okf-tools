@@ -17,6 +17,7 @@ type Config struct {
 	Citations   Citations         `toml:"citations"`
 	Index       Index             `toml:"index"`
 	Worklist    Worklist          `toml:"worklist"`
+	QMD         QMD               `toml:"qmd"`
 	Rules       map[string]string `toml:"rules"`
 
 	// Path is the file this config was loaded from; empty when using defaults.
@@ -61,10 +62,17 @@ type Index struct {
 }
 
 type Worklist struct {
-	Orphans                string  `toml:"orphans"`                  // OKF201
-	NearDuplicates         string  `toml:"near_duplicates"`          // OKF203 (deferred)
+	Orphans string `toml:"orphans"` // OKF201 (dependency-free)
+}
+
+// QMD configures the optional, qmd-backed worklist rules (OKF203/OKF204). They
+// require a fresh local qmd index and are OFF unless Enabled is set, so the core
+// of okf lint stays dependency-free. (Rules not yet implemented.)
+type QMD struct {
+	Enabled                bool    `toml:"enabled"`                  // master opt-in for OKF203/OKF204
+	NearDuplicates         string  `toml:"near_duplicates"`          // OKF203 severity
 	NearDuplicateThreshold float64 `toml:"near_duplicate_threshold"` // OKF203
-	QMDStaleness           string  `toml:"qmd_staleness"`            // OKF204 (deferred)
+	Staleness              string  `toml:"staleness"`                // OKF204 severity
 }
 
 // Default returns the spec-aligned default configuration.
@@ -98,10 +106,13 @@ func Default() *Config {
 			DescriptionsFromFrontmatter: true,
 		},
 		Worklist: Worklist{
-			Orphans:                "info",
+			Orphans: "info",
+		},
+		QMD: QMD{
+			Enabled:                false,
 			NearDuplicates:         "info",
 			NearDuplicateThreshold: 0.85,
-			QMDStaleness:           "info",
+			Staleness:              "info",
 		},
 		Rules: map[string]string{},
 	}

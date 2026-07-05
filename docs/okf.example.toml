@@ -56,11 +56,18 @@ check_sync = true
 descriptions_from_frontmatter = true
 
 [worklist]
-# All worklist rules are advisory (info) and never fail a build.
+# Advisory (info) rules that never fail a build and need no external tools.
 orphans = "info"           # OKF201
-near_duplicates = "info"   # OKF203 (requires a fresh qmd index)
+
+[qmd]
+# Optional, qmd-backed rules (OKF203/OKF204). These are OFF unless you opt in
+# here: they require a fresh local qmd index (from the firefly toolbox), so the
+# core of `okf lint` stays dependency-free. Enable per project when you want
+# semantic near-duplicate detection.
+enabled = false
+near_duplicates = "info"          # OKF203 (semantic near-duplicate candidates)
 near_duplicate_threshold = 0.85
-qmd_staleness = "info"     # OKF204
+staleness = "info"                # OKF204 (qmd index out of date)
 
 # Per-rule overrides. Use to turn a rule off or re-level it (conformance rules
 # OKF001–OKF004 are exempt and ignored here).
