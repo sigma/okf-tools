@@ -1,7 +1,9 @@
 package rules
 
 import (
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -34,18 +36,39 @@ func checkOKF001(ctx *Context) []Finding {
 		if d.HasFrontmatter() {
 			continue
 		}
-		var msg string
+		line, msg := 1, ""
 		switch {
 		case !d.HasOpening:
 			msg = "missing YAML frontmatter block"
 		case !d.Terminated:
 			msg = "unterminated frontmatter block (missing closing '---')"
 		default:
-			msg = "invalid YAML frontmatter: " + d.ParseErr.Error()
+			var detail string
+			line, detail = frontmatterParseError(d.ParseErr)
+			msg = "invalid YAML frontmatter: " + detail
 		}
-		fs = append(fs, Finding{Path: d.Rel, Line: 1, Message: msg})
+		fs = append(fs, Finding{Path: d.Rel, Line: line, Message: msg})
 	}
 	return fs
+}
+
+var yamlLineRe = regexp.MustCompile(`line (\d+):\s*`)
+
+// frontmatterParseError maps a YAML error to the true file line — the frontmatter
+// block opens on line 1, so the YAML parser's (block-relative) line N is file
+// line N+1 — and returns a cleaned, single-line message with the now-redundant
+// "yaml:"/"line N:" noise stripped.
+func frontmatterParseError(err error) (line int, msg string) {
+	s := strings.Join(strings.Fields(err.Error()), " ")
+	line = 1
+	if m := yamlLineRe.FindStringSubmatch(s); m != nil {
+		if n, e := strconv.Atoi(m[1]); e == nil {
+			line = n + 1
+		}
+	}
+	msg = strings.TrimPrefix(s, "yaml: ")
+	msg = yamlLineRe.ReplaceAllString(msg, "")
+	return line, strings.TrimSpace(msg)
 }
 
 // OKF002: frontmatter contains a non-empty string `type`.
