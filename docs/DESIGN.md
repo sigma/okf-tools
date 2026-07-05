@@ -54,9 +54,11 @@ bundle root), `--format human|json`.
 | `okftool fmt [--check\|--write]` | Normalize frontmatter key order, timestamp format, citation numbering, link style. The autofix companion to `lint`. |
 | `okftool new <path> --type <T> [--title …]` | Scaffold a conformant concept page (frontmatter + `# Citations` stub). Prevents drift at creation. |
 | `okftool graph [--format json\|dot]` | Emit the concept link graph. Powers orphan/backlink analysis internally; can feed a visualizer. |
+| `okftool skill` | Print the bundled agent skill (a Claude Code `SKILL.md`) to stdout, e.g. `okftool skill > .claude/skills/okftool/SKILL.md`. |
 
 `lint` is the anchor. `index` and `fmt` are the same parser pointed at repair.
 `new` and `graph` are cheap wins that fall out of having the model in memory.
+`skill` ships the tool's own usage guidance so an agent can install it.
 
 ## Bundle model & link resolution
 
@@ -124,7 +126,9 @@ pragmatic default for agent/editor/CI use.
 - **Agent instructions shrink.** A consuming bundle's "how to lint" guidance
   collapses to: *run `okftool lint`; for `info` findings (near-duplicates,
   orphans, staleness) and for contradictions/outdated claims, apply judgment.*
-  The rules stop living in prose that drifts.
+  The rules stop living in prose that drifts. `okftool` ships that guidance as a
+  bundled skill — `okftool skill` prints a `SKILL.md` a project can install, so
+  the usage instructions version with the binary instead of being copied by hand.
 - **CI.** `okf-tools` itself is a jj/git repo whose tests run in CI, and OKF
   bundles kept in git can gate PRs on `okftool lint`.
 

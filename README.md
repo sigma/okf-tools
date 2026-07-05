@@ -27,7 +27,12 @@ okftool index --check   # verify index.md is in sync   (--write regenerates it)
 okftool fmt   --check   # normalize frontmatter/timestamps/citations/link-style (--write applies)
 okftool new <path> --type <T> [--title …]   # scaffold a conformant concept page
 okftool graph --format json|dot             # emit the concept link graph
+okftool skill                               # print the bundled agent SKILL.md
 ```
+
+`okftool skill` emits a Claude Code skill teaching an agent how and when to use
+the tool — install it with `okftool skill > .claude/skills/okftool/SKILL.md`, so
+the guidance versions with the binary.
 
 Every command takes `--bundle <dir>` (else auto-discover), `--config <path>`
 (else `okf.toml` at the bundle root), and `--format human|json`. Run it via the
