@@ -140,13 +140,16 @@ func checkOKF104(ctx *Context) []Finding {
 	return fs
 }
 
-// OKF105: sources under the citations heading are numbered `[n] [label](target)`.
+// OKF105: sources under the citations heading are numbered `[n] [label](target)`
+// (or `[^n]: [label](target)` when citations.style = "footnote").
 func checkOKF105(ctx *Context) []Finding {
 	var fs []Finding
+	entryRe := citationEntryRe(ctx.Config)
+	example := citationEntryExample(ctx.Config)
 	for _, d := range ctx.Bundle.Concepts {
 		start, lines, found := citationSectionLines(d, ctx.Config)
 		if !found {
-			if ctx.Config.Citations.RequireWhenCited && hasCitationMarkers(d) {
+			if ctx.Config.Citations.RequireWhenCited && hasCitationMarkers(d, ctx.Config) {
 				fs = append(fs, Finding{Path: d.Rel, Line: 1,
 					Message: "citation markers present but no '" + ctx.Config.Citations.Heading + "' section"})
 			}
@@ -158,10 +161,10 @@ func checkOKF105(ctx *Context) []Finding {
 			if line == "" {
 				continue
 			}
-			m := citationLineRe.FindStringSubmatch(line)
+			m := entryRe.FindStringSubmatch(line)
 			if m == nil {
 				fs = append(fs, Finding{Path: d.Rel, Line: start + i,
-					Message: "malformed citation; expected '[n] [label](target)'"})
+					Message: "malformed citation; expected '" + example + "'"})
 				continue
 			}
 			n, _ := strconv.Atoi(m[1])

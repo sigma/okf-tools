@@ -43,8 +43,12 @@ require_timestamp = false
 timestamp_format = "date"
 
 [citations]
-# OKF105: heading under which numbered sources must appear.
+# OKF105: heading under which sources must appear.
 heading = "# Citations"
+# OKF105 style: "numbered" (`[n] [label](url)`, the SPEC §8 default) or
+# "footnote" (`[^n]: [label](url)` with `[^n]` inline markers — renders as real
+# footnotes in Obsidian/GitHub).
+style = "numbered"
 require_when_cited = true
 # OKF206 (optional): verify on-disk citation targets (e.g. ../import/*.md) exist.
 check_targets = true

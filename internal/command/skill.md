@@ -51,8 +51,9 @@ the genuinely semantic work it can't do.
 ## What the tool owns vs. what you own
 
 - **The tool (deterministic):** is the frontmatter parseable, is `type` present,
-  is `index.md` in sync, are citations numbered `[n] [label](target)`, are links
-  in the configured style, are filenames kebab-case, are there orphans or broken
+  is `index.md` in sync, are citations well-formed (`[n] [label](target)`, or
+  `[^n]:` footnotes when `citations.style = "footnote"`), are links in the
+  configured style, are filenames kebab-case, are there orphans or broken
   links. Don't argue with it about these — fix them.
 - **You (semantic):** contradictions between pages, claims made stale by a newer
   source, whether two near-duplicate pages should merge, whether a mentioned

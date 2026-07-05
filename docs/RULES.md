@@ -129,9 +129,12 @@ value to the canonical format. *Config: `frontmatter.timestamp_format`,
 
 ### `OKF105` citations-format
 When the body makes sourced claims, sources appear under a `# Citations`
-heading, numbered `[n] [label](target)`. SPEC §8 SHOULD. Autofix renumbers a
-malformed sequence but will not invent missing citations. *Config:
-`citations.heading`, `citations.require_when_cited`.*
+heading, numbered `[n] [label](target)`. SPEC §8 SHOULD. Setting
+`citations.style = "footnote"` switches the expected form to the markdown
+footnote `[^n]: [label](target)` (with `[^n]` inline markers), which renders as
+real footnotes in Obsidian/GitHub; the default `numbered` matches SPEC §8.
+Autofix renumbers a malformed sequence but will not invent missing citations.
+*Config: `citations.heading`, `citations.style`, `citations.require_when_cited`.*
 
 ### `OKF106` index-sync
 Each `index.md` enumerates every concept in its scope, contains no entries for

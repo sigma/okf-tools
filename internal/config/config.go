@@ -55,6 +55,7 @@ type Frontmatter struct {
 
 type Citations struct {
 	Heading          string `toml:"heading"`            // OKF105 heading
+	Style            string `toml:"style"`              // OKF105 style: numbered|footnote
 	RequireWhenCited bool   `toml:"require_when_cited"` // OKF105
 	CheckTargets     bool   `toml:"check_targets"`      // OKF206 enable
 }
@@ -102,6 +103,7 @@ func Default() *Config {
 		},
 		Citations: Citations{
 			Heading:          "# Citations",
+			Style:            "numbered",
 			RequireWhenCited: false,
 			CheckTargets:     false,
 		},
@@ -157,6 +159,7 @@ func (c *Config) Validate() error {
 		{"filenames.case", c.Filenames.Case, []string{"kebab", "any"}},
 		{"filenames.severity", c.Filenames.Severity, severities},
 		{"frontmatter.timestamp_format", c.Frontmatter.TimestampFormat, []string{"rfc3339", "date"}},
+		{"citations.style", c.Citations.Style, []string{"numbered", "footnote"}},
 		{"worklist.orphans", c.Worklist.Orphans, severities},
 		{"qmd.near_duplicates", c.QMD.NearDuplicates, severities},
 		{"qmd.staleness", c.QMD.Staleness, severities},

@@ -69,14 +69,39 @@ func citationSectionLines(d *bundle.Doc, cfg *config.Config) (startLine int, lin
 	return startLine, lines, true
 }
 
-// citationLineRe matches a well-formed citation entry `[n] [label](target)`.
-var citationLineRe = regexp.MustCompile(`^\[(\d+)\]\s+\[[^\]]*\]\([^)]*\)`)
+// Citation-entry regexes. The numbered form is `[n] [label](target)`; the
+// footnote form (citations.style = "footnote") is `[^n]: [label](target)`.
+var (
+	citationLineRe           = regexp.MustCompile(`^\[(\d+)\]\s+\[[^\]]*\]\([^)]*\)`)
+	citationLineFootnoteRe   = regexp.MustCompile(`^\[\^(\d+)\]:\s+\[[^\]]*\]\([^)]*\)`)
+	citationMarkerRe         = regexp.MustCompile(`(?m)^\s*\[\d+\]\s`)
+	citationMarkerFootnoteRe = regexp.MustCompile(`\[\^\d+\]`)
+)
 
-var citationMarkerRe = regexp.MustCompile(`(?m)^\s*\[\d+\]\s`)
+// citationEntryRe returns the citation-entry regex for the configured style;
+// group 1 is the citation number in both.
+func citationEntryRe(cfg *config.Config) *regexp.Regexp {
+	if cfg.Citations.Style == "footnote" {
+		return citationLineFootnoteRe
+	}
+	return citationLineRe
+}
 
-// hasCitationMarkers reports whether the body has bracketed reference markers
-// like `[1] ...` at the start of a line (a mechanical proxy for "cites sources").
-func hasCitationMarkers(d *bundle.Doc) bool {
+// citationEntryExample renders the expected entry shape for diagnostics.
+func citationEntryExample(cfg *config.Config) string {
+	if cfg.Citations.Style == "footnote" {
+		return "[^n]: [label](target)"
+	}
+	return "[n] [label](target)"
+}
+
+// hasCitationMarkers reports whether the body carries reference markers — the
+// numbered `[1] ...` line form, or `[^1]` footnote markers — a mechanical proxy
+// for "cites sources".
+func hasCitationMarkers(d *bundle.Doc, cfg *config.Config) bool {
+	if cfg.Citations.Style == "footnote" {
+		return citationMarkerFootnoteRe.MatchString(d.Body)
+	}
 	return citationMarkerRe.MatchString(d.Body)
 }
 

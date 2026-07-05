@@ -1,0 +1,4 @@
+[citations]
+style = "footnote"
+require_when_cited = true
+check_targets = true

@@ -142,8 +142,10 @@ func rewriteWikilinks(b *bundle.Bundle, d *bundle.Doc, body []string) []string {
 }
 
 var (
-	citEntryRe = regexp.MustCompile(`^\[(\d+)\]\s+\[[^\]]*\]\([^)]*\)`)
-	citNumRe   = regexp.MustCompile(`^(\s*)\[\d+\]`)
+	citEntryRe         = regexp.MustCompile(`^\[(\d+)\]\s+\[[^\]]*\]\([^)]*\)`)
+	citNumRe           = regexp.MustCompile(`^(\s*)\[\d+\]`)
+	citEntryFootnoteRe = regexp.MustCompile(`^\[\^(\d+)\]:\s+\[[^\]]*\]\([^)]*\)`)
+	citNumFootnoteRe   = regexp.MustCompile(`^(\s*)\[\^\d+\]:`)
 )
 
 func renumberCitations(b *bundle.Bundle, d *bundle.Doc, body []string, bodyStart int) {
@@ -151,15 +153,21 @@ func renumberCitations(b *bundle.Bundle, d *bundle.Doc, body []string, bodyStart
 	if start == 0 {
 		return
 	}
+	entryRe, numRe := citEntryRe, citNumRe
+	repl := func(n int) string { return "${1}[" + strconv.Itoa(n) + "]" }
+	if b.Config.Citations.Style == "footnote" {
+		entryRe, numRe = citEntryFootnoteRe, citNumFootnoteRe
+		repl = func(n int) string { return "${1}[^" + strconv.Itoa(n) + "]:" }
+	}
 	n := 0
 	for bi := 0; bi < len(body); bi++ {
 		fileLine := bodyStart + bi
 		if fileLine < start || fileLine >= end {
 			continue
 		}
-		if citEntryRe.MatchString(strings.TrimSpace(body[bi])) {
+		if entryRe.MatchString(strings.TrimSpace(body[bi])) {
 			n++
-			body[bi] = citNumRe.ReplaceAllString(body[bi], "${1}["+strconv.Itoa(n)+"]")
+			body[bi] = numRe.ReplaceAllString(body[bi], repl(n))
 		}
 	}
 }

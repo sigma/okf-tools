@@ -76,6 +76,19 @@ func TestRuleTriggers(t *testing.T) {
 	}
 }
 
+// TestFootnoteCitations exercises citations.style = "footnote": OKF105 accepts
+// well-formed `[^n]:` entries (good.md is clean) and flags a misnumbered one,
+// and OKF206 still resolves the inline link inside a footnote definition.
+func TestFootnoteCitations(t *testing.T) {
+	counts := ruleCounts(runFixture(t, fixtureDir("footnote")))
+	if counts["OKF105"] != 1 {
+		t.Errorf("footnote: want 1 OKF105 (the misnumbered entry), got %d", counts["OKF105"])
+	}
+	if counts["OKF206"] != 1 {
+		t.Errorf("footnote: want 1 OKF206 (broken citation target), got %d", counts["OKF206"])
+	}
+}
+
 // TestAutofixResolves copies a fixture to a temp dir, applies its autofixable
 // rules, reloads, and asserts the offending rule no longer fires.
 func TestAutofixResolves(t *testing.T) {
@@ -85,6 +98,7 @@ func TestAutofixResolves(t *testing.T) {
 		{"okf104", "OKF104"},
 		{"okf105", "OKF105"},
 		{"okf106", "OKF106"},
+		{"footnote", "OKF105"},
 	}
 	for _, c := range cases {
 		t.Run(c.fixture, func(t *testing.T) {
