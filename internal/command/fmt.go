@@ -20,6 +20,9 @@ func Fmt(args []string) (int, error) {
 	if !ok {
 		return code, nil
 	}
+	if err := validateFormat(g.format, "human", "json"); err != nil {
+		return 2, err
+	}
 
 	b, err := loadBundle(&g, paths)
 	if err != nil {

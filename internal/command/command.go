@@ -41,6 +41,17 @@ func parseFlags(fs *pflag.FlagSet, args []string) (positionals []string, code in
 	}
 }
 
+// validateFormat rejects an unknown --format value instead of silently falling
+// back to human output.
+func validateFormat(format string, allowed ...string) error {
+	for _, a := range allowed {
+		if format == a {
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown --format %q (want %s)", format, strings.Join(allowed, "|"))
+}
+
 func registerGlobals(fs *pflag.FlagSet, g *globals) {
 	fs.StringVar(&g.bundle, "bundle", "", "bundle root directory (default: auto-discover)")
 	fs.StringVar(&g.config, "config", "", "config file (default: okf.toml at bundle root)")
@@ -92,6 +103,8 @@ type jsonEnvelope struct {
 
 func renderFindings(w io.Writer, format string, b *bundle.Bundle, fs []rules.Finding) error {
 	switch format {
+	case "sarif":
+		return renderSARIF(w, b, fs)
 	case "json":
 		env := jsonEnvelope{
 			Bundle:     filepath.Base(b.Root),

@@ -1,12 +1,22 @@
 package command
 
 import (
-	"github.com/spf13/pflag"
 	"os"
 
 	"github.com/sigma/okf-tools/internal/bundle"
+	"github.com/sigma/okf-tools/internal/qmd"
 	"github.com/sigma/okf-tools/internal/rules"
+	"github.com/spf13/pflag"
 )
+
+// qmdConcepts adapts the bundle's concepts to the qmd package's input.
+func qmdConcepts(b *bundle.Bundle) []qmd.Concept {
+	out := make([]qmd.Concept, 0, len(b.Concepts))
+	for _, d := range b.Concepts {
+		out = append(out, qmd.Concept{Rel: d.Rel, Abs: d.Path, Text: d.Body})
+	}
+	return out
+}
 
 // Lint runs the rule catalog over the bundle. It is the anchor command.
 func Lint(args []string) (int, error) {
@@ -23,6 +33,9 @@ func Lint(args []string) (int, error) {
 		return code, nil
 	}
 	selected, ignored := parseRuleSet(*sel), parseRuleSet(*ign)
+	if err := validateFormat(g.format, "human", "json", "sarif"); err != nil {
+		return 2, err
+	}
 
 	b, err := loadBundle(&g, paths)
 	if err != nil {
@@ -41,7 +54,11 @@ func Lint(args []string) (int, error) {
 		}
 	}
 
-	findings := rules.Run(&rules.Context{Bundle: b, Config: b.Config}, selected, ignored)
+	ctx := &rules.Context{Bundle: b, Config: b.Config}
+	if b.Config.QMD.Enabled {
+		ctx.QMD = qmd.Analyze(b.Root, qmdConcepts(b), &b.Config.QMD, nil)
+	}
+	findings := rules.Run(ctx, selected, ignored)
 	findings = filterByPaths(findings, b, paths)
 	if err := renderFindings(os.Stdout, g.format, b, findings); err != nil {
 		return 1, err
