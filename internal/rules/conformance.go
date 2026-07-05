@@ -1,6 +1,7 @@
 package rules
 
 import (
+	"sort"
 	"strings"
 	"time"
 )
@@ -66,25 +67,36 @@ func checkOKF002(ctx *Context) []Finding {
 	return fs
 }
 
-// OKF003: index.md carries no frontmatter, except the bundle-root index.md which
-// may carry only okf_version. (Body list structure is owned by OKF106.)
+// OKF003: index.md carries no frontmatter (except the bundle-root index.md,
+// which may carry only okf_version), and its body is heading-grouped bullet
+// lists of links — so every list item must contain a link.
 func checkOKF003(ctx *Context) []Finding {
 	var fs []Finding
 	for _, d := range ctx.Bundle.Indexes {
-		if !d.HasOpening {
-			continue
+		// Frontmatter constraint.
+		if d.HasOpening {
+			switch {
+			case !d.IsRootIndex():
+				fs = append(fs, Finding{Path: d.Rel, Line: 1, Message: "index.md must not carry frontmatter"})
+			case d.ParseErr != nil:
+				fs = append(fs, Finding{Path: d.Rel, Line: 1, Message: "invalid YAML frontmatter: " + d.ParseErr.Error()})
+			default:
+				var extra []string
+				for k := range d.Frontmatter {
+					if k != "okf_version" {
+						extra = append(extra, k)
+					}
+				}
+				sort.Strings(extra)
+				for _, k := range extra {
+					fs = append(fs, Finding{Path: d.Rel, Line: 1, Message: "root index.md frontmatter may only contain 'okf_version'; found '" + k + "'"})
+				}
+			}
 		}
-		if !d.IsRootIndex() {
-			fs = append(fs, Finding{Path: d.Rel, Line: 1, Message: "index.md must not carry frontmatter"})
-			continue
-		}
-		if d.ParseErr != nil {
-			fs = append(fs, Finding{Path: d.Rel, Line: 1, Message: "invalid YAML frontmatter: " + d.ParseErr.Error()})
-			continue
-		}
-		for k := range d.Frontmatter {
-			if k != "okf_version" {
-				fs = append(fs, Finding{Path: d.Rel, Line: 1, Message: "root index.md frontmatter may only contain 'okf_version'; found '" + k + "'"})
+		// Body structure: every list item is a link.
+		for _, li := range d.ListItems {
+			if !li.HasLink {
+				fs = append(fs, Finding{Path: d.Rel, Line: li.Line, Message: "index list item is not a link"})
 			}
 		}
 	}

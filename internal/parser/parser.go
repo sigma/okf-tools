@@ -46,8 +46,9 @@ type Document struct {
 	Body          string // everything after the closing delimiter (verbatim)
 	BodyStartLine int    // 1-based line number of the first body line
 
-	Links    []Link
-	Headings []Heading
+	Links     []Link
+	Headings  []Heading
+	ListItems []ListItem
 }
 
 // Link is a single markdown or wiki link found in the body.
@@ -65,6 +66,14 @@ type Heading struct {
 	Level int
 	Text  string // heading text, trimmed, without the leading #s
 	Line  int    // 1-based line number in the file
+}
+
+// ListItem is a single markdown list item found in the body. HasLink reports
+// whether the item contains a navigational link (used by OKF003 to check that
+// index entries are links).
+type ListItem struct {
+	Line    int
+	HasLink bool
 }
 
 // HasFrontmatter reports whether the document carries a well-formed,
@@ -159,6 +168,11 @@ func (d *Document) parseBody() {
 				Text:  strings.TrimSpace(collectText(v, src)),
 				Line:  lm.lineOf(v),
 			})
+		case *ast.ListItem:
+			d.ListItems = append(d.ListItems, ListItem{
+				Line:    lm.lineOf(v),
+				HasLink: hasLinkDescendant(v),
+			})
 		case *ast.Link:
 			d.Links = append(d.Links, Link{
 				Text:   collectText(v, src),
@@ -219,6 +233,24 @@ func (d *Document) MarkCitations(pred func(Heading) bool) {
 			}
 		}
 	}
+}
+
+// hasLinkDescendant reports whether n has a navigational link (markdown link,
+// autolink, or wikilink) anywhere in its subtree.
+func hasLinkDescendant(n ast.Node) bool {
+	found := false
+	_ = ast.Walk(n, func(c ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
+		}
+		switch c.(type) {
+		case *ast.Link, *ast.AutoLink, *wikilink.Node:
+			found = true
+			return ast.WalkStop, nil
+		}
+		return ast.WalkContinue, nil
+	})
+	return found
 }
 
 // collectText concatenates the source text of a node's inline descendants,
