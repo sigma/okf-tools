@@ -31,6 +31,8 @@ func main() {
 		run = command.New
 	case "graph":
 		run = command.Graph
+	case "gaps":
+		run = command.Gaps
 	case "skill":
 		run = command.Skill
 	case "version", "--version", "-v":
@@ -67,6 +69,7 @@ Commands:
   fmt     Normalize frontmatter, timestamps, citations and link style.
   new     Scaffold a conformant concept page.
   graph   Emit the concept link graph (--format json|dot).
+  gaps    Concepts semantically near <concept> but not linked to it (needs qmd).
   skill   Print the bundled agent skill (SKILL.md) to stdout.
   version Print the version.
 
