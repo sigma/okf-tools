@@ -2,7 +2,6 @@ package bundle
 
 import (
 	"path"
-	"regexp"
 	"sort"
 	"strings"
 )
@@ -75,9 +74,9 @@ func (b *Bundle) ownerWith(idxByDir map[string]*Doc, c *Doc) *Doc {
 	}
 }
 
-var trailingDescRe = regexp.MustCompile(`\]\([^)]*\)\s*[-–—:]?\s*(.*)$`)
-
-// IndexEntries parses the concept links currently listed in idx.
+// IndexEntries parses the concept links currently listed in idx, capturing the
+// trailing description on each entry's line so OKF106 can compare it against the
+// target's frontmatter.
 func (b *Bundle) IndexEntries(idx *Doc) []IndexEntry {
 	lines := strings.Split(idx.Content, "\n")
 	var out []IndexEntry
@@ -90,13 +89,29 @@ func (b *Bundle) IndexEntries(idx *Doc) []IndexEntry {
 			e.Rel = rl.TargetDoc.Rel
 		}
 		if rl.Line-1 < len(lines) {
-			if m := trailingDescRe.FindStringSubmatch(lines[rl.Line-1]); m != nil {
-				e.Desc = strings.TrimSpace(m[1])
-			}
+			e.Desc = descriptionAfterLink(lines[rl.Line-1])
 		}
 		out = append(out, e)
 	}
 	return out
+}
+
+// descriptionAfterLink returns the free-text description that follows a markdown
+// link on an index entry line. For `* [Title](foo.md) - A widget.` it returns
+// "A widget."; a leading separator (" - ", " — ", ": ") is stripped. Empty when
+// there is no trailing text or no link on the line.
+func descriptionAfterLink(line string) string {
+	open := strings.Index(line, "](")
+	if open < 0 {
+		return ""
+	}
+	end := strings.IndexByte(line[open:], ')')
+	if end < 0 {
+		return ""
+	}
+	rest := strings.TrimSpace(line[open+end+1:])
+	rest = strings.TrimLeft(rest, "-–—:") // drop the leading separator, if any
+	return strings.TrimSpace(rest)
 }
 
 // entryURL renders the link target for concept c from index idx, honouring the
