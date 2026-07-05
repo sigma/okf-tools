@@ -1,0 +1,68 @@
+# okf.toml — per-bundle configuration for `okf`.
+#
+# Place at the bundle root (for the wiki, that's `wiki/`). Conformance rules
+# (OKF0xx) are always on at severity `error` and are NOT configurable here; only
+# policy (OKF1xx) and worklist (OKF2xx) rules are. Defaults shown are the
+# *spec-aligned* defaults; the values in this file are what the OKF wiki bundle
+# would set, derived from its CLAUDE.md conventions.
+#
+# See docs/RULES.md for the full rule catalog.
+
+[bundle]
+# Bundle root, relative to this file. "." means "this directory is the root".
+root = "."
+# Reserved filenames (structural, not concepts). SPEC §3.1 defines these two.
+reserved = ["index.md", "log.md"]
+
+[links]
+# OKF102 link-style: "relative" | "absolute" | "any".
+#   spec default: "any" (SPEC §5.1 recommends absolute, but does not forbid).
+#   this wiki:    "relative" — Obsidian resolves "/" against the vault root, not
+#                 the inner bundle root, so bundle-absolute links break in the
+#                 editor. Relative links resolve correctly in both.
+style = "relative"
+# OKF101: Obsidian [[wiki-links]] are not standard markdown; disallow them.
+allow_wikilinks = false
+# OKF202 severity. Hard-capped at "info" — broken cross-links may be
+# not-yet-written knowledge (SPEC §5.3). Cannot be promoted to error.
+check_broken = "info"
+
+[filenames]
+# OKF103: concept filename case. "kebab" = lowercase, hyphen-separated.
+case = "kebab"
+# Severity override for this bundle (spec default is "info").
+severity = "warning"
+
+[frontmatter]
+# OKF107: require a non-empty one-line description on every concept.
+require_description = true
+# OKF104 presence: require a timestamp at all (spec default: false).
+require_timestamp = false
+# OKF104 format: "rfc3339" (full ISO 8601 datetime) | "date" (YYYY-MM-DD).
+# OPEN QUESTION (see DESIGN.md): this bundle's pages currently use date-only.
+timestamp_format = "date"
+
+[citations]
+# OKF105: heading under which numbered sources must appear.
+heading = "# Citations"
+require_when_cited = true
+# OKF206 (optional): verify on-disk citation targets (e.g. ../import/*.md) exist.
+check_targets = true
+
+[index]
+# OKF106: index.md must list every concept in scope, with no dead entries.
+check_sync = true
+# Entry descriptions must equal the target's frontmatter `description`.
+descriptions_from_frontmatter = true
+
+[worklist]
+# All worklist rules are advisory (info) and never fail a build.
+orphans = "info"           # OKF201
+near_duplicates = "info"   # OKF203 (requires a fresh qmd index)
+near_duplicate_threshold = 0.85
+qmd_staleness = "info"     # OKF204
+
+# Per-rule overrides. Use to turn a rule off or re-level it (conformance rules
+# OKF001–OKF004 are exempt and ignored here).
+[rules]
+# OKF103 = "off"
