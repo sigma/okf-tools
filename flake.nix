@@ -81,6 +81,8 @@
             name = "okf-tools";
             packages = [
               toolbox.packages.${system}.llm-toolchain
+              toolbox.packages.${system}.yq
+              toolbox.packages.${system}.jq
               (okftoolFor system)
             ];
           };
