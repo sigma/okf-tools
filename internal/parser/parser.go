@@ -50,6 +50,10 @@ type Document struct {
 	Headings  []Heading
 	ListItems []ListItem
 	Terms     []Term
+	// MalformedTerms are top-level paragraphs that lead with a bold span but are
+	// not well-formed terms (no following colon) — a botched `**Term**: …` entry.
+	// List items are excluded here; a caller checks those against Terms by line.
+	MalformedTerms []Term
 }
 
 // Link is a single markdown or wiki link found in the body.
@@ -183,14 +187,20 @@ func (d *Document) parseBody() {
 				Line:    lm.lineOf(v),
 				HasLink: hasLinkDescendant(v),
 			})
-		case *ast.Paragraph:
-			if term, ok := leadTerm(v, src); ok {
-				d.Terms = append(d.Terms, Term{Text: term, Line: lm.lineOf(v)})
-			}
-		case *ast.TextBlock:
-			// TextBlock is the inline container of a tight list item.
-			if term, ok := leadTerm(v, src); ok {
-				d.Terms = append(d.Terms, Term{Text: term, Line: lm.lineOf(v)})
+		case *ast.Paragraph, *ast.TextBlock:
+			// A Paragraph (top-level or loose-list) or TextBlock (tight-list
+			// inline container) may lead a CONTEXT-FORMAT term entry.
+			term, boldLead, ok := leadTerm(n, src)
+			switch {
+			case ok:
+				d.Terms = append(d.Terms, Term{Text: term, Line: lm.lineOf(n)})
+			case boldLead:
+				// A bold lead with no colon is a malformed term. List items are
+				// left to the caller's Terms-by-line check; only flag standalone
+				// paragraphs here, so nothing is reported twice.
+				if _, inListItem := n.Parent().(*ast.ListItem); !inListItem {
+					d.MalformedTerms = append(d.MalformedTerms, Term{Text: term, Line: lm.lineOf(n)})
+				}
 			}
 		case *ast.Link:
 			d.Links = append(d.Links, Link{
@@ -254,20 +264,20 @@ func (d *Document) MarkCitations(pred func(Heading) bool) {
 	}
 }
 
-// leadTerm reports whether block n is a CONTEXT-FORMAT term entry: its first
-// inline child is a bold span (`**…**`, i.e. an Emphasis of level 2) whose text
-// is immediately followed by a colon. It returns the bold term text. A bold span
-// mid-sentence, an italic `_Avoid_` lead (Emphasis level 1), or a missing colon
-// all fail — so only well-formed `**Term**: …` entries are recognised.
-func leadTerm(n ast.Node, src []byte) (string, bool) {
-	lead := n.FirstChild()
-	em, ok := lead.(*ast.Emphasis)
+// leadTerm inspects block n for a CONTEXT-FORMAT term entry. boldLead reports
+// whether n's first inline child is a non-empty bold span (`**…**`, an Emphasis
+// of level 2); wellFormed additionally requires that span to be immediately
+// followed by a colon. term is the bold text (set whenever boldLead). A bold span
+// mid-sentence or an italic `_Avoid_` lead (Emphasis level 1) is not a bold lead
+// at all; a bold lead without a colon is a malformed term (boldLead, !wellFormed).
+func leadTerm(n ast.Node, src []byte) (term string, boldLead, wellFormed bool) {
+	em, ok := n.FirstChild().(*ast.Emphasis)
 	if !ok || em.Level != 2 {
-		return "", false
+		return "", false, false
 	}
-	term := strings.TrimSpace(collectText(em, src))
+	term = strings.TrimSpace(collectText(em, src))
 	if term == "" {
-		return "", false
+		return "", false, false
 	}
 	// The remainder of the inline run must lead with the colon.
 	var rest strings.Builder
@@ -281,10 +291,7 @@ func leadTerm(n ast.Node, src []byte) (string, bool) {
 			rest.WriteString(collectText(c, src))
 		}
 	}
-	if !strings.HasPrefix(rest.String(), ":") {
-		return "", false
-	}
-	return term, true
+	return term, true, strings.HasPrefix(rest.String(), ":")
 }
 
 // hasLinkDescendant reports whether n has a navigational link (markdown link,

@@ -114,3 +114,23 @@ func TestTermExtraction(t *testing.T) {
 		t.Errorf("Terms[1] = %+v, want {Foreign-rooted leaf, 8}", d.Terms[1])
 	}
 }
+
+func TestMalformedTermExtraction(t *testing.T) {
+	src := "---\ntype: T\n---\n" + // lines 1-3
+		"**Good term**: has a colon.\n" + // line 4, well-formed → Terms
+		"\n" + // line 5
+		"**Bold lead** but no colon here.\n" + // line 6, malformed paragraph
+		"\n" + // line 7
+		"- **Bad bullet** with no colon\n" + // line 8, malformed list item (NOT a MalformedTerm)
+		"\n" + // line 9
+		"This is **bold** mid-sentence.\n" // line 10, not a bold lead at all
+	d := Parse("x.md", []byte(src))
+	if len(d.Terms) != 1 || d.Terms[0].Line != 4 {
+		t.Errorf("Terms = %+v, want one well-formed term at line 4", d.Terms)
+	}
+	// Only the standalone paragraph is a MalformedTerm; the list item is left for
+	// the caller's Terms-by-line check, and mid-sentence bold is ignored.
+	if len(d.MalformedTerms) != 1 || d.MalformedTerms[0].Line != 6 {
+		t.Errorf("MalformedTerms = %+v, want one at line 6", d.MalformedTerms)
+	}
+}

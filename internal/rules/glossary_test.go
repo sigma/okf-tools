@@ -23,13 +23,19 @@ func TestGlossaryStructure(t *testing.T) {
 
 	bad := loadFixture(t, "glossary-01")
 	fs := Run(&Context{Bundle: bad, Config: bad.Config}, nil, nil)
-	if got := countByRule(fs)["OKFEXT-GLOSSARY-01"]; got != 1 {
-		t.Fatalf("malformed glossary: OKFEXT-GLOSSARY-01 = %d, want 1", got)
+	if got := countByRule(fs)["OKFEXT-GLOSSARY-01"]; got != 2 {
+		t.Fatalf("malformed glossary: OKFEXT-GLOSSARY-01 = %d, want 2", got)
 	}
+	lines := map[int]bool{}
 	for _, f := range fs {
-		if f.Rule == "OKFEXT-GLOSSARY-01" && f.Line != 4 {
-			t.Errorf("finding at line %d, want 4 (the bare bullet)", f.Line)
+		if f.Rule == "OKFEXT-GLOSSARY-01" {
+			lines[f.Line] = true
 		}
+	}
+	// Line 4 is the bare bullet (list item); line 6 the bold-lead paragraph
+	// missing its colon — both must be strictly flagged.
+	if !lines[4] || !lines[6] {
+		t.Errorf("findings at %v, want lines 4 (bare bullet) and 6 (malformed paragraph)", lines)
 	}
 
 	// Disabled ⇒ no findings, even on the malformed fixture.

@@ -63,6 +63,11 @@ func checkGlossaryStructure(ctx *Context) []Finding {
 					Message: "glossary entry is not a well-formed term; expected '**Term**: definition'"})
 			}
 		}
+		// Paragraphs leading with bold but missing the colon are botched terms.
+		for _, m := range d.MalformedTerms {
+			fs = append(fs, Finding{Path: d.Rel, Line: m.Line,
+				Message: "glossary entry is not a well-formed term; expected '**Term**: definition'"})
+		}
 	}
 	return fs
 }
@@ -158,7 +163,7 @@ func undefinedAnchorMsg(g *bundle.Doc, frag string) string {
 // nearestAnchor returns the defined anchor slug closest to frag by edit distance,
 // or "" when nothing is within a small threshold (so we don't invent noise).
 func nearestAnchor(g *bundle.Doc, frag string) string {
-	best, bestDist := "", 1<<30
+	best, bestDist := "", maxInt
 	for _, a := range g.Anchors {
 		if d := levenshtein(frag, a.Slug); d < bestDist {
 			best, bestDist = a.Slug, d
@@ -189,20 +194,9 @@ func levenshtein(a, b string) int {
 			if a[i-1] == b[j-1] {
 				cost = 0
 			}
-			cur[j] = min3(cur[j-1]+1, prev[j]+1, prev[j-1]+cost)
+			cur[j] = min(cur[j-1]+1, prev[j]+1, prev[j-1]+cost)
 		}
 		prev = cur
 	}
 	return prev[len(b)]
-}
-
-func min3(a, b, c int) int {
-	m := a
-	if b < m {
-		m = b
-	}
-	if c < m {
-		m = c
-	}
-	return m
 }
