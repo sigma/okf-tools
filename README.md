@@ -42,6 +42,29 @@ Every command takes `--bundle <dir>` (else auto-discover), `--config <path>`
 `sarif`). Run it via the flake — `nix run github:sigma/okf-tools#okftool -- lint`,
 or on `PATH` inside the dev shell.
 
+### In CI (without Nix)
+
+Downstream GitHub Actions workflows can install `okftool` without Nix using the
+`setup-okftool` action from this repo. It downloads the matching released binary
+(verifying its SHA-256 checksum) and puts `okftool` on `PATH`; later steps just
+run `okftool`:
+
+```yaml
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sigma/okf-tools/actions/setup-okftool@v0
+      - run: okftool lint --bundle path/to/bundle
+```
+
+Pin `@v0` for the latest v0.x release, or an exact `@vX.Y.Z` for a fixed version —
+the action tag resolves to the `okftool` binary released at that same tag. The
+action installs on `ubuntu-*` and `macos-*` runners (linux/darwin × amd64/arm64)
+and exposes the installed version as the `version` output; it takes no `version:`
+input. Windows runners are not yet supported.
+
 Implemented: conformance rules `OKF001`–`OKF004`, policy `OKF101`–`OKF107`, and
 worklist `OKF201`/`OKF202`/`OKF206`, with autofix for the safe ones. Optional and
 opt-in **extensions** (the `OKFEXT-*` namespace, off by default; `OKF0xx/1xx/2xx`
