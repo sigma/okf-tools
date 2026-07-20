@@ -136,3 +136,47 @@ jobs:
           subject-path: |
             dist/*.tar.gz
             dist/checksums.txt
+
+  # End-to-end self-test of the setup-okftool action against the release just cut
+  # (map #12, ticket #25). Runs only here, after `release` has force-moved @v0/@vX.Y.Z
+  # onto the bumped commit and GoReleaser has uploaded the assets — so @v0 resolves to
+  # exactly this release and the download targets real assets. Testing at push/PR time
+  # is impossible: the action installs a *released* binary, and an unreleased checkout
+  # carries the 0.0.0 placeholder that hard-fails by design. Step-level `uses:` takes no
+  # expressions, so @v0 (static, and equal to this release after the force-move) is the
+  # ref. Matrix covers every OS/arch the release ships, exercising all four download
+  # branches (#15/#17). This is the check that would have caught the ./okftool bug (#26).
+  verify:
+    name: verify (${{ matrix.os }})
+    needs: [release]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest     # linux/amd64
+            os: linux-amd64
+          - runner: ubuntu-24.04-arm  # linux/arm64
+            os: linux-arm64
+          - runner: macos-15-intel    # darwin/amd64 (Intel macOS runner)
+            os: darwin-amd64
+          - runner: macos-latest      # darwin/arm64 (Apple Silicon)
+            os: darwin-arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install okftool via the just-released action
+        id: setup
+        uses: sigma/okf-tools/actions/setup-okftool@v0
+
+      - name: Confirm okftool is on PATH
+        run: |
+          echo "action reported version: ${{ steps.setup.outputs.version }}"
+          command -v okftool
+
+      - name: Lint the happy testdata bundle
+        # `--bundle` sets the bundle root; `--config` alone auto-discovers from `.`
+        # and would miss the bundle. testdata/happy lints 0 error / 0 warning / 0 info.
+        run: okftool lint --bundle testdata/happy
