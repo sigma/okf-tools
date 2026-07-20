@@ -1,6 +1,9 @@
 package rules
 
 import (
+	"fmt"
+
+	"github.com/sigma/okf-tools/internal/bundle"
 	"github.com/sigma/okf-tools/internal/config"
 )
 
@@ -17,6 +20,12 @@ func init() {
 		Default: Warning,
 		Enabled: func(c *config.Config) bool { return c.Glossary.Enabled },
 		Check:   checkGlossaryStructure,
+	})
+	register(&Rule{
+		ID: "OKFEXT-GLOSSARY-02", Name: "glossary-anchor-resolves", Category: Extension,
+		Default: Warning,
+		Enabled: func(c *config.Config) bool { return c.Glossary.Enabled },
+		Check:   checkGlossaryAnchor,
 	})
 }
 
@@ -44,4 +53,93 @@ func checkGlossaryStructure(ctx *Context) []Finding {
 		}
 	}
 	return fs
+}
+
+// OKFEXT-GLOSSARY-02 (the load-bearing rule): a concept link into a declared
+// glossary file that carries a #fragment must resolve to a defined anchor (term
+// slug or heading slug) in that file — "a reference to an undefined concept,"
+// caught at lint time. In-page #fragments are checked too, but only when the
+// source is itself a glossary file (a self-reference); general bundle-wide
+// heading-anchor resolution stays out of scope.
+func checkGlossaryAnchor(ctx *Context) []Finding {
+	var fs []Finding
+	for _, d := range ctx.Bundle.Docs {
+		for _, rl := range d.Resolved {
+			switch rl.Class {
+			case bundle.ClassConcept:
+				if rl.TargetDoc != nil && rl.TargetDoc.Glossary && rl.Fragment != "" && !rl.TargetDoc.HasAnchor(rl.Fragment) {
+					fs = append(fs, Finding{Path: d.Rel, Line: rl.Line,
+						Message: undefinedAnchorMsg(rl.TargetDoc, rl.Fragment)})
+				}
+			case bundle.ClassAnchor:
+				if d.Glossary && rl.Fragment != "" && !d.HasAnchor(rl.Fragment) {
+					fs = append(fs, Finding{Path: d.Rel, Line: rl.Line,
+						Message: undefinedAnchorMsg(d, rl.Fragment)})
+				}
+			}
+		}
+	}
+	return fs
+}
+
+// undefinedAnchorMsg reports a missing glossary anchor, naming the file and — if
+// a close match exists — the nearest defined anchor as a "did you mean" hint.
+func undefinedAnchorMsg(g *bundle.Doc, frag string) string {
+	msg := fmt.Sprintf("reference to undefined glossary anchor '#%s' in '%s'", frag, g.Rel)
+	if near := nearestAnchor(g, frag); near != "" {
+		msg += fmt.Sprintf(" (did you mean '#%s'?)", near)
+	}
+	return msg
+}
+
+// nearestAnchor returns the defined anchor slug closest to frag by edit distance,
+// or "" when nothing is within a small threshold (so we don't invent noise).
+func nearestAnchor(g *bundle.Doc, frag string) string {
+	best, bestDist := "", 1<<30
+	for _, a := range g.Anchors {
+		if d := levenshtein(frag, a.Slug); d < bestDist {
+			best, bestDist = a.Slug, d
+		}
+	}
+	// Only suggest a genuinely close match: within a third of the length, min 2.
+	limit := len(frag) / 3
+	if limit < 2 {
+		limit = 2
+	}
+	if bestDist <= limit {
+		return best
+	}
+	return ""
+}
+
+// levenshtein is the classic edit distance between two short strings.
+func levenshtein(a, b string) int {
+	prev := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		cur := make([]int, len(b)+1)
+		cur[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			cur[j] = min3(cur[j-1]+1, prev[j]+1, prev[j-1]+cost)
+		}
+		prev = cur
+	}
+	return prev[len(b)]
+}
+
+func min3(a, b, c int) int {
+	m := a
+	if b < m {
+		m = b
+	}
+	if c < m {
+		m = c
+	}
+	return m
 }

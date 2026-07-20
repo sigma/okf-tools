@@ -38,3 +38,35 @@ func TestGlossaryStructure(t *testing.T) {
 		t.Errorf("disabled: OKFEXT-GLOSSARY-01 = %d, want 0", got)
 	}
 }
+
+// TestGlossaryAnchorResolves covers OKFEXT-GLOSSARY-02: cross-file and in-page
+// anchors into a glossary must resolve to a term/heading slug. Defined term and
+// heading anchors and no-fragment/non-glossary links are silent; undefined
+// anchors fire; and the rule is promotable to a build-failing error.
+func TestGlossaryAnchorResolves(t *testing.T) {
+	b := loadFixture(t, "glossary-02")
+	fs := Run(&Context{Bundle: b, Config: b.Config}, nil, nil)
+	if got := countByRule(fs)["OKFEXT-GLOSSARY-02"]; got != 2 {
+		for _, f := range fs {
+			t.Logf("%s %s:%d %s", f.Rule, f.Path, f.Line, f.Message)
+		}
+		t.Fatalf("OKFEXT-GLOSSARY-02 = %d, want 2 (#root-kekk cross-file, #ghost self)", got)
+	}
+
+	// Promotable to error: an explicit [rules] override stamps error severity,
+	// which fails the build at the default --fail-on=error threshold.
+	b.Config.Rules["OKFEXT-GLOSSARY-02"] = "error"
+	promoted := Run(&Context{Bundle: b, Config: b.Config}, nil, nil)
+	var got int
+	for _, f := range promoted {
+		if f.Rule == "OKFEXT-GLOSSARY-02" {
+			got++
+			if f.Severity != Error {
+				t.Errorf("promoted finding severity = %v, want error", f.Severity)
+			}
+		}
+	}
+	if got != 2 {
+		t.Errorf("promoted OKFEXT-GLOSSARY-02 = %d, want 2", got)
+	}
+}
