@@ -33,7 +33,7 @@ runs:
       env:
         # release.yml rewrites exactly this line on every release (marker per #16/#19).
         # Keep it a single `OKFTOOL_VERSION: "X.Y.Z"` line, or the release stamp breaks.
-        OKFTOOL_VERSION: "0.1.1"
+        OKFTOOL_VERSION: "0.1.2"
         INSTALL_DIR: ${{ inputs.install-dir }}
       run: |
         set -euo pipefail
