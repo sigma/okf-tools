@@ -1,0 +1,53 @@
+# GoReleaser config for the tag/release-driven okftool release pipeline.
+# See map #12 and its decisions: tooling #13, version SoT #14, hardening + matrix
+# #15, action layout #16, and the asset naming/download contract #17.
+#
+# Invariant: the release tag points at a commit whose flake.nix already carries the
+# matching version (see .github/workflows/release.yml, which bumps then force-moves
+# the tag before this runs). {{ .Version }} is the tag with the leading `v` stripped.
+version: 2
+
+project_name: okftool
+
+builds:
+  - id: okftool
+    main: ./cmd/okftool
+    binary: okftool
+    # Static, cross-compilable binary (no cgo); best-effort, not byte-reproducing
+    # against the Nix build (recorded non-goal, #13).
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    # Matrix locked at #15: darwin/linux x amd64/arm64 (windows deferred out of scope).
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+# Asset contract (#17): okftool_<version>_<os>_<arch>.tar.gz, lowercase GOOS/GOARCH,
+# `v`-stripped version, single .tar.gz; binary + LICENSE at the archive root.
+archives:
+  - id: okftool
+    formats:
+      - tar.gz
+    wrap_in_directory: false
+    name_template: "okftool_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+
+# checksums.txt: SHA-256 in GNU coreutils format, which is what the setup action
+# verifies with `sha256sum --check --ignore-missing` (#17).
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+# The GitHub Release already exists (created via the Release UI, which fired the
+# workflow); replace its body with a generated changelog and upload the assets.
+release:
+  mode: replace
+
+changelog:
+  use: github
