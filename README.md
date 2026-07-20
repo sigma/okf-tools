@@ -44,9 +44,11 @@ or on `PATH` inside the dev shell.
 
 Implemented: conformance rules `OKF001`–`OKF004`, policy `OKF101`–`OKF107`, and
 worklist `OKF201`/`OKF202`/`OKF206`, with autofix for the safe ones. Optional and
-opt-in: the qmd-backed rules `OKF203`/`OKF204` (semantic near-duplicate detection
-and index staleness), off unless a bundle sets `qmd.enabled` and needs `qmd` on
-`PATH`. Not yet built: the Claude Code hook wiring (a consuming-bundle artifact).
+opt-in **extensions** (the `OKFEXT-*` namespace, off by default; `OKF0xx/1xx/2xx`
+stays reserved for the spec): `OKFEXT-QMD-01`/`OKFEXT-QMD-02` (qmd-backed semantic
+near-duplicate detection and index staleness, needs `qmd` on `PATH`) and
+`OKFEXT-GLOSSARY-*` (anchor-checked single-file glossaries). Not yet built: the
+Claude Code hook wiring (a consuming-bundle artifact).
 
 Reference:
 

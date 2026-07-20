@@ -1,10 +1,10 @@
 # okf.toml — per-bundle configuration for `okf`.
 #
 # Place at the bundle root (for the wiki, that's `wiki/`). Conformance rules
-# (OKF0xx) are always on at severity `error` and are NOT configurable here; only
-# policy (OKF1xx) and worklist (OKF2xx) rules are. Defaults shown are the
-# *spec-aligned* defaults; the values in this file are what the OKF wiki bundle
-# would set, derived from its CLAUDE.md conventions.
+# (OKF0xx) are always on at severity `error` and are NOT configurable here; policy
+# (OKF1xx), worklist (OKF2xx), and opt-in extensions (OKFEXT-*) are. Defaults
+# shown are the *spec-aligned* defaults; the values in this file are what the OKF
+# wiki bundle would set, derived from its CLAUDE.md conventions.
 #
 # See docs/RULES.md for the full rule catalog.
 
@@ -23,8 +23,9 @@ reserved = ["index.md", "log.md"]
 style = "relative"
 # OKF101: Obsidian [[wiki-links]] are not standard markdown; disallow them.
 allow_wikilinks = false
-# OKF202 severity. Hard-capped at "info" — broken cross-links may be
-# not-yet-written knowledge (SPEC §5.3). Cannot be promoted to error.
+# OKF202 severity: "off" | "info" | "warning" | "error". Defaults to "info" —
+# broken cross-links may be not-yet-written knowledge (SPEC §5.3) — but a bundle
+# may promote it (here or via [rules]."OKF202") to make dead links a hard CI gate.
 check_broken = "info"
 
 [filenames]
@@ -64,17 +65,29 @@ descriptions_from_frontmatter = true
 orphans = "info"           # OKF201
 
 [qmd]
-# Optional, qmd-backed rules (OKF203/OKF204). These are OFF unless you opt in
-# here: they require a fresh local qmd index (from the firefly toolbox), so the
-# core of `okf lint` stays dependency-free. Enable per project when you want
-# semantic near-duplicate detection.
+# The qmd-backed extension (OKFEXT-QMD-01/02). OFF unless you opt in here: it
+# requires a fresh local qmd index (from the firefly toolbox), so the core of
+# `okf lint` stays dependency-free. Enable per project when you want semantic
+# near-duplicate detection. (Config keys stay under [qmd]; only the rule IDs live
+# in the OKFEXT namespace.)
 enabled = false
 # The qmd binary. Default "qmd" (resolved on PATH); set an absolute path when qmd
 # isn't on PATH — e.g. a Nix store path or a project-local build.
 path = "qmd"
-near_duplicates = "info"          # OKF203 (semantic near-duplicate candidates)
+near_duplicates = "info"          # OKFEXT-QMD-01 (semantic near-duplicate candidates)
 near_duplicate_threshold = 0.85
-staleness = "info"                # OKF204 (qmd index out of date)
+staleness = "info"                # OKFEXT-QMD-02 (qmd index out of date)
+
+[glossary]
+# The glossary extension (OKFEXT-GLOSSARY-*). OFF by default — a bundle that
+# doesn't opt in sees no new diagnostics. When enabled, the declared files are
+# treated as single-file, anchor-addressable glossaries (domain-modeling
+# CONTEXT-FORMAT, not the OKF spec): terms are bold-lead `**Term**: def` entries,
+# addressable by the fixed GitHub-style slug of the term text.
+enabled = false
+# Globs (bundle-relative, forward slashes) naming the glossary/anchor-host files.
+# Multi-context bundles can use e.g. ["CONTEXT.md", "src/*/CONTEXT.md"].
+files = ["CONTEXT.md"]
 
 [gaps]
 # Defaults for `okftool gaps <concept>` (also qmd-backed). CLI flags override
@@ -87,6 +100,10 @@ min_sim = 0.4                     # similarity floor
 # exclude_types = ["Person"]      # node types to skip (hubs near much of the bundle)
 
 # Per-rule overrides. Use to turn a rule off or re-level it (conformance rules
-# OKF001–OKF004 are exempt and ignored here).
+# OKF001–OKF004 are exempt and ignored here). Any rule — worklist and extensions
+# included — can be escalated to a hard failure. OKFEXT ids are hyphenated, which
+# are valid TOML bare keys, so they need no quoting.
 [rules]
 # OKF103 = "off"
+# OKF202 = "error"                # make broken concept links a hard CI gate
+# OKFEXT-GLOSSARY-02 = "error"    # make undefined glossary anchors fail the build

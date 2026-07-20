@@ -17,7 +17,7 @@ A bundle carries two overlapping graphs:
 
 - the **authored graph** — the markdown cross-links (`okftool graph`);
 - the **semantic graph** — proximity in embedding space, observable through the
-  bundle's qmd index (the same signal `OKF203` near-duplicate uses).
+  bundle's qmd index (the same signal `OKFEXT-QMD-01` near-duplicate uses).
 
 A **content gap** is a *discrepancy* between them: a pair of concepts that are
 semantically adjacent yet unlinked. That discrepancy is where a missing
@@ -84,7 +84,7 @@ Defaults come from the `[gaps]` section of `okf.toml` (`depth`, `top`,
 bundle that cares more about indirect bridges than direct ones sets
 `gaps.depth = "neighborhood"`.
 
-Global flags (`--bundle`, `--config`) as elsewhere. Like `OKF203`/`OKF204`, this
+Global flags (`--bundle`, `--config`) as elsewhere. Like `OKFEXT-QMD-01`/`OKFEXT-QMD-02`, this
 depends on **qmd** (a fresh index + the `qmd` binary on `PATH`, honoring
 `qmd.path`); with qmd absent or the master `qmd.enabled` off, `gaps` errors
 clearly rather than silently returning nothing.
@@ -128,18 +128,18 @@ shaped the defaults and filters:
 - **Cost** — full run (direct + holes) on one seed = 1 + ~k qmd queries; direct
   only = 1. Confirms the seed-driven complexity.
 
-## Relationship to OKF203
+## Relationship to OKFEXT-QMD-01 (near-duplicate)
 
 `gaps` is the mirror image of the near-duplicate rule — same qmd similarity
 primitive, opposite filter plus a link-graph join:
 
 | | qmd similarity | link check | verdict |
 |---|---|---|---|
-| `OKF203` near-duplicate | very high | — | maybe **merge** |
+| `OKFEXT-QMD-01` near-duplicate | very high | — | maybe **merge** |
 | `gaps` | high-ish | **not linked** | maybe **connect** |
 
 So it should reuse the existing qmd integration (`internal/qmd`, already used by
-`OKF203`/`OKF204`) and the bundle link graph (already built for `okftool graph` /
+`OKFEXT-QMD-01`/`OKFEXT-QMD-02`) and the bundle link graph (already built for `okftool graph` /
 `OKF201`).
 
 ## Implementation notes

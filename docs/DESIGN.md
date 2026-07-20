@@ -3,7 +3,8 @@
 Status: **implemented.** `okftool`
 (`lint`/`index`/`fmt`/`new`/`graph`/`gaps`/`skill`) is built to this spec —
 conformance `OKF001`–`OKF004`, policy `OKF101`–`OKF107`, worklist
-`OKF201`/`OKF202`/`OKF206`, the optional qmd-backed `OKF203`/`OKF204`, and
+`OKF201`/`OKF202`/`OKF206`, the opt-in extensions `OKFEXT-QMD-*` (qmd-backed) and
+`OKFEXT-GLOSSARY-*` (single-file glossaries), and
 seed-driven content-gap analysis (`gaps`) — with autofix, `okf.toml` config,
 human/JSON/SARIF output, a per-package test suite, CI, and flake
 `package`/`app`/`devShell`/`checks`. Still open: Claude Code hook wiring (M5). This document and [RULES.md](RULES.md) remain
@@ -160,7 +161,7 @@ scanning; JSON is the pragmatic default for agent/editor/CI use.
 3. **M3 — index.** ✅ `okftool index --check/--write` (`OKF106`).
 4. **M4 — fmt + new.** ✅ Authoring ergonomics.
 5. **M5 — worklist + graph + hooks.** ✅ `okftool graph`, worklist
-   `OKF201`/`OKF202`/`OKF206`, and the optional qmd-backed `OKF203`/`OKF204`.
+   `OKF201`/`OKF202`/`OKF206`, and the opt-in `OKFEXT-QMD-*` qmd-backed extension.
    Still open: the Claude Code hook wiring (a consuming-bundle artifact).
 6. **M6 — content-gap analysis.** ✅ `okftool gaps <concept>`: seed-driven
    detection of near-but-unlinked concepts (direct gaps + neighborhood holes),
@@ -175,14 +176,43 @@ Settled during design/implementation — recorded rather than left implicit:
    `YYYY-MM-DD`. `okftool fmt` normalizes existing pages to the configured form.
 2. **Filename-case default severity.** `info` out of the box; a bundle raises it
    to `warning` via config.
-3. **qmd coupling.** `OKF203`/`OKF204` are a separate, **optional** qmd-backed
-   category, **off** unless a bundle sets `qmd.enabled = true`. `lint` runs the
-   qmd analysis (via the `internal/qmd` package, which shells out to `qmd`) only
-   when enabled and hands the result to the pure rules through `Context.QMD`; the
-   core stays dependency-free. Needs the `qmd` binary (on `PATH`, or set
-   `qmd.path`) and a fresh index.
+3. **qmd coupling.** `OKFEXT-QMD-01`/`OKFEXT-QMD-02` are a separate, **optional**
+   qmd-backed extension, **off** unless a bundle sets `qmd.enabled = true`. `lint`
+   runs the qmd analysis (via the `internal/qmd` package, which shells out to
+   `qmd`) only when enabled and hands the result to the pure rules through
+   `Context.QMD`; the core stays dependency-free. Needs the `qmd` binary (on
+   `PATH`, or set `qmd.path`) and a fresh index.
 4. **Scope of `okftool` vs. `qmd`.** Sibling binaries from `okf-tools` with
    different concerns — authoring/conformance vs. search — not subcommands of one
    another.
 5. **Config discovery.** `okf.toml` at the bundle root, so config travels with
    the bundle and stays portable.
+6. **Extension namespace (`OKFEXT-<EXT>-<NN>`).** Checks that are *not* in the OKF
+   spec live in their own ID namespace, **one bucket per extension**
+   (`OKFEXT-QMD-*`, `OKFEXT-GLOSSARY-*`), leaving `OKF0xx`/`OKF1xx`/`OKF2xx`
+   reserved for the spec. The prefix advertises "non-spec" in every surface, and
+   an extension is off by default, configurable like Policy, and scoped to what it
+   declares. Any rule (spec or extension) is promotable to a hard failure via
+   `[rules]`; only conformance stays fixed at `error`.
+
+## Single-file glossaries (`OKFEXT-GLOSSARY-*`)
+
+OKF models a concept as *its own file* with `type` frontmatter; a glossary breaks
+that — it is one file defining ~40 terms, referenced by anchor
+(`[root-kek](/CONTEXT.md#root-kek)`). Some consumers require *all* vocabulary in a
+single file that loads in one read (e.g. a GitHub→Notion doc sync), which the
+file-per-concept model can't give them. The glossary extension adds exactly the
+two things OKF otherwise lacks here: it **preserves a link's `#fragment`** (base
+resolution discards it) and introduces an **in-page, anchor-addressable term**.
+
+Framing: **a glossary is to terms what `index.md` is to pages** — a structured,
+single-file aggregation. It slots in beside `OKF003`/`OKF004` as a third
+structured page kind, so a declared glossary file carries no frontmatter and is
+exempt from the concept conformance rules; identity comes from `[glossary] files`
+config alone, keeping the file byte-for-byte `CONTEXT-FORMAT` compliant.
+
+A term's anchor is the **fixed** GitHub-style slug of its bold text — not
+configurable, so it can't drift from a consumer resolving the same anchors. The
+**scope boundary** is deliberate: anchors are resolved only *into declared
+glossary files*; general bundle-wide heading-anchor resolution stays out of scope,
+which keeps the surface minimal and the opt-in boundary crisp.

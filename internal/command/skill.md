@@ -86,10 +86,14 @@ reference?" / "what's underdeveloped about this topic?"
 - `OKF2xx` **worklist** — advisory `info`; never fails a build. `OKF202`
   (broken links) defaults to `info`.
 - `OKFEXT-<EXT>-<NN>` **extensions** — built-in, non-spec, opt-in checks; the
-  `OKFxxx` space is reserved for the OKF spec. `OKFEXT-QMD-01`/`OKFEXT-QMD-02`
-  **qmd-backed** — optional semantic checks (near-duplicate pages, stale index),
-  off unless the bundle sets `qmd.enabled` and `qmd` is available (on `PATH`, or
-  via `qmd.path`).
+  `OKFxxx` space is reserved for the OKF spec.
+  - `OKFEXT-QMD-01`/`OKFEXT-QMD-02` **qmd-backed** — optional semantic checks
+    (near-duplicate pages, stale index), off unless the bundle sets `qmd.enabled`
+    and `qmd` is available (on `PATH`, or via `qmd.path`).
+  - `OKFEXT-GLOSSARY-01`…`-04` **single-file glossaries** — treat declared files
+    (`[glossary] files`) as anchor-addressable glossaries (`**Term**: def` entries
+    slugged GitHub-style) and check `#anchor` cross-references into them. Off
+    unless the bundle sets `glossary.enabled`.
 
 ## Commands
 
