@@ -1,0 +1,49 @@
+name: action self-test
+
+# End-to-end exercise of the setup-okftool composite action against a published
+# release (wayfinder #25, map #12). This dogfoods the *consumer* path: it pins the
+# floating major tag `@v0` — the released, version-stamped action.yml — NOT `@main`,
+# whose OKFTOOL_VERSION is the 0.0.0 placeholder and hard-fails by design. The matrix
+# covers every OS/arch the release ships, so all four asset download branches (#15/#17)
+# run on real GitHub-hosted runners.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  setup-okftool:
+    name: setup-okftool (${{ matrix.os }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest     # linux/amd64
+            os: linux-amd64
+          - runner: ubuntu-24.04-arm  # linux/arm64
+            os: linux-arm64
+          - runner: macos-15-intel    # darwin/amd64 (Intel macOS runner)
+            os: darwin-amd64
+          - runner: macos-latest      # darwin/arm64 (Apple Silicon)
+            os: darwin-arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install okftool via the released action
+        id: setup
+        uses: sigma/okf-tools/actions/setup-okftool@v0
+
+      - name: Confirm okftool is on PATH
+        run: |
+          echo "action reported version: ${{ steps.setup.outputs.version }}"
+          command -v okftool
+
+      - name: Lint the happy testdata bundle
+        # `--bundle` sets the bundle root; `--config` alone auto-discovers from `.`
+        # and would miss the bundle. testdata/happy lints 0 error / 0 warning / 0 info.
+        run: okftool lint --bundle testdata/happy
