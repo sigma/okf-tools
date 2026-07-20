@@ -31,6 +31,7 @@ type ResolvedLink struct {
 	Inside    bool   // Resolved lies within the bundle root
 	Exists    bool   // Resolved names an existing file
 	Absolute  bool   // target begins with "/" (bundle-absolute)
+	Fragment  string // the part after '#' (empty if none); the glossary anchor target
 	TargetDoc *Doc   // the bundle doc this concept cross-link points at, if any
 }
 
@@ -76,6 +77,21 @@ func fileExists(abs string) bool {
 	return err == nil && !info.IsDir()
 }
 
+// fragmentOf returns the part of a link target after '#' (empty if none). The
+// query part after a following '?' is dropped. This is the raw fragment; the
+// glossary anchor index compares it against slug(term)/slug(heading).
+func fragmentOf(target string) string {
+	i := strings.IndexByte(target, '#')
+	if i < 0 {
+		return ""
+	}
+	frag := target[i+1:]
+	if j := strings.IndexByte(frag, '?'); j >= 0 {
+		frag = frag[:j]
+	}
+	return frag
+}
+
 // classify resolves every link in d and records the results on d.Resolved,
 // wiring concept cross-links to their target Doc where one exists in the bundle.
 func (b *Bundle) classify(d *Doc) {
@@ -90,6 +106,7 @@ func (b *Bundle) classify(d *Doc) {
 			rl.Class = ClassWikilink
 		case strings.HasPrefix(l.Target, "#"):
 			rl.Class = ClassAnchor
+			rl.Fragment = fragmentOf(l.Target)
 		case l.InCitations:
 			rl.Class = ClassCitation
 			if !isURL(l.Target) {
@@ -103,6 +120,7 @@ func (b *Bundle) classify(d *Doc) {
 			rl.Class = ClassExternal
 		default:
 			rl.Class = ClassConcept
+			rl.Fragment = fragmentOf(l.Target)
 			if abs, absolute, ok := b.resolve(fromDir, l.Target); ok {
 				rl.Resolved, rl.Absolute = abs, absolute
 				rl.Inside = b.inside(abs)

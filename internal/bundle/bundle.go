@@ -31,7 +31,9 @@ type Doc struct {
 	Kind     DocKind
 	Reserved bool
 	Resolved []ResolvedLink
-	Inbound  int // concept cross-links pointing at this doc (orphan analysis)
+	Inbound  int      // concept cross-links pointing at this doc (orphan analysis)
+	Glossary bool     // declared as a glossary file (config [glossary] files)
+	Anchors  []Anchor // anchor-addressable targets, when Glossary (term + heading slugs)
 }
 
 // Bundle is the in-memory model rules run against.
@@ -180,6 +182,10 @@ func Load(root, configPath string) (*Bundle, error) {
 	for _, d := range b.Docs {
 		d.MarkCitations(citationPred)
 		b.classify(d)
+		if cfg.IsGlossary(d.Rel) {
+			d.Glossary = true
+			buildAnchors(d)
+		}
 	}
 	b.buildGraph()
 	return b, nil

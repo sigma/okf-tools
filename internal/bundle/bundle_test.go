@@ -187,3 +187,70 @@ func TestResolveWikilink(t *testing.T) {
 		t.Error("unknown target should not resolve")
 	}
 }
+
+func TestSlug(t *testing.T) {
+	cases := map[string]string{
+		"Root KEK":            "root-kek",
+		"Foreign-rooted leaf": "foreign-rooted-leaf",
+		"Re-share":            "re-share",
+		"re share":            "re-share",
+		"  Trailing  ":        "trailing",
+		"C++ & Go!":           "c-go",
+	}
+	for in, want := range cases {
+		if got := slug(in); got != want {
+			t.Errorf("slug(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestFragmentPreserved(t *testing.T) {
+	b := loadBundle(t, map[string]string{
+		"index.md":   "---\nokf_version: \"0.1\"\n---\n- [a](a.md)\n",
+		"a.md":       "---\ntype: Concept\ndescription: x\n---\nSee [root](/CONTEXT.md#root-kek) and [self](#local).\n",
+		"CONTEXT.md": "**Root KEK**: def\n",
+	})
+	a := b.byRel["a.md"]
+	if a == nil {
+		t.Fatal("a.md not loaded")
+	}
+	var concept, anchor *ResolvedLink
+	for i := range a.Resolved {
+		switch a.Resolved[i].Class {
+		case ClassConcept:
+			concept = &a.Resolved[i]
+		case ClassAnchor:
+			anchor = &a.Resolved[i]
+		}
+	}
+	if concept == nil || concept.Fragment != "root-kek" {
+		t.Errorf("concept link Fragment = %+v, want root-kek", concept)
+	}
+	if anchor == nil || anchor.Fragment != "local" {
+		t.Errorf("anchor link Fragment = %+v, want local", anchor)
+	}
+}
+
+func TestGlossaryAnchors(t *testing.T) {
+	b := loadBundle(t, map[string]string{
+		"okf.toml":   "[glossary]\nenabled = true\nfiles = [\"CONTEXT.md\"]\n",
+		"index.md":   "- [c](CONTEXT.md)\n",
+		"CONTEXT.md": "# Keys\n\n**Root KEK**: the top of the hierarchy.\n\n- **Foreign-rooted leaf**: a leaf.\n",
+	})
+	g := b.byRel["CONTEXT.md"]
+	if g == nil || !g.Glossary {
+		t.Fatalf("CONTEXT.md should be a glossary doc, got %+v", g)
+	}
+	for _, want := range []string{"root-kek", "foreign-rooted-leaf", "keys"} {
+		if !g.HasAnchor(want) {
+			t.Errorf("glossary is missing anchor %q (have %+v)", want, g.Anchors)
+		}
+	}
+	if g.HasAnchor("nope") {
+		t.Error("HasAnchor(nope) should be false")
+	}
+	// A non-glossary file has no anchors.
+	if idx := b.byRel["index.md"]; idx != nil && idx.Glossary {
+		t.Error("index.md should not be a glossary")
+	}
+}

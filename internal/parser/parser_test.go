@@ -89,3 +89,28 @@ func TestCitations(t *testing.T) {
 		t.Errorf("citation link = %+v, want example.com in citations", cite)
 	}
 }
+
+func TestTermExtraction(t *testing.T) {
+	src := "---\ntype: T\n---\n" + // lines 1-3
+		"# Terms\n" + // line 4
+		"\n" + // line 5
+		"**Root KEK**: the top of the key hierarchy.\n" + // line 6, para term
+		"\n" + // line 7
+		"- **Foreign-rooted leaf**: a leaf under another root.\n" + // line 8, list term
+		"\n" + // line 9
+		"This is **bold** mid-sentence, not a term.\n" + // line 10, not a term
+		"\n" + // line 11
+		"_Avoid_: backdoor, standing key\n" + // line 12, italic lead, not a term
+		"\n" + // line 13
+		"**No colon here** and more text\n" // line 14, missing colon
+	d := Parse("x.md", []byte(src))
+	if len(d.Terms) != 2 {
+		t.Fatalf("Terms = %+v, want exactly 2", d.Terms)
+	}
+	if d.Terms[0].Text != "Root KEK" || d.Terms[0].Line != 6 {
+		t.Errorf("Terms[0] = %+v, want {Root KEK, 6}", d.Terms[0])
+	}
+	if d.Terms[1].Text != "Foreign-rooted leaf" || d.Terms[1].Line != 8 {
+		t.Errorf("Terms[1] = %+v, want {Foreign-rooted leaf, 8}", d.Terms[1])
+	}
+}

@@ -49,6 +49,7 @@ type Document struct {
 	Links     []Link
 	Headings  []Heading
 	ListItems []ListItem
+	Terms     []Term
 }
 
 // Link is a single markdown or wiki link found in the body.
@@ -66,6 +67,15 @@ type Heading struct {
 	Level int
 	Text  string // heading text, trimmed, without the leading #s
 	Line  int    // 1-based line number in the file
+}
+
+// Term is a CONTEXT-FORMAT glossary entry: a paragraph or list item that leads
+// with a bold span immediately followed by a colon (`**Side-door credential**:
+// …`). Text is the raw bold term text, without the surrounding `**`. The
+// glossary extension slugs this into an anchor; the parser only extracts it.
+type Term struct {
+	Text string // the bold lead text, e.g. "Side-door credential"
+	Line int    // 1-based line number in the file
 }
 
 // ListItem is a single markdown list item found in the body. HasLink reports
@@ -173,6 +183,15 @@ func (d *Document) parseBody() {
 				Line:    lm.lineOf(v),
 				HasLink: hasLinkDescendant(v),
 			})
+		case *ast.Paragraph:
+			if term, ok := leadTerm(v, src); ok {
+				d.Terms = append(d.Terms, Term{Text: term, Line: lm.lineOf(v)})
+			}
+		case *ast.TextBlock:
+			// TextBlock is the inline container of a tight list item.
+			if term, ok := leadTerm(v, src); ok {
+				d.Terms = append(d.Terms, Term{Text: term, Line: lm.lineOf(v)})
+			}
 		case *ast.Link:
 			d.Links = append(d.Links, Link{
 				Text:   collectText(v, src),
@@ -233,6 +252,39 @@ func (d *Document) MarkCitations(pred func(Heading) bool) {
 			}
 		}
 	}
+}
+
+// leadTerm reports whether block n is a CONTEXT-FORMAT term entry: its first
+// inline child is a bold span (`**…**`, i.e. an Emphasis of level 2) whose text
+// is immediately followed by a colon. It returns the bold term text. A bold span
+// mid-sentence, an italic `_Avoid_` lead (Emphasis level 1), or a missing colon
+// all fail — so only well-formed `**Term**: …` entries are recognised.
+func leadTerm(n ast.Node, src []byte) (string, bool) {
+	lead := n.FirstChild()
+	em, ok := lead.(*ast.Emphasis)
+	if !ok || em.Level != 2 {
+		return "", false
+	}
+	term := strings.TrimSpace(collectText(em, src))
+	if term == "" {
+		return "", false
+	}
+	// The remainder of the inline run must lead with the colon.
+	var rest strings.Builder
+	for c := em.NextSibling(); c != nil; c = c.NextSibling() {
+		switch t := c.(type) {
+		case *ast.Text:
+			rest.Write(t.Segment.Value(src))
+		case *ast.String:
+			rest.Write(t.Value)
+		default:
+			rest.WriteString(collectText(c, src))
+		}
+	}
+	if !strings.HasPrefix(rest.String(), ":") {
+		return "", false
+	}
+	return term, true
 }
 
 // hasLinkDescendant reports whether n has a navigational link (markdown link,
