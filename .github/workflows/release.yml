@@ -1,0 +1,138 @@
+# Tag/release-driven okftool release pipeline (map #12, ticket #19).
+#
+# Entry point: a maintainer drafts a GitHub Release for tag vX.Y.Z (the Release UI
+# creates the tag on the tip of main). Publishing it fires this workflow.
+#
+# Ordering invariant inherited from #14/#16: `nix run ...@vX.Y.Z` must report the real
+# version, but a pure flake eval cannot read the tag name, so the tagged commit must
+# already contain the bumped version. Since the UI created the tag at the *pre-bump*
+# commit, this workflow bumps flake.nix (and, once it exists, the setup action),
+# commits to main, then FORCE-MOVES both vX.Y.Z and the floating major tag vN onto that
+# commit before GoReleaser builds. GoReleaser then attaches assets to the release.
+#
+# Moving the tag with GITHUB_TOKEN does not re-fire `release: published`, so there is no
+# recursion. Pushing the bump commit to main does trigger CI (push: branches: [main]),
+# which is expected. Note: if `main` is protected against direct pushes by
+# github-actions[bot], grant it an exception or this job's push step will fail.
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write # push the bump commit, force-move tags, upload release assets
+  id-token: write # SLSA build provenance (#15)
+  attestations: write # SLSA build provenance (#15)
+
+jobs:
+  release:
+    name: build + publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0 # full history for the changelog and tag maths
+
+      - name: Resolve version from tag
+        id: v
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          case "$TAG" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::release tag '$TAG' is not of the form vX.Y.Z"; exit 1 ;;
+          esac
+          version="${TAG#v}"
+          major="v${version%%.*}"
+          {
+            echo "tag=$TAG"
+            echo "version=$version"
+            echo "major=$major"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Ensure the release tag sits on the tip of main
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+        run: |
+          set -euo pipefail
+          tag_sha="$(git rev-list -n1 "$TAG")"
+          head_sha="$(git rev-parse HEAD)"
+          if [ "$tag_sha" != "$head_sha" ]; then
+            echo "::error::release tag $TAG ($tag_sha) is not at the tip of main ($head_sha). Re-create the release targeting the current main."
+            exit 1
+          fi
+
+      - name: Bump version in flake.nix
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Rewrite the single `version = "X.Y.Z";` binding. Fail loudly if the file
+          # shape ever drifts rather than silently mis-editing.
+          n="$(grep -cE '^[[:space:]]*version = "[^"]*";' flake.nix || true)"
+          if [ "$n" != "1" ]; then
+            echo "::error::expected exactly one version binding in flake.nix, found $n"; exit 1
+          fi
+          sed -i -E 's/^([[:space:]]*version = ")[^"]*(";)/\1'"$VERSION"'\2/' flake.nix
+
+      - name: Stamp version into the setup action (once it exists)
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          f="actions/setup-okftool/action.yml"
+          if [ ! -f "$f" ]; then
+            echo "note: $f not present yet; skipping the action version stamp until the composite-action ticket lands it."
+            exit 0
+          fi
+          # Convention (#16): a single `OKFTOOL_VERSION: "X.Y.Z"` line carries the
+          # baked-in version the composite action downloads. The action ticket must
+          # honour this marker so this stamp keeps working.
+          n="$(grep -cE '^[[:space:]]*OKFTOOL_VERSION: "[^"]*"' "$f" || true)"
+          if [ "$n" != "1" ]; then
+            echo "::error::expected exactly one OKFTOOL_VERSION marker in $f, found $n"; exit 1
+          fi
+          sed -i -E 's/^([[:space:]]*OKFTOOL_VERSION: ")[^"]*(")/\1'"$VERSION"'\2/' "$f"
+
+      - name: Commit the bump and force-move the tags
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+          MAJOR: ${{ steps.v.outputs.major }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add flake.nix
+          [ -f actions/setup-okftool/action.yml ] && git add actions/setup-okftool/action.yml || true
+          if git diff --cached --quiet; then
+            echo "::error::version bump for $TAG produced no changes (already released at this version?)"; exit 1
+          fi
+          git commit -m "chore(release): $TAG"
+          git push origin HEAD:main
+          # The tag and the floating major tag must resolve to the bumped commit.
+          git tag -f "$TAG"
+          git tag -f "$MAJOR"
+          git push --force origin "refs/tags/$TAG" "refs/tags/$MAJOR"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/checksums.txt
