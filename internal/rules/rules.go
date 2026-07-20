@@ -84,12 +84,11 @@ type Context struct {
 
 // Rule is one catalog entry.
 type Rule struct {
-	ID          string
-	Name        string
-	Category    Category
-	Default     Severity
-	Fixable     bool
-	HardCapInfo bool // severity can never exceed Info (OKF202 and all worklist)
+	ID       string
+	Name     string
+	Category Category
+	Default  Severity
+	Fixable  bool
 
 	// Enabled reports whether config turns this rule on. Nil means always on.
 	Enabled func(*config.Config) bool
@@ -128,8 +127,11 @@ func All() []*Rule {
 func Get(id string) *Rule { return registry[id] }
 
 // Effective resolves a rule's severity for the given config, returning Off when
-// the rule is disabled. Conformance rules are fixed at Error and ignore config;
-// hard-capped rules can never exceed Info.
+// the rule is disabled. Conformance rules are fixed at Error and ignore config.
+// Every other rule's severity is Default, then any SevConfig knob, then the
+// [rules] map — which is the final word. Worklist/extension defaults stay
+// spec-aligned and advisory (info), but a bundle MAY escalate any rule to a hard
+// failure via [rules] (see docs/RULES.md premises #2/#3).
 func Effective(r *Rule, cfg *config.Config) Severity {
 	if r.Enabled != nil && !r.Enabled(cfg) {
 		return Off
@@ -147,9 +149,6 @@ func Effective(r *Rule, cfg *config.Config) Severity {
 		if s, ok := ParseSeverity(v); ok {
 			sev = s
 		}
-	}
-	if r.HardCapInfo && sev > Info {
-		sev = Info
 	}
 	return sev
 }

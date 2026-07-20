@@ -5,27 +5,28 @@ import (
 	"github.com/sigma/okf-tools/internal/config"
 )
 
-// Category C — Worklist (OKF2xx). Advisory, hard-capped at info, never fails a
-// build. The tool finds candidates; the agent decides.
+// Category C — Worklist (OKF2xx). Advisory: defaults to info and does not fail a
+// build unless a bundle escalates it via [rules]. The tool finds candidates; the
+// agent decides.
 
 func init() {
 	register(&Rule{
 		ID: "OKF201", Name: "orphan-pages", Category: Worklist,
-		Default: Info, HardCapInfo: true,
+		Default:   Info,
 		Enabled:   func(c *config.Config) bool { return c.Worklist.Orphans != "off" },
 		SevConfig: func(c *config.Config) string { return c.Worklist.Orphans },
 		Check:     checkOKF201,
 	})
 	register(&Rule{
 		ID: "OKF202", Name: "broken-links", Category: Worklist,
-		Default: Info, HardCapInfo: true,
+		Default:   Info,
 		Enabled:   func(c *config.Config) bool { return c.Links.CheckBroken != "off" },
 		SevConfig: func(c *config.Config) string { return c.Links.CheckBroken },
 		Check:     checkOKF202,
 	})
 	register(&Rule{
 		ID: "OKF206", Name: "citation-target-exists", Category: Worklist,
-		Default: Info, HardCapInfo: true,
+		Default: Info,
 		Enabled: func(c *config.Config) bool { return c.Citations.CheckTargets },
 		Check:   checkOKF206,
 	})
@@ -42,8 +43,9 @@ func checkOKF201(ctx *Context) []Finding {
 	return fs
 }
 
-// OKF202: a concept cross-link whose target does not resolve on disk. Info,
-// hard-capped — a broken link may be not-yet-written knowledge (SPEC §5.3).
+// OKF202: a concept cross-link whose target does not resolve on disk. Defaults
+// to info — a broken link may be not-yet-written knowledge (SPEC §5.3) — but a
+// bundle may escalate it via [rules] or links.check_broken.
 func checkOKF202(ctx *Context) []Finding {
 	var fs []Finding
 	for _, d := range ctx.Bundle.Concepts {

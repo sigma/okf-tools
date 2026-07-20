@@ -41,7 +41,8 @@ type Links struct {
 	Style string `toml:"style"`
 	// AllowWikilinks toggles OKF101; false disallows [[wiki-links]].
 	AllowWikilinks bool `toml:"allow_wikilinks"`
-	// CheckBroken governs OKF202; hard-capped at "info", or "off" to disable.
+	// CheckBroken governs OKF202: off|info|warning|error. Defaults to "info"; a
+	// bundle may escalate broken links to a hard failure (see docs/RULES.md).
 	CheckBroken string `toml:"check_broken"`
 }
 
@@ -188,7 +189,7 @@ func (c *Config) Validate() error {
 		allowed  []string
 	}{
 		{"links.style", c.Links.Style, []string{"relative", "absolute", "any"}},
-		{"links.check_broken", c.Links.CheckBroken, []string{"info", "off"}},
+		{"links.check_broken", c.Links.CheckBroken, severities},
 		{"filenames.case", c.Filenames.Case, []string{"kebab", "any"}},
 		{"filenames.severity", c.Filenames.Severity, severities},
 		{"frontmatter.timestamp_format", c.Frontmatter.TimestampFormat, []string{"rfc3339", "date"}},

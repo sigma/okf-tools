@@ -82,6 +82,22 @@ func TestLoadValidateError(t *testing.T) {
 	}
 }
 
+func TestCheckBrokenEnumWidened(t *testing.T) {
+	// links.check_broken now accepts the full severity enum (OKF202 is promotable).
+	for _, v := range []string{"off", "info", "warning", "error"} {
+		c, err := Load(writeConfig(t, "[links]\ncheck_broken = \""+v+"\"\n"))
+		if err != nil {
+			t.Fatalf("check_broken=%q should validate: %v", v, err)
+		}
+		if c.Links.CheckBroken != v {
+			t.Errorf("check_broken = %q, want %q", c.Links.CheckBroken, v)
+		}
+	}
+	if _, err := Load(writeConfig(t, "[links]\ncheck_broken = \"loud\"\n")); err == nil {
+		t.Error("check_broken = loud should fail validation")
+	}
+}
+
 func TestGlossaryDefaults(t *testing.T) {
 	c := Default()
 	if c.Glossary.Enabled {

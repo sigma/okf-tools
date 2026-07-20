@@ -22,16 +22,21 @@ add or renumber rules without updating it.
      Configurable via `okf.toml`. Defaults are **spec-aligned**, not tied to any
      one bundle — a bundle opts into stricter policy (see
      [okf.example.toml](okf.example.toml)).
-   - **Worklist (`OKF2xx`)** — advisory. Severity **info**. **Never** fails a
-     build. These are candidates the agent resolves.
-   - **Optional qmd-backed (`OKF203`/`OKF204`)** — advisory like the worklist,
-     but they require a fresh `qmd` index. **Off unless the bundle sets
-     `qmd.enabled`**, so core linting stays dependency-free.
+   - **Worklist (`OKF2xx`)** — advisory. Default severity **info**. These are
+     candidates the agent resolves.
 
-3. **Broken links are not errors.** SPEC §5.3/§9 explicitly bless links to
-   not-yet-written concepts. `OKF202` is `info`, hard-capped — it can never be
-   promoted to error, by any config. This is the single most important place a
-   generic markdown linter gets OKF wrong.
+   **Defaults are spec-aligned and advisory, but not a ceiling.** Worklist rules
+   default to `info` and a bundle that leaves them alone never fails a build on
+   them — but a bundle **may escalate any rule** (worklist included) to
+   `warning`/`error` via the `[rules]` map, consciously accepting the deviation
+   from SPEC §5.3. Only conformance rules are immovable (fixed at `error`).
+
+3. **Broken links are not errors — by default.** SPEC §5.3/§9 explicitly bless
+   links to not-yet-written concepts, so `OKF202` **defaults to `info`**. This is
+   the single most important place a generic markdown linter gets OKF wrong.
+   A bundle that wants a hard CI gate on dead links may nonetheless promote it
+   (`[rules]."OKF202" = "error"`, or `links.check_broken = "error"`) — an
+   owner-ratified deviation from the spec default, not the default itself.
 
 4. **Link classification.** The linter distinguishes three kinds of links, and
    most rules scope to the first:
@@ -153,8 +158,10 @@ recommended; used by index generators, search snippets, previews. *Config:
 
 ## Category C — Worklist (`OKF2xx`)
 
-Advisory. Severity **info**. Never fails a build. These are the mechanical half
-of the semantic checks: the tool finds candidates; the agent decides.
+Advisory. Default severity **info** — a bundle that leaves them alone is never
+failed on them, though it may escalate any of them via `[rules]`. These are the
+mechanical half of the semantic checks: the tool finds candidates; the agent
+decides.
 
 ### `OKF201` orphan-pages
 A concept with no inbound cross-links from any other concept (index/log
@@ -162,8 +169,11 @@ excluded). Not necessarily wrong — may be a new or intentionally standalone
 page — but worth a look for graph connectivity.
 
 ### `OKF202` broken-links
-A concept cross-link whose target does not resolve inside the bundle. **`info`,
-hard-capped — never an error** (SPEC §5.3: may be not-yet-written knowledge).
+A concept cross-link whose target does not resolve inside the bundle. **Defaults
+to `info`** (SPEC §5.3: may be not-yet-written knowledge), but promotable — a
+bundle may set `links.check_broken` or `[rules]."OKF202"` up to `error` to make
+dead links a hard CI gate. *Config: `links.check_broken` = `off` | `info` |
+`warning` | `error`.*
 
 ### `OKF206` citation-target-exists *(optional, off by default)*
 A `# Citations` link with an on-disk path (e.g. `../import/x.md`) points to a

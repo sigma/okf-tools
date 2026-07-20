@@ -39,10 +39,20 @@ func TestEffective(t *testing.T) {
 		t.Errorf("conformance OKF001 = %v, want error", got)
 	}
 
-	capped := config.Default()
-	capped.Rules = map[string]string{"OKF202": "error"}
-	if got := Effective(Get("OKF202"), capped); got != Info {
-		t.Errorf("OKF202 = %v, want info (hard-capped)", got)
+	// OKF202 defaults to info but is now promotable via [rules] (no hard cap).
+	if got := Effective(Get("OKF202"), config.Default()); got != Info {
+		t.Errorf("OKF202 = %v, want info (default)", got)
+	}
+	promoted := config.Default()
+	promoted.Rules = map[string]string{"OKF202": "error"}
+	if got := Effective(Get("OKF202"), promoted); got != Error {
+		t.Errorf("OKF202 = %v, want error ([rules] override, no cap)", got)
+	}
+	// The typed knob escalates too.
+	warned := config.Default()
+	warned.Links.CheckBroken = "warning"
+	if got := Effective(Get("OKF202"), warned); got != Warning {
+		t.Errorf("OKF202 = %v, want warning (links.check_broken)", got)
 	}
 
 	fn := config.Default()
