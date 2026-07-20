@@ -45,6 +45,7 @@ type Bundle struct {
 	Concepts   []*Doc
 	Indexes    []*Doc
 	Logs       []*Doc
+	Glossaries []*Doc // declared glossary files (config [glossary] files)
 
 	byRel map[string]*Doc
 }
@@ -150,6 +151,12 @@ func Load(root, configPath string) (*Bundle, error) {
 		default:
 			d.Kind = KindConcept
 		}
+		// A declared glossary file is a third structured page kind: exempt from
+		// the concept conformance rules (it carries no frontmatter by design),
+		// like index.md/log.md.
+		if cfg.IsGlossary(rel) {
+			d.Glossary = true
+		}
 		b.Docs = append(b.Docs, d)
 		b.byRel[rel] = d
 		return nil
@@ -160,15 +167,15 @@ func Load(root, configPath string) (*Bundle, error) {
 
 	sort.Slice(b.Docs, func(i, j int) bool { return b.Docs[i].Rel < b.Docs[j].Rel })
 	for _, d := range b.Docs {
-		switch d.Kind {
-		case KindIndex:
+		switch {
+		case d.Glossary:
+			b.Glossaries = append(b.Glossaries, d)
+		case d.Kind == KindIndex:
 			b.Indexes = append(b.Indexes, d)
-		case KindLog:
+		case d.Kind == KindLog:
 			b.Logs = append(b.Logs, d)
-		default:
-			if !d.Reserved {
-				b.Concepts = append(b.Concepts, d)
-			}
+		case !d.Reserved:
+			b.Concepts = append(b.Concepts, d)
 		}
 	}
 
@@ -182,8 +189,7 @@ func Load(root, configPath string) (*Bundle, error) {
 	for _, d := range b.Docs {
 		d.MarkCitations(citationPred)
 		b.classify(d)
-		if cfg.IsGlossary(d.Rel) {
-			d.Glossary = true
+		if d.Glossary {
 			buildAnchors(d)
 		}
 	}
