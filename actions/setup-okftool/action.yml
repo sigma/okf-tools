@@ -1,0 +1,107 @@
+name: setup-okftool
+description: Download a released okftool binary onto PATH (no Nix required).
+
+# Consumed as:
+#   uses: sigma/okf-tools/actions/setup-okftool@vX.Y.Z   # exact release
+#   uses: sigma/okf-tools/actions/setup-okftool@vN        # floating major
+#
+# The version this action installs is baked in below as OKFTOOL_VERSION. The
+# release workflow (.github/workflows/release.yml) force-rewrites that single line
+# to the tag being released, so `@vX.Y.Z` / `@vN` always resolve to the matching
+# binary. On an unreleased checkout of main the marker is the 0.0.0 placeholder and
+# there is nothing to download — reference a released tag, not a branch.
+
+inputs:
+  install-dir:
+    description: >-
+      Directory to install okftool into and prepend to PATH.
+      Defaults to a temp dir the action manages.
+    required: false
+    default: ${{ runner.temp }}/okftool-bin
+
+outputs:
+  version:
+    description: The okftool version this action installed (e.g. 0.2.0).
+    value: ${{ steps.resolve.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve version and platform
+      id: resolve
+      shell: bash
+      env:
+        # release.yml rewrites exactly this line on every release (marker per #16/#19).
+        # Keep it a single `OKFTOOL_VERSION: "X.Y.Z"` line, or the release stamp breaks.
+        OKFTOOL_VERSION: "0.0.0"
+        INSTALL_DIR: ${{ inputs.install-dir }}
+      run: |
+        set -euo pipefail
+
+        version="$OKFTOOL_VERSION"
+        if [ "$version" = "0.0.0" ]; then
+          echo "::error::setup-okftool is pinned to an unreleased ref (OKFTOOL_VERSION is the 0.0.0 placeholder)." >&2
+          echo "::error::Reference a released tag, e.g. uses: sigma/okf-tools/actions/setup-okftool@v0" >&2
+          exit 1
+        fi
+
+        # Map the runner's uname to the release's GOOS/GOARCH tokens (#17).
+        case "$(uname -s)" in
+          Linux)  os=linux ;;
+          Darwin) os=darwin ;;
+          *) echo "::error::unsupported OS '$(uname -s)': okftool releases cover linux and darwin only." >&2; exit 1 ;;
+        esac
+        case "$(uname -m)" in
+          x86_64|amd64)  arch=amd64 ;;
+          aarch64|arm64) arch=arm64 ;;
+          *) echo "::error::unsupported architecture '$(uname -m)': okftool releases cover amd64 and arm64 only." >&2; exit 1 ;;
+        esac
+
+        {
+          echo "version=$version"
+          echo "os=$os"
+          echo "arch=$arch"
+          echo "asset=okftool_${version}_${os}_${arch}.tar.gz"
+          echo "install-dir=$INSTALL_DIR"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Download, verify, and install okftool
+      shell: bash
+      env:
+        VERSION: ${{ steps.resolve.outputs.version }}
+        ASSET: ${{ steps.resolve.outputs.asset }}
+        INSTALL_DIR: ${{ steps.resolve.outputs.install-dir }}
+      run: |
+        set -euo pipefail
+
+        base="https://github.com/sigma/okf-tools/releases/download/v${VERSION}"
+        work="$(mktemp -d)"
+        trap 'rm -rf "$work"' EXIT
+
+        echo "Downloading $ASSET from release v${VERSION}"
+        curl --fail --silent --show-error --location --retry 3 \
+          -o "$work/$ASSET" "$base/$ASSET"
+        curl --fail --silent --show-error --location --retry 3 \
+          -o "$work/checksums.txt" "$base/checksums.txt"
+
+        # Verify SHA-256 against the release's GNU-format checksums.txt (#15/#17).
+        # --ignore-missing checks only the asset we fetched; hard-fail on mismatch.
+        echo "Verifying checksum"
+        (
+          cd "$work"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum --check --ignore-missing checksums.txt
+          else
+            # Portable fallback (macOS runners): keep only our asset's line, then -c.
+            grep " ${ASSET}\$" checksums.txt | shasum -a 256 -c -
+          fi
+        )
+
+        # Extract the binary (archive root, alongside LICENSE — #17) into install-dir.
+        mkdir -p "$INSTALL_DIR"
+        tar -xzf "$work/$ASSET" -C "$INSTALL_DIR" ./okftool
+        chmod +x "$INSTALL_DIR/okftool"
+
+        # Prepend install-dir to PATH so later steps just run `okftool` (#22).
+        echo "$INSTALL_DIR" >> "$GITHUB_PATH"
+        echo "Installed okftool $VERSION to $INSTALL_DIR"
