@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout main
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0 # full history for the changelog and tag maths
@@ -118,7 +118,7 @@ jobs:
           git tag -f "$MAJOR"
           git push --force origin "refs/tags/$TAG" "refs/tags/$MAJOR"
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -138,14 +138,19 @@ jobs:
             dist/checksums.txt
 
   # End-to-end self-test of the setup-okftool action against the release just cut
-  # (map #12, ticket #25). Runs only here, after `release` has force-moved @v0/@vX.Y.Z
-  # onto the bumped commit and GoReleaser has uploaded the assets — so @v0 resolves to
-  # exactly this release and the download targets real assets. Testing at push/PR time
-  # is impossible: the action installs a *released* binary, and an unreleased checkout
-  # carries the 0.0.0 placeholder that hard-fails by design. Step-level `uses:` takes no
-  # expressions, so @v0 (static, and equal to this release after the force-move) is the
-  # ref. Matrix covers every OS/arch the release ships, exercising all four download
-  # branches (#15/#17). This is the check that would have caught the ./okftool bug (#26).
+  # (map #12, ticket #25). Runs only here, after `release` has force-moved @vX.Y.Z onto
+  # the bumped commit and GoReleaser has uploaded the assets — so checking out that tag
+  # yields the stamped OKFTOOL_VERSION and the download targets real assets. Testing at
+  # push/PR time is impossible: the action installs a *released* binary, and an
+  # unreleased checkout carries the 0.0.0 placeholder that hard-fails by design.
+  # Step-level `uses:` takes no expressions, so we can't interpolate the release tag as a
+  # remote action ref; and a static floating ref like @v0 would go stale the moment a
+  # vN>0 release ships (the bump only force-moves @vN, not @v0). Instead we check out the
+  # repo *at the exact release tag* (`with.ref` does accept expressions) and run the
+  # action from that local checkout (`./actions/setup-okftool`) — exercising the exact
+  # released action code against the exact released assets. Matrix covers every OS/arch
+  # the release ships, exercising all four download branches (#15/#17). This is the check
+  # that would have caught the ./okftool bug (#26).
   verify:
     name: verify (${{ matrix.os }})
     needs: [release]
@@ -165,11 +170,13 @@ jobs:
           - runner: macos-latest      # darwin/arm64 (Apple Silicon)
             os: darwin-arm64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name }} # the tag `release` force-moved onto the bumped commit
 
       - name: Install okftool via the just-released action
         id: setup
-        uses: sigma/okf-tools/actions/setup-okftool@v0
+        uses: ./actions/setup-okftool
 
       - name: Confirm okftool is on PATH
         run: |
