@@ -98,8 +98,10 @@ runs:
         )
 
         # Extract the binary (archive root, alongside LICENSE — #17) into install-dir.
+        # GoReleaser stores members with no `./` prefix (bare `okftool`); `./okftool`
+        # matches no member and hard-fails on both BSD and GNU tar (#26).
         mkdir -p "$INSTALL_DIR"
-        tar -xzf "$work/$ASSET" -C "$INSTALL_DIR" ./okftool
+        tar -xzf "$work/$ASSET" -C "$INSTALL_DIR" okftool
         chmod +x "$INSTALL_DIR/okftool"
 
         # Prepend install-dir to PATH so later steps just run `okftool` (#22).
