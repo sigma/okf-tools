@@ -82,6 +82,57 @@ func TestLoadValidateError(t *testing.T) {
 	}
 }
 
+func TestGlossaryDefaults(t *testing.T) {
+	c := Default()
+	if c.Glossary.Enabled {
+		t.Error("Glossary.Enabled should default false")
+	}
+	if c.Glossary.Files != nil {
+		t.Errorf("Glossary.Files should default nil, got %v", c.Glossary.Files)
+	}
+	// Disabled ⇒ nothing is a glossary, even a name that would match.
+	if c.Glossary.Enabled == false && c.IsGlossary("CONTEXT.md") {
+		t.Error("IsGlossary should be false when the extension is disabled")
+	}
+}
+
+func TestGlossaryLoadAndMatch(t *testing.T) {
+	p := writeConfig(t, `
+[glossary]
+enabled = true
+files   = ["CONTEXT.md", "src/*/CONTEXT.md"]
+`)
+	c, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Glossary.Enabled {
+		t.Fatal("Glossary.Enabled should be true")
+	}
+	cases := []struct {
+		rel  string
+		want bool
+	}{
+		{"CONTEXT.md", true},          // exact
+		{"/CONTEXT.md", true},         // bundle-absolute form
+		{"src/auth/CONTEXT.md", true}, // glob
+		{"src/CONTEXT.md", false},     // single * does not cross an extra segment
+		{"other.md", false},           // no match
+		{"CONTEXT.md.bak", false},     // suffix must match exactly
+	}
+	for _, tc := range cases {
+		if got := c.IsGlossary(tc.rel); got != tc.want {
+			t.Errorf("IsGlossary(%q) = %v, want %v", tc.rel, got, tc.want)
+		}
+	}
+}
+
+func TestGlossaryBadGlob(t *testing.T) {
+	if _, err := Load(writeConfig(t, "[glossary]\nenabled = true\nfiles = [\"[bad\"]\n")); err == nil {
+		t.Error("expected validation error for an unparseable glob")
+	}
+}
+
 func TestReservedSet(t *testing.T) {
 	set := Default().ReservedSet()
 	if !set["index.md"] || !set["log.md"] {

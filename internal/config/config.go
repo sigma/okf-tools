@@ -6,6 +6,7 @@ package config
 
 import (
 	"fmt"
+	"path"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -21,6 +22,7 @@ type Config struct {
 	Index       Index             `toml:"index"`
 	Worklist    Worklist          `toml:"worklist"`
 	QMD         QMD               `toml:"qmd"`
+	Glossary    Glossary          `toml:"glossary"`
 	Gaps        Gaps              `toml:"gaps"`
 	Rules       map[string]string `toml:"rules"`
 
@@ -81,6 +83,17 @@ type QMD struct {
 	Staleness              string  `toml:"staleness"`                // OKF204 severity
 }
 
+// Glossary configures the optional, opt-in glossary extension
+// (OKFEXT-GLOSSARY-*). It designates one or more Markdown files as single-file
+// glossaries whose entries are addressable by anchor. The convention comes from
+// the domain-modeling CONTEXT-FORMAT, not the OKF spec, so every glossary rule
+// is OFF unless Enabled is set — a bundle that doesn't opt in sees no new
+// diagnostics. Per-rule severity lives in the [rules] map.
+type Glossary struct {
+	Enabled bool     `toml:"enabled"` // master opt-in for all OKFEXT-GLOSSARY-* rules
+	Files   []string `toml:"files"`   // globs; the declared glossary/anchor-host files
+}
+
 // Gaps configures defaults for `okftool gaps`. CLI flags override these; the
 // config lets a bundle set its own defaults (e.g. depth = "neighborhood" when
 // indirect bridges matter more than direct ones).
@@ -131,6 +144,10 @@ func Default() *Config {
 			NearDuplicates:         "info",
 			NearDuplicateThreshold: 0.85,
 			Staleness:              "info",
+		},
+		Glossary: Glossary{
+			Enabled: false,
+			Files:   nil,
 		},
 		Gaps: Gaps{
 			Depth:  "direct",
@@ -191,7 +208,29 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("okf.toml: [rules] %s = %q is not one of %s", id, sev, strings.Join(severities, "|"))
 		}
 	}
+	for _, g := range c.Glossary.Files {
+		if _, err := path.Match(g, ""); err != nil {
+			return fmt.Errorf("okf.toml: [glossary] files entry %q is not a valid glob: %w", g, err)
+		}
+	}
 	return nil
+}
+
+// IsGlossary reports whether the bundle-relative path (forward slashes) matches
+// any declared [glossary] files glob. Parser/bundle and the glossary rules share
+// this one definition of "is this a glossary file". It always returns false when
+// the extension is disabled, so a bundle that hasn't opted in has no glossaries.
+func (c *Config) IsGlossary(rel string) bool {
+	if !c.Glossary.Enabled {
+		return false
+	}
+	rel = path.Clean(strings.TrimPrefix(rel, "/"))
+	for _, g := range c.Glossary.Files {
+		if ok, _ := path.Match(g, rel); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func oneOf(v string, allowed []string) bool {
