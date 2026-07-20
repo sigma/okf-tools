@@ -33,6 +33,12 @@ func init() {
 		Enabled: func(c *config.Config) bool { return c.Glossary.Enabled },
 		Check:   checkGlossaryTermUnique,
 	})
+	register(&Rule{
+		ID: "OKFEXT-GLOSSARY-04", Name: "glossary-orphan-term", Category: Extension,
+		Default: Info,
+		Enabled: func(c *config.Config) bool { return c.Glossary.Enabled },
+		Check:   checkGlossaryOrphanTerm,
+	})
 }
 
 // OKFEXT-GLOSSARY-01: a declared glossary file is term-structured per
@@ -108,6 +114,32 @@ func checkGlossaryTermUnique(ctx *Context) []Finding {
 					Message: fmt.Sprintf("anchor slug '%s' (%s '%s') collides with %s '%s' at line %d; glossary anchors must be unique",
 						a.Slug, a.Kind, a.Text, prev.Kind, prev.Text, prev.Line)})
 			}
+		}
+	}
+	return fs
+}
+
+// OKFEXT-GLOSSARY-04 (stretch, Worklist/info): a defined glossary term that no
+// concept references by anchor — the term-granularity analogue of OKF201
+// orphan-pages. Advisory: a freshly-authored term may simply not be linked yet.
+func checkGlossaryOrphanTerm(ctx *Context) []Finding {
+	var fs []Finding
+	for _, g := range ctx.Bundle.Glossaries {
+		// Slugs referenced by any concept cross-link into this glossary file.
+		referenced := map[string]bool{}
+		for _, d := range ctx.Bundle.Docs {
+			for _, rl := range d.Resolved {
+				if rl.Class == bundle.ClassConcept && rl.TargetDoc == g && rl.Fragment != "" {
+					referenced[rl.Fragment] = true
+				}
+			}
+		}
+		for _, a := range g.Anchors {
+			if a.Kind != bundle.AnchorTerm || referenced[a.Slug] {
+				continue
+			}
+			fs = append(fs, Finding{Path: g.Rel, Line: a.Line,
+				Message: fmt.Sprintf("orphan term: '%s' (#%s) is defined but no concept links to it", a.Text, a.Slug)})
 		}
 	}
 	return fs

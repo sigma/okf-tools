@@ -98,3 +98,31 @@ func TestGlossaryTermUnique(t *testing.T) {
 		t.Errorf("clean glossary: OKFEXT-GLOSSARY-03 = %d, want 0", got)
 	}
 }
+
+// TestGlossaryOrphanTerm covers OKFEXT-GLOSSARY-04: a defined-but-unreferenced
+// term fires one advisory info finding; a referenced term does not; disabling
+// the extension silences it.
+func TestGlossaryOrphanTerm(t *testing.T) {
+	b := loadFixture(t, "glossary-04")
+	fs := Run(&Context{Bundle: b, Config: b.Config}, nil, nil)
+	orphans := 0
+	for _, f := range fs {
+		if f.Rule == "OKFEXT-GLOSSARY-04" {
+			orphans++
+			if f.Severity != Info {
+				t.Errorf("orphan-term severity = %v, want info", f.Severity)
+			}
+			if f.Line != 4 {
+				t.Errorf("orphan-term at line %d, want 4 (the unreferenced term)", f.Line)
+			}
+		}
+	}
+	if orphans != 1 {
+		t.Fatalf("OKFEXT-GLOSSARY-04 = %d, want 1 (only the unreferenced term)", orphans)
+	}
+
+	b.Config.Glossary.Enabled = false
+	if got := countByRule(Run(&Context{Bundle: b, Config: b.Config}, nil, nil))["OKFEXT-GLOSSARY-04"]; got != 0 {
+		t.Errorf("disabled: OKFEXT-GLOSSARY-04 = %d, want 0", got)
+	}
+}
