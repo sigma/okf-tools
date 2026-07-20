@@ -70,3 +70,31 @@ func TestGlossaryAnchorResolves(t *testing.T) {
 		t.Errorf("promoted OKFEXT-GLOSSARY-02 = %d, want 2", got)
 	}
 }
+
+// TestGlossaryTermUnique covers OKFEXT-GLOSSARY-03: a term-term slug collision
+// and a term-heading slug collision each fire (at the later line); an all-unique
+// glossary is silent.
+func TestGlossaryTermUnique(t *testing.T) {
+	b := loadFixture(t, "glossary-03")
+	fs := Run(&Context{Bundle: b, Config: b.Config}, nil, nil)
+	if got := countByRule(fs)["OKFEXT-GLOSSARY-03"]; got != 2 {
+		for _, f := range fs {
+			t.Logf("%s %s:%d %s", f.Rule, f.Path, f.Line, f.Message)
+		}
+		t.Fatalf("OKFEXT-GLOSSARY-03 = %d, want 2", got)
+	}
+	lines := map[int]bool{}
+	for _, f := range fs {
+		if f.Rule == "OKFEXT-GLOSSARY-03" {
+			lines[f.Line] = true
+		}
+	}
+	if !lines[4] || !lines[8] {
+		t.Errorf("collisions reported at %v, want the later occurrences (lines 4 and 8)", lines)
+	}
+
+	clean := loadFixture(t, "glossary-clean")
+	if got := countByRule(Run(&Context{Bundle: clean, Config: clean.Config}, nil, nil))["OKFEXT-GLOSSARY-03"]; got != 0 {
+		t.Errorf("clean glossary: OKFEXT-GLOSSARY-03 = %d, want 0", got)
+	}
+}

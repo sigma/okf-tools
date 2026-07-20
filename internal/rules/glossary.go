@@ -27,6 +27,12 @@ func init() {
 		Enabled: func(c *config.Config) bool { return c.Glossary.Enabled },
 		Check:   checkGlossaryAnchor,
 	})
+	register(&Rule{
+		ID: "OKFEXT-GLOSSARY-03", Name: "glossary-term-unique", Category: Extension,
+		Default: Warning,
+		Enabled: func(c *config.Config) bool { return c.Glossary.Enabled },
+		Check:   checkGlossaryTermUnique,
+	})
 }
 
 // OKFEXT-GLOSSARY-01: a declared glossary file is term-structured per
@@ -76,6 +82,31 @@ func checkGlossaryAnchor(ctx *Context) []Finding {
 					fs = append(fs, Finding{Path: d.Rel, Line: rl.Line,
 						Message: undefinedAnchorMsg(d, rl.Fragment)})
 				}
+			}
+		}
+	}
+	return fs
+}
+
+// OKFEXT-GLOSSARY-03: within a glossary file, term slugs are unique and do not
+// collide with heading slugs — otherwise a #anchor is ambiguous and unstable
+// across renders (GitHub/Notion). Flags any slug produced by more than one term,
+// or by a term and a heading, at the later occurrence's line.
+func checkGlossaryTermUnique(ctx *Context) []Finding {
+	var fs []Finding
+	for _, g := range ctx.Bundle.Glossaries {
+		first := map[string]bundle.Anchor{}
+		for _, a := range g.Anchors { // sorted by line
+			prev, seen := first[a.Slug]
+			if !seen {
+				first[a.Slug] = a
+				continue
+			}
+			// A collision matters only when at least one side is a term.
+			if a.Kind == bundle.AnchorTerm || prev.Kind == bundle.AnchorTerm {
+				fs = append(fs, Finding{Path: g.Rel, Line: a.Line,
+					Message: fmt.Sprintf("anchor slug '%s' (%s '%s') collides with %s '%s' at line %d; glossary anchors must be unique",
+						a.Slug, a.Kind, a.Text, prev.Kind, prev.Text, prev.Line)})
 			}
 		}
 	}
