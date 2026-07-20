@@ -56,7 +56,7 @@ func Lint(args []string) (int, error) {
 
 	ctx := &rules.Context{Bundle: b, Config: b.Config}
 	// Only pay for the qmd analysis (model load + all-pairs similarity) when a
-	// qmd-backed rule will actually run — so `--ignore OKF203,OKF204` (or config
+	// qmd-backed rule will actually run — so `--ignore OKFEXT-QMD-01,OKFEXT-QMD-02` (or config
 	// disabling them) makes lint truly fast, not just quiet.
 	if b.Config.QMD.Enabled && rules.NeedsQMD(b.Config, selected, ignored) {
 		ctx.QMD = qmd.Analyze(b.Root, qmdConcepts(b), &b.Config.QMD, nil)

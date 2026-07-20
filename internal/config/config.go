@@ -72,15 +72,15 @@ type Worklist struct {
 	Orphans string `toml:"orphans"` // OKF201 (dependency-free)
 }
 
-// QMD configures the optional, qmd-backed worklist rules (OKF203/OKF204). They
-// require a fresh local qmd index (and the qmd binary on PATH) and are OFF unless
-// Enabled is set, so the core of okf lint stays dependency-free.
+// QMD configures the optional, qmd-backed extension rules (OKFEXT-QMD-01/02).
+// They require a fresh local qmd index (and the qmd binary on PATH) and are OFF
+// unless Enabled is set, so the core of okf lint stays dependency-free.
 type QMD struct {
-	Enabled                bool    `toml:"enabled"`                  // master opt-in for OKF203/OKF204
+	Enabled                bool    `toml:"enabled"`                  // master opt-in for OKFEXT-QMD-*
 	Path                   string  `toml:"path"`                     // qmd binary; default "qmd" (resolved on PATH)
-	NearDuplicates         string  `toml:"near_duplicates"`          // OKF203 severity
-	NearDuplicateThreshold float64 `toml:"near_duplicate_threshold"` // OKF203
-	Staleness              string  `toml:"staleness"`                // OKF204 severity
+	NearDuplicates         string  `toml:"near_duplicates"`          // OKFEXT-QMD-01 severity
+	NearDuplicateThreshold float64 `toml:"near_duplicate_threshold"` // OKFEXT-QMD-01
+	Staleness              string  `toml:"staleness"`                // OKFEXT-QMD-02 severity
 }
 
 // Glossary configures the optional, opt-in glossary extension

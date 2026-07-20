@@ -1,5 +1,5 @@
 // Package qmd integrates the optional qmd semantic-search tool for the
-// qmd-backed worklist rules (OKF203 near-duplicate, OKF204 staleness). It shells
+// qmd-backed extension rules (OKFEXT-QMD-01 near-duplicate, OKFEXT-QMD-02 staleness). It shells
 // out to the `qmd` binary; a missing binary or unready index degrades
 // gracefully into a Result the rules surface as a single info finding, so the
 // rest of okftool lint stays dependency-free.
@@ -55,8 +55,8 @@ type Pair struct {
 // index could not be used.
 type Result struct {
 	Unavailable string
-	NearDup     []Pair // OKF203
-	StaleReason string // OKF204 ("" = fresh)
+	NearDup     []Pair // OKFEXT-QMD-01
+	StaleReason string // OKFEXT-QMD-02 ("" = fresh)
 }
 
 // resolveRunner returns run if non-nil, else a runner for the configured qmd

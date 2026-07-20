@@ -73,7 +73,7 @@ It returns concepts semantically **near** the seed but **not linked** to it
 neighbors (`holes`). These are candidate cross-links / bridges: the tool finds
 the discrepancy between the *authored* link graph and the *semantic* one; **you**
 decide whether the connection is worth writing. Needs `qmd.enabled` and a fresh
-qmd index (same requirement as `OKF203`).
+qmd index (same requirement as `OKFEXT-QMD-01`).
 
 Use it after drafting or editing a page, or when asked "what should this page
 reference?" / "what's underdeveloped about this topic?"
@@ -84,10 +84,12 @@ reference?" / "what's underdeveloped about this topic?"
   these pass.
 - `OKF1xx` **policy** — configurable per bundle via `okf.toml`; usually `warning`.
 - `OKF2xx` **worklist** — advisory `info`; never fails a build. `OKF202`
-  (broken links) is hard-capped at `info` on purpose.
-- `OKF203`/`OKF204` **qmd-backed** — optional semantic checks (near-duplicate
-  pages, stale index), off unless the bundle sets `qmd.enabled` and `qmd` is
-  available (on `PATH`, or via `qmd.path`).
+  (broken links) defaults to `info`.
+- `OKFEXT-<EXT>-<NN>` **extensions** — built-in, non-spec, opt-in checks; the
+  `OKFxxx` space is reserved for the OKF spec. `OKFEXT-QMD-01`/`OKFEXT-QMD-02`
+  **qmd-backed** — optional semantic checks (near-duplicate pages, stale index),
+  off unless the bundle sets `qmd.enabled` and `qmd` is available (on `PATH`, or
+  via `qmd.path`).
 
 ## Commands
 

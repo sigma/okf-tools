@@ -6,32 +6,34 @@ import (
 	"github.com/sigma/okf-tools/internal/config"
 )
 
-// Category D — qmd-backed (optional). OKF203/OKF204 need a fresh qmd index and
-// are off unless the bundle sets qmd.enabled. Advisory, hard-capped at info. The
-// qmd analysis itself is run by the command layer and handed in via Context.QMD.
+// qmd-backed extension (OKFEXT-QMD-*). A built-in extension, not part of the OKF
+// spec, so it lives in the OKFEXT namespace rather than the OKF2xx worklist band.
+// The rules need a fresh qmd index and are off unless the bundle sets
+// qmd.enabled. The qmd analysis itself is run by the command layer and handed in
+// via Context.QMD.
 
 func init() {
 	register(&Rule{
-		ID: "OKF203", Name: "near-duplicate", Category: Worklist,
-		Default: Info, HardCapInfo: true,
+		ID: "OKFEXT-QMD-01", Name: "near-duplicate", Category: Extension,
+		Default:   Info,
 		Enabled:   func(c *config.Config) bool { return c.QMD.Enabled },
 		SevConfig: func(c *config.Config) string { return c.QMD.NearDuplicates },
-		Check:     checkOKF203,
+		Check:     checkQMDNearDuplicate,
 	})
 	register(&Rule{
-		ID: "OKF204", Name: "qmd-staleness", Category: Worklist,
-		Default: Info, HardCapInfo: true,
+		ID: "OKFEXT-QMD-02", Name: "qmd-staleness", Category: Extension,
+		Default:   Info,
 		Enabled:   func(c *config.Config) bool { return c.QMD.Enabled },
 		SevConfig: func(c *config.Config) string { return c.QMD.Staleness },
-		Check:     checkOKF204,
+		Check:     checkQMDStaleness,
 	})
 }
 
-// OKF203: concept pairs qmd reports as highly similar. The merge/keep decision
-// is the agent's.
-func checkOKF203(ctx *Context) []Finding {
+// OKFEXT-QMD-01: concept pairs qmd reports as highly similar. The merge/keep
+// decision is the agent's.
+func checkQMDNearDuplicate(ctx *Context) []Finding {
 	if ctx.QMD == nil || ctx.QMD.Unavailable != "" {
-		return nil // OKF204 surfaces an unavailable index
+		return nil // OKFEXT-QMD-02 surfaces an unavailable index
 	}
 	var fs []Finding
 	for _, p := range ctx.QMD.NearDup {
@@ -41,9 +43,9 @@ func checkOKF203(ctx *Context) []Finding {
 	return fs
 }
 
-// OKF204: the qmd index is unavailable or stale — semantic recall (and OKF203)
-// can't be trusted until it is refreshed.
-func checkOKF204(ctx *Context) []Finding {
+// OKFEXT-QMD-02: the qmd index is unavailable or stale — semantic recall (and
+// OKFEXT-QMD-01) can't be trusted until it is refreshed.
+func checkQMDStaleness(ctx *Context) []Finding {
 	if ctx.QMD == nil {
 		return nil
 	}

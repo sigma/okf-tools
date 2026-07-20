@@ -62,6 +62,7 @@ const (
 	Conformance Category = iota // OKF0xx: always on, fixed at error
 	Policy                      // OKF1xx: configurable
 	Worklist                    // OKF2xx: advisory, hard-capped at info
+	Extension                   // OKFEXT-<EXT>-<NN>: non-spec, opt-in; configurable like Policy
 )
 
 // Finding is a single reported problem.
@@ -78,7 +79,7 @@ type Finding struct {
 type Context struct {
 	Bundle *bundle.Bundle
 	Config *config.Config
-	QMD    *qmd.Result // qmd analysis for OKF203/OKF204; nil when qmd.enabled is off
+	QMD    *qmd.Result // qmd analysis for OKFEXT-QMD-*; nil when qmd.enabled is off
 }
 
 // Rule is one catalog entry.
@@ -188,12 +189,12 @@ func Run(ctx *Context, selected, ignored map[string]bool) []Finding {
 }
 
 // qmdBackedRules need ctx.QMD (the qmd analysis); kept in sync with docs/RULES.md.
-var qmdBackedRules = []string{"OKF203", "OKF204"}
+var qmdBackedRules = []string{"OKFEXT-QMD-01", "OKFEXT-QMD-02"}
 
 // NeedsQMD reports whether any qmd-backed rule will actually run under cfg and the
 // given CLI selection. The command layer uses it to skip the expensive qmd
 // analysis when those rules are disabled, deselected, or ignored (e.g.
-// `--ignore OKF203,OKF204`), so a routine lint pays no qmd cost.
+// `--ignore OKFEXT-QMD-01,OKFEXT-QMD-02`), so a routine lint pays no qmd cost.
 func NeedsQMD(cfg *config.Config, selected, ignored map[string]bool) bool {
 	for _, id := range qmdBackedRules {
 		if len(selected) > 0 && !selected[id] {

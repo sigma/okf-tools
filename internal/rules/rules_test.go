@@ -91,7 +91,8 @@ func TestRegistryComplete(t *testing.T) {
 	want := []string{
 		"OKF001", "OKF002", "OKF003", "OKF004",
 		"OKF101", "OKF102", "OKF103", "OKF104", "OKF105", "OKF106", "OKF107",
-		"OKF201", "OKF202", "OKF203", "OKF204", "OKF206",
+		"OKF201", "OKF202", "OKF206",
+		"OKFEXT-QMD-01", "OKFEXT-QMD-02",
 	}
 	got := ruleSet(nil)
 	for _, r := range All() {
@@ -118,12 +119,12 @@ func TestQMDRules(t *testing.T) {
 			StaleReason: "qmd embeddings are stale",
 		},
 	}
-	got := ruleSet(Run(ctx, map[string]bool{"OKF203": true, "OKF204": true}, nil))
-	if !got["OKF203"] {
-		t.Error("expected OKF203 near-duplicate finding")
+	got := ruleSet(Run(ctx, map[string]bool{"OKFEXT-QMD-01": true, "OKFEXT-QMD-02": true}, nil))
+	if !got["OKFEXT-QMD-01"] {
+		t.Error("expected OKFEXT-QMD-01 near-duplicate finding")
 	}
-	if !got["OKF204"] {
-		t.Error("expected OKF204 staleness finding")
+	if !got["OKFEXT-QMD-02"] {
+		t.Error("expected OKFEXT-QMD-02 staleness finding")
 	}
 }
 
@@ -137,7 +138,7 @@ func TestNeedsQMD(t *testing.T) {
 	if !NeedsQMD(on, nil, nil) {
 		t.Error("qmd enabled: NeedsQMD should be true")
 	}
-	if NeedsQMD(on, nil, map[string]bool{"OKF203": true, "OKF204": true}) {
+	if NeedsQMD(on, nil, map[string]bool{"OKFEXT-QMD-01": true, "OKFEXT-QMD-02": true}) {
 		t.Error("both qmd rules ignored: NeedsQMD should be false")
 	}
 	if NeedsQMD(on, map[string]bool{"OKF001": true}, nil) {
