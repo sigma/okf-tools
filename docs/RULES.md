@@ -277,6 +277,41 @@ A defined glossary term that no concept references by anchor — the
 term-granularity analogue of `OKF201` orphan-pages. Advisory (`info`): a
 freshly-authored term may simply not be linked yet.
 
+### `OKFEXT-SCHEMA-*` — frontmatter schema conformance *(opt-in)*
+
+Validates each concept's frontmatter against a bundle's **`/schema.json`** — the
+closed, authoritative declaration of the columns of an *export database* (the
+[sigma/ideas](https://github.com/sigma/ideas) Notion mirror, issue #117). One file
+is shared by two consumers: the sync pipeline provisions and populates the database
+from it, and this rule lints the frontmatter that feeds it. Off unless the bundle
+sets `schema.enabled = true` and points `schema.file` at the JSON; default severity
+**warning**, promotable via `[rules]`.
+
+The pipeline **silently drops** any frontmatter key that is not a declared column;
+this rule is its strict counterpart, surfacing those drops (and value/enum
+violations) at author time. `schema.json` is a JSON object keyed by column name,
+each `{ "kind": …, "source": "derived"|"frontmatter", "options"?: [ … ] }`.
+
+| Rule | Default | What it checks |
+|------|---------|----------------|
+| `OKFEXT-SCHEMA-01` frontmatter-schema-conformance | warning | every frontmatter key is a declared column, and each `source: frontmatter` value matches its `kind` and `options` |
+
+#### `OKFEXT-SCHEMA-01` frontmatter-schema-conformance
+For each concept's frontmatter:
+
+- a **`source: frontmatter`** column is validated — the value must match the
+  column's `kind` (`text`/`select`/`list`/`number`/`date`/`checkbox`), and where the
+  column carries `options`, be one of them (each element, for a `list`);
+- a **`source: derived`** column is **ignored** — `Name`/`path`/`type`/`hash` are
+  computed by the pipeline, never authored, so a key naming one is skipped, neither
+  required nor rejected;
+- the conventional **`title:`** key is tolerated when the schema declares a
+  title-kind column (the derived `Name` it feeds);
+- every other key is **undeclared**, and flagged.
+
+All findings anchor to line 1 (the frontmatter block). Concepts without parseable
+frontmatter are left to `OKF001`.
+
 ---
 
 ## Out of scope

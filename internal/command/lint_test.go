@@ -65,6 +65,7 @@ func TestRuleTriggers(t *testing.T) {
 		{"okf201", "OKF201"},
 		{"okf202", "OKF202"},
 		{"okf206", "OKF206"},
+		{"schema-01", "OKFEXT-SCHEMA-01"},
 	}
 	for _, c := range cases {
 		t.Run(c.fixture, func(t *testing.T) {

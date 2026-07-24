@@ -1,0 +1,3 @@
+[schema]
+enabled = true
+file = "schema.json"

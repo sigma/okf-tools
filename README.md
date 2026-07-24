@@ -69,9 +69,10 @@ Implemented: conformance rules `OKF001`–`OKF004`, policy `OKF101`–`OKF107`, 
 worklist `OKF201`/`OKF202`/`OKF206`, with autofix for the safe ones. Optional and
 opt-in **extensions** (the `OKFEXT-*` namespace, off by default; `OKF0xx/1xx/2xx`
 stays reserved for the spec): `OKFEXT-QMD-01`/`OKFEXT-QMD-02` (qmd-backed semantic
-near-duplicate detection and index staleness, needs `qmd` on `PATH`) and
-`OKFEXT-GLOSSARY-*` (anchor-checked single-file glossaries). Not yet built: the
-Claude Code hook wiring (a consuming-bundle artifact).
+near-duplicate detection and index staleness, needs `qmd` on `PATH`),
+`OKFEXT-GLOSSARY-*` (anchor-checked single-file glossaries), and
+`OKFEXT-SCHEMA-01` (frontmatter validated against a closed `schema.json`). Not yet
+built: the Claude Code hook wiring (a consuming-bundle artifact).
 
 Reference:
 

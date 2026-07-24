@@ -1,0 +1,9 @@
+{
+  "Name": { "kind": "title", "source": "derived" },
+  "path": { "kind": "text", "source": "derived" },
+  "type": { "kind": "select", "source": "derived", "options": ["adr", "idea"] },
+  "status": { "kind": "select", "source": "frontmatter", "options": ["proposed", "accepted", "draft"] },
+  "tags": { "kind": "list", "source": "frontmatter" },
+  "created": { "kind": "date", "source": "frontmatter" },
+  "description": { "kind": "text", "source": "frontmatter" }
+}

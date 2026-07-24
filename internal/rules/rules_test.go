@@ -104,6 +104,7 @@ func TestRegistryComplete(t *testing.T) {
 		"OKF201", "OKF202", "OKF206",
 		"OKFEXT-QMD-01", "OKFEXT-QMD-02",
 		"OKFEXT-GLOSSARY-01", "OKFEXT-GLOSSARY-02", "OKFEXT-GLOSSARY-03", "OKFEXT-GLOSSARY-04",
+		"OKFEXT-SCHEMA-01",
 	}
 	got := ruleSet(nil)
 	for _, r := range All() {
