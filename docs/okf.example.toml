@@ -89,6 +89,17 @@ enabled = false
 # Multi-context bundles can use e.g. ["CONTEXT.md", "src/*/CONTEXT.md"].
 files = ["CONTEXT.md"]
 
+[schema]
+# The frontmatter-schema extension (OKFEXT-SCHEMA-01). OFF by default. When a
+# bundle exports to a database whose columns are declared in a closed schema.json
+# (e.g. the sigma/ideas Notion mirror), enabling this lints every concept's
+# frontmatter against it: undeclared keys, wrong kinds, and out-of-vocabulary
+# select/list values are flagged. `source: derived` columns and the `title:` key
+# are ignored (pipeline-owned / the built-in page title).
+enabled = false
+# Bundle-root-relative path to the schema declaration.
+file = "schema.json"
+
 [gaps]
 # Defaults for `okftool gaps <concept>` (also qmd-backed). CLI flags override
 # these. Set depth = "neighborhood" if indirect bridges (open triangles among a
@@ -107,3 +118,4 @@ min_sim = 0.4                     # similarity floor
 # OKF103 = "off"
 # OKF202 = "error"                # make broken concept links a hard CI gate
 # OKFEXT-GLOSSARY-02 = "error"    # make undefined glossary anchors fail the build
+# OKFEXT-SCHEMA-01 = "error"      # make frontmatter schema violations fail the build

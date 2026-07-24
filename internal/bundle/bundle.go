@@ -12,6 +12,7 @@ import (
 
 	"github.com/sigma/okf-tools/internal/config"
 	"github.com/sigma/okf-tools/internal/parser"
+	"github.com/sigma/okf-tools/internal/schema"
 )
 
 // DocKind distinguishes concept pages from the two reserved structural files.
@@ -46,6 +47,10 @@ type Bundle struct {
 	Indexes    []*Doc
 	Logs       []*Doc
 	Glossaries []*Doc // declared glossary files (config [glossary] files)
+
+	// Schema is the parsed /schema.json when the frontmatter-schema extension is
+	// enabled (config [schema]); nil otherwise. OKFEXT-SCHEMA-01 lints against it.
+	Schema *schema.Schema
 
 	byRel map[string]*Doc
 }
@@ -120,6 +125,18 @@ func Load(root, configPath string) (*Bundle, error) {
 
 	b := &Bundle{Root: root, Config: cfg, byRel: map[string]*Doc{}}
 	reserved := cfg.ReservedSet()
+
+	// The frontmatter-schema extension (OKFEXT-SCHEMA-01) loads its authoritative
+	// /schema.json up front — relative to the bundle root — so a malformed or
+	// missing schema fails the whole load loudly rather than silently linting
+	// nothing. Parsed once here; the rule reads b.Schema.
+	if cfg.Schema.Enabled {
+		sc, serr := schema.Load(filepath.Join(root, cfg.Schema.File))
+		if serr != nil {
+			return nil, fmt.Errorf("load schema: %w", serr)
+		}
+		b.Schema = sc
+	}
 
 	err = filepath.WalkDir(root, func(p string, e fs.DirEntry, err error) error {
 		if err != nil {

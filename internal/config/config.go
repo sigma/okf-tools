@@ -23,6 +23,7 @@ type Config struct {
 	Worklist    Worklist          `toml:"worklist"`
 	QMD         QMD               `toml:"qmd"`
 	Glossary    Glossary          `toml:"glossary"`
+	Schema      Schema            `toml:"schema"`
 	Gaps        Gaps              `toml:"gaps"`
 	Rules       map[string]string `toml:"rules"`
 
@@ -95,6 +96,17 @@ type Glossary struct {
 	Files   []string `toml:"files"`   // globs; the declared glossary/anchor-host files
 }
 
+// Schema configures the optional frontmatter-schema extension (OKFEXT-SCHEMA-01).
+// It points at a bundle's /schema.json — the closed, authoritative column
+// declaration for an export database (sigma/ideas #117) — against which each
+// mirrored file's frontmatter is validated. Non-spec and OFF unless Enabled, so a
+// bundle that does not export to such a database sees no new diagnostics. The rule
+// severity lives in the [rules] map like every other extension.
+type Schema struct {
+	Enabled bool   `toml:"enabled"` // master opt-in for OKFEXT-SCHEMA-*
+	File    string `toml:"file"`    // bundle-root-relative schema.json; default "schema.json"
+}
+
 // Gaps configures defaults for `okftool gaps`. CLI flags override these; the
 // config lets a bundle set its own defaults (e.g. depth = "neighborhood" when
 // indirect bridges matter more than direct ones).
@@ -149,6 +161,10 @@ func Default() *Config {
 		Glossary: Glossary{
 			Enabled: false,
 			Files:   nil,
+		},
+		Schema: Schema{
+			Enabled: false,
+			File:    "schema.json",
 		},
 		Gaps: Gaps{
 			Depth:  "direct",
@@ -213,6 +229,9 @@ func (c *Config) Validate() error {
 		if _, err := path.Match(g, ""); err != nil {
 			return fmt.Errorf("okf.toml: [glossary] files entry %q is not a valid glob: %w", g, err)
 		}
+	}
+	if c.Schema.Enabled && strings.TrimSpace(c.Schema.File) == "" {
+		return fmt.Errorf("okf.toml: [schema] enabled requires a non-empty file")
 	}
 	return nil
 }
