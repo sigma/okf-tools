@@ -85,11 +85,43 @@ type taggedUnit struct {
 // graph structure and the backend's Tokenizer + ConstraintModel — no transport or
 // runtime state — and is deterministic: the same graph and backend yield a
 // byte-identical TxnDAG.
+//
+// Fusion can collapse a node's CreateNode+SetContent into one PackedTxn, so a
+// directed cycle among mutually-linking new pages (reciprocal a↔b, or a longer
+// ring a→b→c→a) fuses into a transaction cycle the transport cannot drain. The
+// scoped-seal loop below (strategy sigma/okf-tools#67) detects cycles on the
+// *actual* fused txn-DAG and de-fuses the minimal node set: each round it force-
+// splits the lowest-Group-id node of every cyclic SCC (sealing its create[+props]
+// away from its content, so the node's existence is produced by a txn carrying no
+// outbound content Refs), then re-packs and re-derives until the DAG is acyclic.
+// Detecting on the post-pack DAG accounts for overflow for free — a node already
+// split by capacity cannot sit on a fusion cycle — and only cross-linking bundles
+// pay the one extra transaction; healthy-fusion bundles are untouched.
 func Optimize(g *graph.Graph, tk backend.Tokenizer, cm backend.ConstraintModel) *TxnDAG {
 	units := tokenize(g, tk)
-	txns := pack(units, cm)
+
+	// forceSplit accumulates the Groups whose create-from-content seam must be
+	// sealed to break a fusion cycle. It only ever grows, and split selection is a
+	// total order on Group id, so the loop is deterministic (#164 §6).
+	forceSplit := map[publish.GroupKey]bool{}
+	txns := pack(units, cm, forceSplit)
 	edges := deriveEdges(txns)
-	return &TxnDAG{Txns: txns, Edges: edges}
+	// Every round splits at least one previously-unsplit node, so the loop runs at
+	// most once per distinct Group; the bound is a belt-and-suspenders backstop
+	// against a non-terminating detect/re-pack cycle that the acyclicity invariant
+	// says cannot happen.
+	for round := 0; round <= len(txns); round++ {
+		cyclic := cyclicSplitTargets(txns, edges, forceSplit)
+		if len(cyclic) == 0 {
+			return &TxnDAG{Txns: txns, Edges: edges}
+		}
+		for _, grp := range cyclic {
+			forceSplit[grp] = true
+		}
+		txns = pack(units, cm, forceSplit)
+		edges = deriveEdges(txns)
+	}
+	panic("optimize: transaction-DAG still cyclic after splitting every cyclic node")
 }
 
 // tokenize turns each op into AtomicUnits: it owns the Tokenize call for
@@ -187,8 +219,10 @@ func tokenize(g *graph.Graph, tk backend.Tokenizer) []taggedUnit {
 // pack applies the identity partition on Group and, within each group, next-fit
 // packs the create-before-content ordered units into bins, sealing each bin into
 // a PackedTxn with intra-transaction Ref-suppression. Groups are visited in
-// sorted GroupKey order for determinism.
-func pack(units []taggedUnit, cm backend.ConstraintModel) []publish.PackedTxn {
+// sorted GroupKey order for determinism. A group in forceSplit has its
+// create[+props] prefix sealed away from its content (the scoped seal that breaks
+// a fusion cycle).
+func pack(units []taggedUnit, cm backend.ConstraintModel, forceSplit map[publish.GroupKey]bool) []publish.PackedTxn {
 	byGroup := map[publish.GroupKey][]taggedUnit{}
 	for _, tu := range units {
 		byGroup[tu.unit.Group] = append(byGroup[tu.unit.Group], tu)
@@ -213,7 +247,7 @@ func pack(units []taggedUnit, cm backend.ConstraintModel) []publish.PackedTxn {
 			}
 			return a.seq - b.seq
 		})
-		txns = append(txns, packGroup(g, gu, cm)...)
+		txns = append(txns, packGroup(g, gu, cm, forceSplit[g])...)
 	}
 	return txns
 }
@@ -221,13 +255,35 @@ func pack(units []taggedUnit, cm backend.ConstraintModel) []publish.PackedTxn {
 // packGroup next-fit packs one group's ordered units: a single open bin accepts
 // units until it refuses, then it is sealed and a fresh bin opened. Each sealed
 // bin becomes a PackedTxn.
-func packGroup(g publish.GroupKey, gu []taggedUnit, cm backend.ConstraintModel) []publish.PackedTxn {
+//
+// When forceSplit is set, the open bin is additionally sealed at the create→content
+// boundary — before the group's first content unit lands — so the node's
+// existence (its CreateNode, and any SetProperties, all of which expose only the
+// node's own self-produced write-target Ref) seals into a txn distinct from its
+// content, which alone carries the outbound cross-node Refs that formed the cycle.
+// The seam fires at most once (the create[+props] prefix is contiguous and sorts
+// before content); content then packs normally, overflow and all.
+func packGroup(g publish.GroupKey, gu []taggedUnit, cm backend.ConstraintModel, forceSplit bool) []publish.PackedTxn {
 	var txns []publish.PackedTxn
 	bin := cm.NewBin()
 	acc := newAccumulator(g)
-	filled := false // whether the open bin holds at least one unit
+	filled := false       // whether the open bin holds at least one unit
+	sealedPrefix := false // whether the forced create→content seal has already fired
 
 	for _, tu := range gu {
+		// Forced create→content seal: the first content unit of a flagged group
+		// opens a fresh bin, sealing whatever create[+props] units preceded it. If
+		// no such prefix landed (a content-only update to an existing node), there
+		// is nothing to split and the seam is a no-op.
+		if forceSplit && !sealedPrefix && tu.phase == phaseContent {
+			sealedPrefix = true
+			if filled {
+				txns = append(txns, acc.seal(bin.Build()))
+				bin = cm.NewBin()
+				acc = newAccumulator(g)
+				filled = false
+			}
+		}
 		if bin.Add(tu.unit) {
 			acc.add(tu)
 			filled = true
@@ -374,6 +430,94 @@ func deriveEdges(txns []publish.PackedTxn) []Edge {
 		return a.To - b.To
 	})
 	return edges
+}
+
+// cyclicSplitTargets finds the strongly-connected components of the transaction-
+// DAG and, for each one that is an actual cycle, returns the Group of the node to
+// force-split to help break it: the lowest Group id among the SCC's txns not
+// already split. The lowest-id rule is a total order, so the choice — and thus the
+// whole optimize loop — is deterministic (#164 §6); it is deliberately not a
+// minimal feedback-vertex-set, since correctness and determinism matter at this
+// scale and optimality does not. Every txn in a cyclic SCC Produces a node (a txn
+// producing nothing has no inbound edge and cannot close a cycle), so a valid,
+// splittable Group always exists. The returned Groups are sorted and unique.
+func cyclicSplitTargets(txns []publish.PackedTxn, edges []Edge, forceSplit map[publish.GroupKey]bool) []publish.GroupKey {
+	adj := make([][]int, len(txns))
+	for _, e := range edges {
+		adj[e.From] = append(adj[e.From], e.To)
+	}
+
+	// Tarjan's SCC. Graphs are tiny (a handful of new pages), so plain recursion
+	// over a fixed adjacency is ample.
+	const unvisited = -1
+	index := make([]int, len(txns))
+	low := make([]int, len(txns))
+	onStack := make([]bool, len(txns))
+	for i := range index {
+		index[i] = unvisited
+	}
+	var stack []int
+	next := 0
+	var targets []publish.GroupKey
+
+	// record inspects a finished SCC: an SCC is a cycle iff it has more than one
+	// node (self-edges are never derived). It picks the lowest unsplit Group.
+	record := func(comp []int) {
+		if len(comp) < 2 {
+			return
+		}
+		chosen := publish.GroupKey("")
+		for _, v := range comp {
+			g := txns[v].Group
+			if forceSplit[g] {
+				continue
+			}
+			if chosen == "" || g < chosen {
+				chosen = g
+			}
+		}
+		if chosen != "" {
+			targets = append(targets, chosen)
+		}
+	}
+
+	var strongConnect func(v int)
+	strongConnect = func(v int) {
+		index[v] = next
+		low[v] = next
+		next++
+		stack = append(stack, v)
+		onStack[v] = true
+		for _, w := range adj[v] {
+			if index[w] == unvisited {
+				strongConnect(w)
+				low[v] = min(low[v], low[w])
+			} else if onStack[w] {
+				low[v] = min(low[v], index[w])
+			}
+		}
+		if low[v] == index[v] {
+			var comp []int
+			for {
+				w := stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+				onStack[w] = false
+				comp = append(comp, w)
+				if w == v {
+					break
+				}
+			}
+			record(comp)
+		}
+	}
+	for v := range txns {
+		if index[v] == unvisited {
+			strongConnect(v)
+		}
+	}
+
+	slices.Sort(targets)
+	return slices.Compact(targets)
 }
 
 // dedupSorted returns a sorted, duplicate-free clone of ids so a PackedTxn's id
