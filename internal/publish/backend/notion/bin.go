@@ -37,11 +37,12 @@ type bin struct {
 	group    publish.GroupKey
 	hasGroup bool
 
-	create    *createBlock
-	props     *propsBlock
-	del       *deleteBlock
-	children  []childBlock
-	childCost int
+	create       *createBlock
+	createParent publish.SymbolicID // the create unit's parent Ref, for POST /pages ("" = top-level)
+	props        *propsBlock
+	del          *deleteBlock
+	children     []childBlock
+	childCost    int
 }
 
 // Add tries to add a unit, returning false without mutating the bin if the unit
@@ -60,6 +61,13 @@ func (bn *bin) Add(u publish.AtomicUnit) bool {
 		}
 		bn.claim(u.Group)
 		bn.create = &p
+		// The optimizer stamps a CreateNode's parent as the create unit's only Ref
+		// (absent for a top-level node). Capture it so Build can carry it onto the
+		// Transaction: the Executor resolves it to the real parent page id at POST
+		// /pages time (or parents under the data source when absent).
+		if len(u.Refs) > 0 {
+			bn.createParent = u.Refs[0]
+		}
 		return true
 
 	case propsBlock:
@@ -79,6 +87,9 @@ func (bn *bin) Add(u publish.AtomicUnit) bool {
 			return false
 		}
 		bn.claim(u.Group)
+		// Thread the unit's hosted anchors onto the block so Build carries them and
+		// the Executor can map anchor-name → the block's real Notion id.
+		p.anchors = u.Anchors
 		bn.children = append(bn.children, p)
 		bn.childCost += cost
 		return true
@@ -106,6 +117,9 @@ func (bn *bin) Build() publish.Transaction {
 	if bn.create != nil {
 		t.Create = true
 		t.Node = bn.create.node
+		// The Executor resolves the parent to the real parent page id at execute
+		// time (empty parent → a top-level row under the data source).
+		t.Parent = bn.createParent
 	}
 	if bn.props != nil {
 		t.Props = bn.props.props
@@ -150,6 +164,10 @@ type Transaction struct {
 	// Node is the symbolic id of the page this transaction creates, appends to, or
 	// archives.
 	Node publish.SymbolicID
+	// Parent is the symbolic id of the parent a page-create parents under (empty
+	// for a top-level node, which parents under the data source). The Executor
+	// resolves it to a real parent page id at execute time. Set only when Create.
+	Parent publish.SymbolicID
 	// Create marks a page-create (POST /pages) fusing Props and the first Children.
 	Create bool
 	// Delete marks an archive of Node.

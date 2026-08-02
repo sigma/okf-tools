@@ -1,0 +1,202 @@
+package notion
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+	"sync"
+	"testing"
+)
+
+// fakeNotion is a recorded, in-memory stand-in for the Notion API surface the
+// Executor and Scanner call. It mints deterministic ids, records every request so a
+// test can assert what was written, and serves canned data-source rows so the
+// ScanStored path runs offline — no live workspace, deterministic in CI.
+type fakeNotion struct {
+	mu   sync.Mutex
+	seq  int
+	reqs []recordedReq
+
+	// children maps a created page id to the block ids minted for its children, so
+	// GET /blocks/{id}/children can echo them for anchor mapping.
+	children map[string][]string
+
+	// rows are the canned data-source query rows; pageSize > 0 forces pagination.
+	rows     []map[string]any
+	pageSize int
+}
+
+// recordedReq is one captured request: its method, path, and decoded JSON body.
+type recordedReq struct {
+	Method string
+	Path   string
+	Body   map[string]any
+}
+
+func newFakeNotion() *fakeNotion {
+	return &fakeNotion{children: map[string][]string{}}
+}
+
+func (f *fakeNotion) handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /pages", f.createPage)
+	mux.HandleFunc("PATCH /pages/{id}", f.updatePage)
+	mux.HandleFunc("GET /blocks/{id}/children", f.getChildren)
+	mux.HandleFunc("PATCH /blocks/{id}/children", f.appendChildren)
+	mux.HandleFunc("POST /data_sources/{id}/query", f.query)
+	return mux
+}
+
+// record captures a request and returns its decoded body.
+func (f *fakeNotion) record(r *http.Request) map[string]any {
+	body := decodeBody(r)
+	f.mu.Lock()
+	f.reqs = append(f.reqs, recordedReq{Method: r.Method, Path: r.URL.Path, Body: body})
+	f.mu.Unlock()
+	return body
+}
+
+func (f *fakeNotion) createPage(w http.ResponseWriter, r *http.Request) {
+	body := f.record(r)
+
+	f.mu.Lock()
+	f.seq++
+	pageID := fmt.Sprintf("page-%d", f.seq)
+	var childIDs []string
+	if ch, ok := body["children"].([]any); ok {
+		for range ch {
+			f.seq++
+			childIDs = append(childIDs, fmt.Sprintf("block-%d", f.seq))
+		}
+	}
+	f.children[pageID] = childIDs
+	f.mu.Unlock()
+
+	writeJSON(w, map[string]any{"id": pageID})
+}
+
+func (f *fakeNotion) updatePage(w http.ResponseWriter, r *http.Request) {
+	f.record(r)
+	writeJSON(w, map[string]any{"id": r.PathValue("id")})
+}
+
+func (f *fakeNotion) getChildren(w http.ResponseWriter, r *http.Request) {
+	f.record(r)
+	f.mu.Lock()
+	ids := f.children[r.PathValue("id")]
+	f.mu.Unlock()
+
+	results := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
+		results = append(results, map[string]any{"id": id})
+	}
+	writeJSON(w, map[string]any{"results": results, "has_more": false})
+}
+
+func (f *fakeNotion) appendChildren(w http.ResponseWriter, r *http.Request) {
+	body := f.record(r)
+
+	f.mu.Lock()
+	var results []map[string]any
+	if ch, ok := body["children"].([]any); ok {
+		for range ch {
+			f.seq++
+			results = append(results, map[string]any{"id": fmt.Sprintf("block-%d", f.seq)})
+		}
+	}
+	f.mu.Unlock()
+
+	writeJSON(w, map[string]any{"results": results})
+}
+
+func (f *fakeNotion) query(w http.ResponseWriter, r *http.Request) {
+	body := f.record(r)
+
+	start := 0
+	if c, _ := body["start_cursor"].(string); c != "" {
+		start, _ = strconv.Atoi(c)
+	}
+	size := len(f.rows)
+	if f.pageSize > 0 {
+		size = f.pageSize
+	}
+	end := start + size
+	if end > len(f.rows) {
+		end = len(f.rows)
+	}
+	page := f.rows[start:end]
+
+	resp := map[string]any{"results": page, "has_more": end < len(f.rows)}
+	if end < len(f.rows) {
+		resp["next_cursor"] = strconv.Itoa(end)
+	}
+	writeJSON(w, resp)
+}
+
+// requestsTo returns the recorded requests matching a method and exact path.
+func (f *fakeNotion) requestsTo(method, path string) []recordedReq {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []recordedReq
+	for _, req := range f.reqs {
+		if req.Method == method && req.Path == path {
+			out = append(out, req)
+		}
+	}
+	return out
+}
+
+// countPath returns how many recorded requests hit method+path.
+func (f *fakeNotion) countPath(method, path string) int {
+	return len(f.requestsTo(method, path))
+}
+
+// --- request/response helpers -----------------------------------------------
+
+// decodeBody reads and JSON-decodes a request body into a generic map (nil for an
+// empty body).
+func decodeBody(r *http.Request) map[string]any {
+	data, _ := io.ReadAll(r.Body)
+	if len(data) == 0 {
+		return nil
+	}
+	var m map[string]any
+	_ = json.Unmarshal(data, &m)
+	return m
+}
+
+// writeJSON encodes v as the JSON response body.
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+// --- canned data-source row helpers -----------------------------------------
+
+// row builds a canned data-source query row: a page id plus derived-column
+// properties.
+func row(id string, props map[string]any) map[string]any {
+	return map[string]any{"id": id, "properties": props}
+}
+
+// richProp models a Notion rich_text property carrying one plain-text span — the
+// shape the self-describing derived columns use.
+func richProp(s string) map[string]any {
+	return map[string]any{
+		"type":      "rich_text",
+		"rich_text": []any{map[string]any{"plain_text": s}},
+	}
+}
+
+// mustJSON marshals v or fails the test — a terse helper for building JSON column
+// values inline.
+func mustJSON(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return string(b)
+}

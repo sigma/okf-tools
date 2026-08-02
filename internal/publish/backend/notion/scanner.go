@@ -1,0 +1,151 @@
+package notion
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+
+	"github.com/sigma/okf-tools/internal/publish"
+)
+
+// Scan produces the neutral CurrentState in the cheap steady-state ScanStored
+// form: a single paginated data-source query over self-describing derived columns,
+// with zero per-page block reads. Every top-level row carries the columns that seed
+// the whole snapshot — `path` (the node's repo path → its SymbolicID), `hash`
+// (its content hash), `hashes` (the #146 subtree map of `subpath → {id, hash}` for
+// cluster subpages), and, on the glossary-role row, `anchors` (`anchor-name →
+// block id`). So one query resolves NodeID, ContentHash, AnchorID, and Nodes()
+// with no follow-on reads.
+//
+// The opt-in full-recompute ScanRecompute (a live block walk for true drift) and
+// the publish-time write-back that keeps these columns current are a separate later
+// ticket (#44); this method is the ScanStored producer only. The mode is therefore
+// fixed here — both modes return the identical neutral CurrentState, so adding the
+// recompute mode later does not touch this consumer contract.
+func (b *Backend) Scan(ctx context.Context) (*publish.CurrentState, error) {
+	rows, err := b.queryAllRows(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	nodeIDs := map[publish.SymbolicID]publish.BackendID{}
+	hashes := map[publish.SymbolicID]publish.Hash{}
+	anchorIDs := map[publish.AnchorName]publish.BackendID{}
+	// owner tracks which page first claimed a repo path, so a second claim (a
+	// top-level row or a subtree-map entry) is a hard error naming both — never a
+	// silent last-writer-wins over unrepairable state.
+	owner := map[string]string{}
+
+	claim := func(path, by string) error {
+		if prev, dup := owner[path]; dup {
+			return fmt.Errorf("notion: scan: path %q claimed by two pages (%s and %s)", path, prev, by)
+		}
+		owner[path] = by
+		return nil
+	}
+
+	for _, row := range rows {
+		path := plainText(row.Properties["path"])
+		if path == "" {
+			// A stray hand-made row the pipeline never created: reason only about
+			// pages we own.
+			continue
+		}
+		if err := claim(path, row.ID); err != nil {
+			return nil, err
+		}
+		sym := nodeSym(path)
+		nodeIDs[sym] = publish.BackendID(row.ID)
+		if h := plainText(row.Properties["hash"]); h != "" {
+			hashes[sym] = publish.Hash(h)
+		}
+
+		if err := readSubtree(plainText(row.Properties["hashes"]), row.ID, claim, nodeIDs, hashes); err != nil {
+			return nil, err
+		}
+		if err := readAnchors(plainText(row.Properties["anchors"]), anchorIDs); err != nil {
+			return nil, err
+		}
+	}
+
+	return publish.NewCurrentState(nodeIDs, hashes, anchorIDs), nil
+}
+
+// queryAllRows drains the paginated POST /data_sources/{id}/query, returning every
+// owned top-level row. This is the single data-source query the ScanStored path
+// spends — O(rows/100) round-trips, no per-page reads.
+func (b *Backend) queryAllRows(ctx context.Context) ([]queryRow, error) {
+	var rows []queryRow
+	cursor := ""
+	path := "/data_sources/" + b.dataSourceID + "/query"
+	for {
+		var page queryResp
+		if err := b.do(ctx, http.MethodPost, path, queryReq{StartCursor: cursor, PageSize: 100}, &page); err != nil {
+			return nil, err
+		}
+		rows = append(rows, page.Results...)
+		if !page.HasMore || page.NextCursor == "" {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	return rows, nil
+}
+
+// subtreeEntry is one cluster subpage's self-description in the #146 subtree map:
+// its real Notion page id and its content hash, so NodeID and ContentHash resolve
+// for a subpage the top-level query never returns as its own row.
+type subtreeEntry struct {
+	ID   string `json:"id"`
+	Hash string `json:"hash"`
+}
+
+// readSubtree folds a row's `hashes` subtree-map column into the node/hash tables:
+// each subpath becomes node:<subpath> resolving to the stored id and hash, with the
+// same 1:1 path-uniqueness guard as top-level rows.
+func readSubtree(raw, rowID string, claim func(path, by string) error, nodeIDs map[publish.SymbolicID]publish.BackendID, hashes map[publish.SymbolicID]publish.Hash) error {
+	if raw == "" {
+		return nil
+	}
+	var sub map[string]subtreeEntry
+	if err := json.Unmarshal([]byte(raw), &sub); err != nil {
+		return fmt.Errorf("notion: scan: row %s hashes column: %w", rowID, err)
+	}
+	for subpath, e := range sub {
+		if err := claim(subpath, "subtree of "+rowID); err != nil {
+			return err
+		}
+		sym := nodeSym(subpath)
+		if e.ID != "" {
+			nodeIDs[sym] = publish.BackendID(e.ID)
+		}
+		if e.Hash != "" {
+			hashes[sym] = publish.Hash(e.Hash)
+		}
+	}
+	return nil
+}
+
+// readAnchors folds the glossary-role row's `anchors` column (anchor-name → block
+// id) into the anchor table, so a page linking into an unchanged glossary resolves
+// its anchors straight from the seed with no rewrite.
+func readAnchors(raw string, anchorIDs map[publish.AnchorName]publish.BackendID) error {
+	if raw == "" {
+		return nil
+	}
+	var am map[string]string
+	if err := json.Unmarshal([]byte(raw), &am); err != nil {
+		return fmt.Errorf("notion: scan: anchors column: %w", err)
+	}
+	for name, id := range am {
+		anchorIDs[publish.AnchorName(name)] = publish.BackendID(id)
+	}
+	return nil
+}
+
+// nodeSym mints the node SymbolicID for a repo path — the same "node:<path>" scheme
+// Generation embeds, so a Ref resolves against this seed.
+func nodeSym(path string) publish.SymbolicID {
+	return publish.SymbolicID("node:" + path)
+}
