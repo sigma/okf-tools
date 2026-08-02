@@ -110,6 +110,20 @@ func TestTokenizeEmptyBlockEmitsOneUnit(t *testing.T) {
 	}
 }
 
+// splitByChars, the shared per-span cap primitive, cuts on rune (not byte)
+// boundaries, never exceeds the cap, and always yields at least one chunk.
+func TestSplitByChars(t *testing.T) {
+	if got := splitByChars("héllo", 2); !slices.Equal(got, []string{"hé", "ll", "o"}) {
+		t.Errorf("splitByChars(héllo, 2) = %v, want rune-boundary chunks [hé ll o]", got)
+	}
+	if got := splitByChars("abc", 10); !slices.Equal(got, []string{"abc"}) {
+		t.Errorf("within-cap value should be one chunk, got %v", got)
+	}
+	if got := splitByChars("", 3); !slices.Equal(got, []string{""}) {
+		t.Errorf("empty string should yield one empty chunk, got %v", got)
+	}
+}
+
 // --- Tokenizer: refs and the anchor map -------------------------------------
 
 // Inline Refs are preserved on the unit that carries them; a block's declared

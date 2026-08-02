@@ -93,6 +93,58 @@ func TestWriteBackSubpageFoldsIntoParentSubtree(t *testing.T) {
 	}
 }
 
+// TestWriteBackChunksOversizedColumn: a derived-column value longer than the per-
+// span char cap is split across several rich_text spans, each within the cap, that
+// concatenate back to the original — the same cap the block path applies. Notion
+// 400s a single span over 2000 chars, and the glossary host's anchors map is the
+// first derived column to hit it. See okf-tools#94.
+func TestWriteBackChunksOversizedColumn(t *testing.T) {
+	f := newFakeNotion()
+	// Dial the per-span cap low so a modest value forces splitting, exactly as the
+	// block path's WithMaxBlockChars does — no need for a real 2000+ char payload.
+	const limit = 5
+	be := newServer(t, f, WithMaxBlockChars(limit))
+
+	prov := publish.Provenance{Nodes: map[publish.SymbolicID]publish.NodeProvenance{
+		"node:CONTEXT.md": {
+			ID:      "page-g",
+			Hash:    "hG",
+			Anchors: map[publish.AnchorName]publish.BackendID{"glossary/root-kek": "block-kek"},
+		},
+	}}
+	if err := be.WriteBack(context.Background(), prov); err != nil {
+		t.Fatalf("WriteBack: %v", err)
+	}
+
+	patches := f.requestsTo("PATCH", "/pages/page-g")
+	if len(patches) != 1 {
+		t.Fatalf("want 1 property PATCH on the row, got %d", len(patches))
+	}
+	props := digInto(t, patches[0].Body, "properties")
+
+	// The anchors JSON is well over the cap, so it must arrive as several spans,
+	// each within the cap — never a single oversized span.
+	spans, ok := digInto(t, props, "anchors")["rich_text"].([]any)
+	if !ok || len(spans) < 2 {
+		t.Fatalf("oversized anchors column should split into >1 span, got %v", props["anchors"])
+	}
+	for i, s := range spans {
+		content := digInto(t, s.(map[string]any), "text")["content"].(string)
+		if n := len([]rune(content)); n > limit {
+			t.Errorf("span %d holds %d chars, over the cap of %d", i, n, limit)
+		}
+	}
+
+	// And the spans concatenate back to the exact anchors JSON — round-trip safe.
+	var anchors map[string]string
+	if err := json.Unmarshal([]byte(columnText(t, props, "anchors")), &anchors); err != nil {
+		t.Fatalf("reassembled anchors not valid JSON: %v", err)
+	}
+	if anchors["glossary/root-kek"] != "block-kek" {
+		t.Errorf("reassembled anchors = %v, want the hosted anchor's block id", anchors)
+	}
+}
+
 // TestWriteBackEmptyIsNoOp: empty provenance (a steady-state unchanged run) writes
 // nothing — the near-noop property.
 func TestWriteBackEmptyIsNoOp(t *testing.T) {
@@ -106,8 +158,9 @@ func TestWriteBackEmptyIsNoOp(t *testing.T) {
 	}
 }
 
-// columnText extracts the single rich-text span content of a derived column from a
-// PATCH properties body.
+// columnText extracts a derived column's value from a PATCH properties body,
+// concatenating every rich-text span's content — mirroring plainText, so a value
+// chunked across several spans round-trips to its original string.
 func columnText(t *testing.T, props map[string]any, key string) string {
 	t.Helper()
 	col, ok := props[key].(map[string]any)
@@ -118,6 +171,10 @@ func columnText(t *testing.T, props map[string]any, key string) string {
 	if !ok || len(spans) == 0 {
 		t.Fatalf("column %q has no rich_text spans: %v", key, col)
 	}
-	span, _ := spans[0].(map[string]any)
-	return digInto(t, span, "text")["content"].(string)
+	var out string
+	for _, s := range spans {
+		span, _ := s.(map[string]any)
+		out += digInto(t, span, "text")["content"].(string)
+	}
+	return out
 }
