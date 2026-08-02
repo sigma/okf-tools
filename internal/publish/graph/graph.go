@@ -7,5 +7,7 @@
 // edge causes are structural parent-before-child, content-refs-node, and
 // content-refs-anchor.
 //
-// Scaffold stub — see sigma/ideas#172 (ratified #162).
+// The entry point is Generate; op.go defines the op-DAG vocabulary (Op, Edge,
+// Graph) and document.go the backend-neutral document tree SetContent carries.
+// See sigma/ideas#172 (ratified #162).
 package graph
