@@ -91,6 +91,11 @@ type QMD struct {
 // the domain-modeling CONTEXT-FORMAT, not the OKF spec, so every glossary rule
 // is OFF unless Enabled is set — a bundle that doesn't opt in sees no new
 // diagnostics. Per-rule severity lives in the [rules] map.
+//
+// The anchor-host file may equivalently be designated by an `areas.json` entry
+// carrying `role: glossary` (see internal/areas); the bundle unions that marker
+// with Files, still gated on Enabled. The role marker is the config contract
+// okftool and okfpub share, replacing any hardwired anchor-host path.
 type Glossary struct {
 	Enabled bool     `toml:"enabled"` // master opt-in for all OKFEXT-GLOSSARY-* rules
 	Files   []string `toml:"files"`   // globs; the declared glossary/anchor-host files

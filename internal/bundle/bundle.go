@@ -6,10 +6,12 @@ package bundle
 import (
 	"fmt"
 	"io/fs"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 
+	"github.com/sigma/okf-tools/internal/areas"
 	"github.com/sigma/okf-tools/internal/config"
 	"github.com/sigma/okf-tools/internal/parser"
 	"github.com/sigma/okf-tools/internal/schema"
@@ -51,6 +53,12 @@ type Bundle struct {
 	// Schema is the parsed /schema.json when the frontmatter-schema extension is
 	// enabled (config [schema]); nil otherwise. OKFEXT-SCHEMA-01 lints against it.
 	Schema *schema.Schema
+
+	// Areas is the parsed repo-root /areas.json registry when present; nil when a
+	// bundle is configured entirely through okf.toml. It designates the
+	// glossary/anchor-host area via a role marker (areas.RoleGlossary), the config
+	// contract okftool and okfpub share instead of a hardwired anchor-host path.
+	Areas *areas.Registry
 
 	byRel map[string]*Doc
 }
@@ -138,6 +146,25 @@ func Load(root, configPath string) (*Bundle, error) {
 		b.Schema = sc
 	}
 
+	// The repo-root /areas.json is the config contract that designates the
+	// glossary/anchor host via a role marker (areas.RoleGlossary). It is optional
+	// — a bundle configured entirely through okf.toml has none — but authoritative
+	// when present, so a malformed or ambiguous registry fails the load loudly
+	// rather than silently mis-resolving the anchor host. glossaryRel is the
+	// marker-designated anchor-host file, resolved from the role, never from a
+	// filename literal.
+	var glossaryRel string
+	if p := filepath.Join(root, "areas.json"); fileExists(p) {
+		reg, aerr := areas.Load(p)
+		if aerr != nil {
+			return nil, fmt.Errorf("load areas: %w", aerr)
+		}
+		b.Areas = reg
+		if f, ok := reg.GlossaryFile(); ok {
+			glossaryRel = path.Clean(strings.TrimPrefix(filepath.ToSlash(f), "/"))
+		}
+	}
+
 	err = filepath.WalkDir(root, func(p string, e fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -170,8 +197,12 @@ func Load(root, configPath string) (*Bundle, error) {
 		}
 		// A declared glossary file is a third structured page kind: exempt from
 		// the concept conformance rules (it carries no frontmatter by design),
-		// like index.md/log.md.
-		if cfg.IsGlossary(rel) {
+		// like index.md/log.md. It is designated by okf.toml's [glossary] files or
+		// by the areas.json role marker (glossaryRel); the two are unioned so the
+		// marker adds an anchor host without disturbing a bundle that names its
+		// glossary the old way. Both paths honour [glossary].enabled as the master
+		// opt-in, so a bundle that hasn't enabled the extension is unaffected.
+		if cfg.IsGlossary(rel) || (cfg.Glossary.Enabled && glossaryRel != "" && rel == glossaryRel) {
 			d.Glossary = true
 		}
 		b.Docs = append(b.Docs, d)

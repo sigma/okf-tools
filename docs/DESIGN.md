@@ -209,7 +209,11 @@ Framing: **a glossary is to terms what `index.md` is to pages** — a structured
 single-file aggregation. It slots in beside `OKF003`/`OKF004` as a third
 structured page kind, so a declared glossary file carries no frontmatter and is
 exempt from the concept conformance rules; identity comes from `[glossary] files`
-config alone, keeping the file byte-for-byte `CONTEXT-FORMAT` compliant.
+config or, equivalently, an `areas.json` entry marked `role: glossary` (the two
+are unioned, both gated on `[glossary].enabled`), keeping the file byte-for-byte
+`CONTEXT-FORMAT` compliant. The role marker is the config contract okftool and
+the okfpub publisher share to resolve the anchor host without a hardwired path
+(see `internal/areas`).
 
 A term's anchor is the **fixed** GitHub-style slug of its bold text — not
 configurable, so it can't drift from a consumer resolving the same anchors. The
