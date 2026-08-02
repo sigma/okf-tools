@@ -28,6 +28,13 @@ import (
 // md is the shared CommonMark parser, with wikilink recognition enabled.
 var md = goldmark.New(goldmark.WithExtensions(&wikilink.Extender{}))
 
+// Markdown returns the shared CommonMark parser (wikilink-aware) so other
+// packages parse bodies into the identical AST rather than configuring their own
+// — the "shared mdast parser, never regex" the okfpub op-graph is built on
+// (sigma/ideas#162). The returned value is the package-global parser; callers
+// read from it (Parser().Parse) and must not reconfigure it.
+func Markdown() goldmark.Markdown { return md }
+
 // Document is the parsed representation of a single markdown file.
 type Document struct {
 	Path    string // path as supplied to Parse (usually absolute)
