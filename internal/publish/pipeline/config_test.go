@@ -103,6 +103,14 @@ func TestSelectBackend(t *testing.T) {
 		t.Errorf("fake backend needs no credentials: %v", err)
 	}
 
+	// The fs/export backend needs no credentials either — it targets the filesystem.
+	if _, err := SelectBackend(BackendFS, &Config{OutDir: t.TempDir()}); err != nil {
+		t.Errorf("fs backend needs no credentials: %v", err)
+	}
+	if _, err := SelectBackend(BackendFS, &Config{}); err != nil {
+		t.Errorf("fs backend should default its out dir when none is given: %v", err)
+	}
+
 	if _, err := SelectBackend(BackendNotion, &Config{NotionDBID: "ds"}); err == nil {
 		t.Error("notion without a token should be refused")
 	}

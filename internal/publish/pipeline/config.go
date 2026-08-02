@@ -44,6 +44,9 @@ type Config struct {
 	// NotionDBID is the Notion data-source id the backend queries and creates under
 	// (NOTION_DB_ID).
 	NotionDBID string
+	// OutDir is the output directory the filesystem/export backend (the dry-run
+	// mode) writes its exported tree under. Empty means the backend's own default.
+	OutDir string
 }
 
 // LoadOptions parameterizes LoadConfig — the resolved flag/env inputs. Paths are

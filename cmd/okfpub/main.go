@@ -49,11 +49,13 @@ func main() {
 // (sigma/ideas#172, "Out of Scope").
 func runCmd(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
-	backendName := fs.String("backend", string(pipeline.BackendNotion), "publishing backend: notion|fake")
+	backendName := fs.String("backend", string(pipeline.BackendNotion), "publishing backend: notion|fake|fs")
 	bundleDir := fs.String("bundle", ".", "bundle root (or a dir to search upward from)")
 	configPath := fs.String("config", "", "okf.toml path (default: discovered)")
 	areasPath := fs.String("areas", "", "areas.json path (default: <root>/areas.json if present)")
 	schemaPath := fs.String("schema", "", "schema.json path (default: <root>/schema.json if present)")
+	outDir := fs.String("out", "", "output dir for the fs/export backend (default: "+pipeline.DefaultOutDir+")")
+	dryRun := fs.Bool("dry-run", false, "export to the filesystem instead of publishing (implies --backend fs)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -78,8 +80,14 @@ func runCmd(args []string) error {
 	if err != nil {
 		return err
 	}
+	cfg.OutDir = *outDir
 
+	// --dry-run is sugar for --backend fs: export to the filesystem instead of
+	// touching a live workspace.
 	kind := pipeline.BackendKind(*backendName)
+	if *dryRun {
+		kind = pipeline.BackendFS
+	}
 	be, err := pipeline.SelectBackend(kind, cfg)
 	if err != nil {
 		return err
@@ -124,15 +132,17 @@ Usage:
   okfpub <command> [flags]
 
 Commands:
-  run      Publish the bundle to a backend (--backend notion|fake).
+  run      Publish the bundle to a backend (--backend notion|fake|fs).
   version  Print the version.
 
 Run flags:
-  --backend  notion|fake            (default notion)
+  --backend  notion|fake|fs         (default notion)
   --bundle   bundle root            (default ".")
   --config   okf.toml path          (default: discovered)
   --areas    areas.json path        (default: <root>/areas.json if present)
   --schema   schema.json path       (default: <root>/schema.json if present)
+  --out      fs/export output dir   (default: okfpub-export)
+  --dry-run  export to the filesystem instead of publishing (implies --backend fs)
 
 Environment:
   NOTION_TOKEN  Notion integration token (required by the notion backend)
