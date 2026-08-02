@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
+	"time"
 
 	"github.com/sigma/okf-tools/internal/publish"
 	"github.com/sigma/okf-tools/internal/publish/backend"
@@ -59,7 +61,7 @@ func (b *Backend) create(ctx context.Context, t *Transaction, r backend.Resolver
 	}
 
 	var page object
-	req := createPageReq{Parent: parent, Properties: propsJSON(t.Props), Children: children}
+	req := createPageReq{Parent: parent, Properties: b.propsJSON(t.Props), Children: children}
 	if err := b.do(ctx, http.MethodPost, "/pages", req, &page); err != nil {
 		return err
 	}
@@ -89,7 +91,7 @@ func (b *Backend) update(ctx context.Context, t *Transaction, r backend.Resolver
 	}
 
 	if t.Props != nil {
-		req := updatePageReq{Properties: propsJSON(t.Props)}
+		req := updatePageReq{Properties: b.propsJSON(t.Props)}
 		if err := b.do(ctx, http.MethodPatch, "/pages/"+url.PathEscape(string(id)), req, nil); err != nil {
 			return err
 		}
@@ -237,21 +239,172 @@ func richTextJSON(runs []textRun, r backend.Resolver) ([]map[string]any, error) 
 	return out, nil
 }
 
-// propsJSON reshapes the neutral property map into Notion page properties: the
-// title column becomes a title value, every other key a rich_text value. The
-// derived self-describing columns (path/hash/hashes/anchors) are written by the
-// #44 write-back, not here.
-func propsJSON(props map[string]any) map[string]any {
+// propsJSON reshapes the neutral property map into Notion page properties, keying
+// each value's Notion shape off its column's declared kind in schema.json: a
+// select column becomes {select:{name}}, a list a multi_select, a date a
+// {date:{start}}, a number/checkbox their scalar, and text (or any unmapped key) a
+// rich_text. The title column stays a title value. Without a schema the split
+// falls back to the legacy behavior — the literal "title" key becomes a title,
+// everything else rich_text. The derived self-describing columns
+// (path/hash/hashes/anchors) are written by the #44 write-back, not here.
+func (b *Backend) propsJSON(props map[string]any) map[string]any {
 	out := make(map[string]any, len(props))
 	for k, v := range props {
-		span := []map[string]any{{"type": "text", "text": map[string]any{"content": fmt.Sprint(v)}}}
-		if k == "title" {
-			out[k] = map[string]any{"title": span}
-		} else {
-			out[k] = map[string]any{"rich_text": span}
-		}
+		out[k] = b.propertyValue(k, v)
 	}
 	return out
+}
+
+// propertyValue serializes one neutral property into its Notion value object. It
+// looks the key up in the schema to find the column's kind; a key the schema does
+// not declare (or a run with no schema at all) falls back to the legacy split:
+// the literal "title" key is a title, everything else rich_text.
+func (b *Backend) propertyValue(name string, v any) map[string]any {
+	kind := ""
+	if b.schema != nil {
+		if col, ok := b.schema.Lookup(name); ok {
+			kind = col.Kind
+		}
+	}
+	if kind == "" {
+		if name == "title" {
+			kind = "title"
+		} else {
+			kind = "text"
+		}
+	}
+
+	switch kind {
+	case "title":
+		return map[string]any{"title": richTextSpans(fmt.Sprint(v))}
+	case "select":
+		s := fmt.Sprint(v)
+		if s == "" {
+			return map[string]any{"select": nil}
+		}
+		return map[string]any{"select": map[string]any{"name": s}}
+	case "list":
+		return map[string]any{"multi_select": multiSelectNames(v)}
+	case "date":
+		start, ok := notionDate(v)
+		if !ok {
+			return map[string]any{"date": nil}
+		}
+		return map[string]any{"date": map[string]any{"start": start}}
+	case "number":
+		return map[string]any{"number": notionNumber(v)}
+	case "checkbox":
+		return map[string]any{"checkbox": notionBool(v)}
+	default: // "text" and any unknown kind
+		return map[string]any{"rich_text": richTextSpans(fmt.Sprint(v))}
+	}
+}
+
+// richTextSpans wraps a string in the single-span rich-text array a title or
+// rich_text property value carries.
+func richTextSpans(s string) []map[string]any {
+	return []map[string]any{{"type": "text", "text": map[string]any{"content": s}}}
+}
+
+// multiSelectNames turns a neutral list value into a Notion multi_select value —
+// one {name} object per element. YAML decodes a frontmatter list to []any; a lone
+// scalar is treated as a single-element list. Empty elements are dropped, so an
+// absent-but-present tags key yields an empty (cleared) multi_select rather than a
+// blank option.
+func multiSelectNames(v any) []map[string]any {
+	var names []string
+	switch xs := v.(type) {
+	case []any:
+		for _, x := range xs {
+			if s := fmt.Sprint(x); s != "" {
+				names = append(names, s)
+			}
+		}
+	case []string:
+		for _, s := range xs {
+			if s != "" {
+				names = append(names, s)
+			}
+		}
+	case nil:
+		// no elements
+	default:
+		if s := fmt.Sprint(v); s != "" {
+			names = append(names, s)
+		}
+	}
+	out := make([]map[string]any, 0, len(names))
+	for _, n := range names {
+		out = append(out, map[string]any{"name": n})
+	}
+	return out
+}
+
+// notionDate normalizes a neutral date value into a Notion date `start` string.
+// yaml.v3 decodes an unquoted ISO date (created: 2026-07-18) into a time.Time and
+// a quoted one into a string; both reduce to an ISO-8601 start Notion accepts
+// (date-only when there is no time-of-day). An empty/absent value yields ok=false
+// so the caller clears the column instead of writing a bogus start.
+func notionDate(v any) (string, bool) {
+	switch d := v.(type) {
+	case time.Time:
+		if d.Hour() == 0 && d.Minute() == 0 && d.Second() == 0 && d.Nanosecond() == 0 {
+			return d.Format("2006-01-02"), true
+		}
+		return d.Format(time.RFC3339), true
+	case string:
+		if d == "" {
+			return "", false
+		}
+		return d, true
+	case nil:
+		return "", false
+	default:
+		s := fmt.Sprint(v)
+		if s == "" {
+			return "", false
+		}
+		return s, true
+	}
+}
+
+// notionNumber coerces a neutral number value into the JSON number Notion's number
+// property carries. A numeric-looking string is parsed; anything non-numeric (or
+// absent) yields nil, which clears the column.
+func notionNumber(v any) any {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return n
+	case float64:
+		return n
+	case string:
+		if f, err := strconv.ParseFloat(n, 64); err == nil {
+			return f
+		}
+		return nil
+	default:
+		return nil
+	}
+}
+
+// notionBool coerces a neutral checkbox value into a bool. A YAML bool passes
+// through; a string is truthy only for the conventional affirmatives.
+func notionBool(v any) bool {
+	switch b := v.(type) {
+	case bool:
+		return b
+	case string:
+		switch b {
+		case "true", "yes", "1":
+			return true
+		default:
+			return false
+		}
+	default:
+		return false
+	}
 }
 
 // notionBlockType maps the neutral block kind (mirrored as an int on the child

@@ -35,6 +35,12 @@ type fakeNotion struct {
 	// rows are the canned data-source query rows; pageSize > 0 forces pagination.
 	rows     []map[string]any
 	pageSize int
+
+	// dsProps is the data source's canned existing column set GET /data_sources/{id}
+	// serves the Provisioner reconcile — column name → a property object carrying
+	// at least a "type". A PATCH /data_sources/{id} merges its added columns in, so
+	// a second reconcile in the same test sees them as present.
+	dsProps map[string]map[string]any
 }
 
 // recordedReq is one captured request: its method, path, decoded JSON body, and
@@ -51,6 +57,7 @@ func newFakeNotion() *fakeNotion {
 		children:   map[string][]string{},
 		liveBlocks: map[string][]map[string]any{},
 		pageProps:  map[string]map[string]any{},
+		dsProps:    map[string]map[string]any{},
 	}
 }
 
@@ -62,7 +69,45 @@ func (f *fakeNotion) handler() http.Handler {
 	mux.HandleFunc("GET /blocks/{id}/children", f.getChildren)
 	mux.HandleFunc("PATCH /blocks/{id}/children", f.appendChildren)
 	mux.HandleFunc("POST /data_sources/{id}/query", f.query)
+	mux.HandleFunc("GET /data_sources/{id}", f.getDataSource)
+	mux.HandleFunc("PATCH /data_sources/{id}", f.patchDataSource)
 	return mux
+}
+
+// getDataSource serves the data source's current column set for the Provisioner
+// reconcile: the canned dsProps under a "properties" key.
+func (f *fakeNotion) getDataSource(w http.ResponseWriter, r *http.Request) {
+	f.record(r)
+	id := r.PathValue("id")
+	f.mu.Lock()
+	props := map[string]any{}
+	for name, p := range f.dsProps {
+		props[name] = p
+	}
+	f.mu.Unlock()
+	writeJSON(w, map[string]any{"id": id, "properties": props})
+}
+
+// patchDataSource records a column-add and merges the added columns into dsProps,
+// so a follow-up reconcile in the same test sees them as already present.
+func (f *fakeNotion) patchDataSource(w http.ResponseWriter, r *http.Request) {
+	body := f.record(r)
+	id := r.PathValue("id")
+	if props, ok := body["properties"].(map[string]any); ok {
+		f.mu.Lock()
+		for name, def := range props {
+			d, _ := def.(map[string]any)
+			// Record a minimal type so a re-read looks like a real column.
+			typ := ""
+			for k := range d {
+				typ = k
+				break
+			}
+			f.dsProps[name] = map[string]any{"type": typ}
+		}
+		f.mu.Unlock()
+	}
+	writeJSON(w, map[string]any{"id": id})
 }
 
 // getPage serves the canned properties of a page for the write-back read-modify-

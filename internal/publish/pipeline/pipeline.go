@@ -67,6 +67,12 @@ func Run(ctx context.Context, be backend.Backend, b *bundle.Bundle, opts ...Opti
 		opt(&o)
 	}
 
+	if p, ok := be.(backend.Provisioner); ok {
+		if err := p.Provision(ctx); err != nil {
+			return nil, fmt.Errorf("provision: %w", err)
+		}
+	}
+
 	scan, err := be.Scan(ctx, o.scanMode)
 	if err != nil {
 		return nil, fmt.Errorf("scan: %w", err)
