@@ -68,6 +68,7 @@ func (f *fakeNotion) handler() http.Handler {
 	mux.HandleFunc("PATCH /pages/{id}", f.updatePage)
 	mux.HandleFunc("GET /blocks/{id}/children", f.getChildren)
 	mux.HandleFunc("PATCH /blocks/{id}/children", f.appendChildren)
+	mux.HandleFunc("PATCH /blocks/{id}", f.updateBlock)
 	mux.HandleFunc("POST /data_sources/{id}/query", f.query)
 	mux.HandleFunc("GET /data_sources/{id}", f.getDataSource)
 	mux.HandleFunc("PATCH /data_sources/{id}", f.patchDataSource)
@@ -201,6 +202,14 @@ func (f *fakeNotion) appendChildren(w http.ResponseWriter, r *http.Request) {
 	f.mu.Unlock()
 
 	writeJSON(w, map[string]any{"results": results})
+}
+
+// updateBlock records a PATCH /blocks/{id} in-place block content update — the
+// self-hosted-anchor re-materialization the create path issues once anchor block
+// ids exist (#89) — and echoes the block id.
+func (f *fakeNotion) updateBlock(w http.ResponseWriter, r *http.Request) {
+	f.record(r)
+	writeJSON(w, map[string]any{"id": r.PathValue("id")})
 }
 
 func (f *fakeNotion) query(w http.ResponseWriter, r *http.Request) {

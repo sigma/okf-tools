@@ -50,12 +50,23 @@ func (b *Backend) Execute(ctx context.Context, txn publish.Transaction, r backen
 // top-level node, or the resolved parent page for a subpage), fuses the properties
 // and the first content chunk, records the minted page id, and — if any child
 // hosts an anchor — lists the created children to map anchor-name → block id.
+//
+// A self-hosted anchor (a child that cites an anchor this same transaction hosts)
+// cannot resolve inside the POST: Notion mints the anchor's block id only once the
+// page is created. The optimizer suppresses such a ref from the transport gate,
+// assuming the backend resolves it intra-object — but this backend resolves refs
+// itself before the POST, so the id is not yet known (sigma/okf-tools#89). So the
+// citation is deferred out of the POST and patched back in once the block id
+// exists, the notion counterpart of the #76 fs fix (where ids are deterministic
+// rather than server-minted).
 func (b *Backend) create(ctx context.Context, t *Transaction, r backend.Resolver, res *publish.ExecResult) error {
 	parent, err := b.parentOf(t, r)
 	if err != nil {
 		return err
 	}
-	children, err := b.childrenJSON(t.Children, r)
+	hosted := hostedAnchorNames(t.Children)
+	postChildren, deferred := deferSelfHostedCites(t.Children, hosted)
+	children, err := b.childrenJSON(postChildren, r)
 	if err != nil {
 		return err
 	}
@@ -67,13 +78,43 @@ func (b *Backend) create(ctx context.Context, t *Transaction, r backend.Resolver
 	}
 	res.Nodes[writeTarget(t)] = publish.BackendID(page.ID)
 
-	if hostsAnchors(t.Children) {
-		ids, err := b.listChildIDs(ctx, page.ID)
+	if hosted == nil {
+		return nil
+	}
+	ids, err := b.listChildIDs(ctx, page.ID)
+	if err != nil {
+		return err
+	}
+	if err := mapAnchors(t.Children, ids, res.Anchors); err != nil {
+		return fmt.Errorf("notion: create %s: %w", writeTarget(t), err)
+	}
+	if err := b.patchSelfHostedCites(ctx, t.Children, ids, deferred, res.Anchors, r); err != nil {
+		return fmt.Errorf("notion: create %s: %w", writeTarget(t), err)
+	}
+	return nil
+}
+
+// patchSelfHostedCites re-materializes the self-hosted anchor citations the POST
+// deferred (sigma/okf-tools#89). With the hosting blocks created and their anchor
+// block ids now known, it re-renders each deferred child in full — the self-hosted
+// refs resolvable through an overlay layered on the transport Resolver — and
+// PATCHes it in place, so the self-referencing content lands with real mentions.
+// deferred holds the indices into children (and, positionally, into ids) whose
+// citations were stripped from the POST; it is empty for the common create, which
+// pays nothing.
+func (b *Backend) patchSelfHostedCites(ctx context.Context, children []childBlock, ids []string, deferred []int, anchors map[publish.AnchorName]publish.BackendID, base backend.Resolver) error {
+	if len(deferred) == 0 {
+		return nil
+	}
+	r := hostedAnchorResolver{hosted: anchors, base: base}
+	for _, i := range deferred {
+		typ, payload, err := blockContentJSON(children[i], r)
 		if err != nil {
 			return err
 		}
-		if err := mapAnchors(t.Children, ids, res.Anchors); err != nil {
-			return fmt.Errorf("notion: create %s: %w", writeTarget(t), err)
+		path := "/blocks/" + url.PathEscape(ids[i])
+		if err := b.do(ctx, http.MethodPatch, path, map[string]any{typ: payload}, nil); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -184,12 +225,30 @@ func (b *Backend) childrenJSON(children []childBlock, r backend.Resolver) ([]map
 	return out, nil
 }
 
-// blockJSON serializes one Notion child block: its type-keyed rich-text payload,
-// with inline Refs resolved to page mentions.
+// blockJSON serializes one Notion child block for a POST /pages / append children
+// array: the {object, type, <type>:payload} envelope wrapping its type-keyed
+// rich-text payload, with inline Refs resolved to page mentions.
 func blockJSON(cb childBlock, r backend.Resolver) (map[string]any, error) {
-	rich, err := richTextJSON(cb.runs, r)
+	typ, payload, err := blockContentJSON(cb, r)
 	if err != nil {
 		return nil, err
+	}
+	return map[string]any{
+		"object": "block",
+		"type":   typ,
+		typ:      payload,
+	}, nil
+}
+
+// blockContentJSON serializes one child block's Notion type and its type-keyed
+// content payload (the {rich_text: …}, plus a code block's required language),
+// resolving inline Refs to page mentions. blockJSON wraps it in the child-array
+// envelope; the self-hosted-anchor patch (#89) sends the bare {type: payload} to
+// PATCH /blocks/{id} to re-materialize a deferred citation in place.
+func blockContentJSON(cb childBlock, r backend.Resolver) (string, map[string]any, error) {
+	rich, err := richTextJSON(cb.runs, r)
+	if err != nil {
+		return "", nil, err
 	}
 	typ := notionBlockType(cb.kind, cb.level)
 	payload := map[string]any{"rich_text": rich}
@@ -200,11 +259,7 @@ func blockJSON(cb childBlock, r backend.Resolver) (map[string]any, error) {
 	if cb.kind == int(graph.CodeBlock) {
 		payload["language"] = notionCodeLanguage(cb.language)
 	}
-	return map[string]any{
-		"object": "block",
-		"type":   typ,
-		typ:      payload,
-	}, nil
+	return typ, payload, nil
 }
 
 // richTextJSON turns a block's inline runs into Notion rich-text objects: a literal
@@ -466,6 +521,97 @@ func writeTarget(t *Transaction) publish.SymbolicID {
 		return t.Node
 	}
 	return publish.SymbolicID(t.Group)
+}
+
+// deferSelfHostedCites splits a create's children for the two-phase self-hosted
+// anchor write (sigma/okf-tools#89). It returns the children to POST — a copy in
+// which every run citing an anchor this same transaction hosts is stripped, since
+// that anchor's Notion block id does not exist until after the POST — together
+// with the indices of the blocks whose citations were deferred, to be patched back
+// in once the ids are known. Blocks are preserved one-for-one (only offending runs
+// are dropped) so the created children stay positionally aligned for anchor
+// mapping. hosted is the transaction's own hosted-anchor set (nil when it hosts
+// none); when no child cites one of those anchors it returns the original slice and
+// no deferrals, so the common create is untouched and pays no copy.
+func deferSelfHostedCites(children []childBlock, hosted map[publish.AnchorName]bool) ([]childBlock, []int) {
+	if hosted == nil {
+		return children, nil
+	}
+	var (
+		out      []childBlock
+		deferred []int
+	)
+	for i, cb := range children {
+		stripped, changed := dropCites(cb, hosted)
+		if changed {
+			if out == nil {
+				out = make([]childBlock, len(children))
+				copy(out, children)
+			}
+			out[i] = stripped
+			deferred = append(deferred, i)
+		}
+	}
+	if out == nil {
+		return children, nil
+	}
+	return out, deferred
+}
+
+// hostedAnchorNames collects the set of anchor names the transaction's own children
+// host, or nil when it hosts none.
+func hostedAnchorNames(children []childBlock) map[publish.AnchorName]bool {
+	var hosted map[publish.AnchorName]bool
+	for _, cb := range children {
+		for _, a := range cb.anchors {
+			if hosted == nil {
+				hosted = map[publish.AnchorName]bool{}
+			}
+			hosted[a] = true
+		}
+	}
+	return hosted
+}
+
+// dropCites returns cb with every run citing a self-hosted anchor removed, and
+// whether any run was dropped. The block's identity (kind, level, hosted anchors)
+// is untouched — only the deferred citation runs go, to be patched back once the
+// anchor block ids exist.
+func dropCites(cb childBlock, hosted map[publish.AnchorName]bool) (childBlock, bool) {
+	changed := false
+	runs := make([]textRun, 0, len(cb.runs))
+	for _, run := range cb.runs {
+		if name, ok := publish.AnchorRefName(run.Ref); ok && hosted[name] {
+			changed = true
+			continue
+		}
+		runs = append(runs, run)
+	}
+	if !changed {
+		return cb, false
+	}
+	cb.runs = runs
+	return cb, true
+}
+
+// hostedAnchorResolver layers a transaction's own just-hosted anchors over the
+// transport Resolver: an "anchor:<name>" ref for an anchor the create hosts
+// resolves to the block id the POST minted for it (learned post-create), every
+// other id falling through to the base. It is the notion echo of the fs backend's
+// txnResolver — the local resolution the optimizer's self-anchor suppression
+// assumes — deferred until the server-minted ids are known. See sigma/okf-tools#89.
+type hostedAnchorResolver struct {
+	hosted map[publish.AnchorName]publish.BackendID
+	base   backend.Resolver
+}
+
+func (h hostedAnchorResolver) Resolve(id publish.SymbolicID) (publish.BackendID, bool) {
+	if name, ok := publish.AnchorRefName(id); ok {
+		if bid, ok := h.hosted[name]; ok {
+			return bid, true
+		}
+	}
+	return h.base.Resolve(id)
 }
 
 // hostsAnchors reports whether any child block hosts a named anchor.
