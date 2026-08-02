@@ -132,6 +132,20 @@ type WriteBacker interface {
 	WriteBack(ctx context.Context, prov publish.Provenance) error
 }
 
+// Provisioner is an OPTIONAL backend role: a backend whose destination must be
+// shaped before writes implements it, and the pipeline calls Provision exactly
+// once at the start of a run, before Scan. It is deliberately NOT part of the
+// Backend umbrella — backends whose target needs no provisioning (the in-memory
+// fake, the filesystem export) simply omit it, and the pipeline skips the step
+// via a type assertion. The Notion backend implements it to reconcile the data
+// source's columns against schema.json (create missing columns with the Notion
+// type mapped from each column's kind) so a fresh data source Just Works instead
+// of requiring the columns to be hand-created. Provision must be idempotent: an
+// already-provisioned target produces no writes.
+type Provisioner interface {
+	Provision(ctx context.Context) error
+}
+
 // Backend is the umbrella that embeds every role for construction and wiring.
 // One concrete backend struct satisfies all of them (sharing, e.g., its HTTP
 // client across them); a stage that needs only one role depends on that role, not

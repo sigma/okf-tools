@@ -32,6 +32,7 @@ import (
 
 	"github.com/sigma/okf-tools/internal/publish"
 	"github.com/sigma/okf-tools/internal/publish/backend"
+	"github.com/sigma/okf-tools/internal/schema"
 )
 
 // Notion's two coupled API limits (the ones this ticket models):
@@ -72,6 +73,14 @@ type Backend struct {
 	notionVersion string
 	dataSourceID  string
 	http          httpDoer
+
+	// schema is the parsed schema.json driving two things: provisioning (the
+	// Provisioner role reconciles the data source's columns against it) and typed
+	// property serialization (propsJSON keys each value's Notion shape off the
+	// column's declared Kind). Nil when no schema.json was configured — then
+	// provisioning is a no-op and property values fall back to the legacy
+	// title/rich_text split.
+	schema *schema.Schema
 }
 
 // Compile-time proof that one Backend satisfies all four roles and the umbrella.
@@ -82,6 +91,7 @@ var (
 	_ backend.Scanner         = (*Backend)(nil)
 	_ backend.WriteBacker     = (*Backend)(nil)
 	_ backend.Backend         = (*Backend)(nil)
+	_ backend.Provisioner     = (*Backend)(nil)
 )
 
 // Option configures a Backend built by New.
@@ -150,6 +160,15 @@ func WithNotionVersion(v string) Option {
 			b.notionVersion = v
 		}
 	}
+}
+
+// WithSchema hands the backend the parsed schema.json. It drives both the
+// Provisioner role (which columns to reconcile onto the data source, and with
+// which Notion types) and typed property serialization (each value's shape keyed
+// off its column's Kind). A nil schema is accepted and leaves provisioning a
+// no-op and property values on their legacy title/rich_text split.
+func WithSchema(s *schema.Schema) Option {
+	return func(b *Backend) { b.schema = s }
 }
 
 // New builds a Notion backend with Notion's real limits and a default HTTP client

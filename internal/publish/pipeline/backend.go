@@ -50,6 +50,7 @@ func SelectBackend(kind BackendKind, cfg *Config) (backend.Backend, error) {
 		return notion.New(
 			notion.WithToken(cfg.NotionToken),
 			notion.WithDataSourceID(cfg.NotionDBID),
+			notion.WithSchema(cfg.Schema),
 		), nil
 	case BackendFake:
 		return fake.New(), nil
