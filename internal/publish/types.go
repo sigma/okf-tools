@@ -92,6 +92,51 @@ type AtomicUnit struct {
 	Anchors []AnchorName
 }
 
+// --- The non-content op seam (tokenizer input for the other three ops) -------
+
+// NonContentOpKind selects which of the three non-content ops a NonContentOp
+// describes. SetContent is not here — it flows through Tokenize as a Document;
+// these are the ops that carry no block-granular content but still become one
+// backend AtomicUnit each.
+type NonContentOpKind int
+
+const (
+	// CreateOp establishes a node's existence: the backend mints its create block
+	// (Notion: the shell of a POST /pages) so a Bin can fuse it with the node's
+	// properties and first content chunk.
+	CreateOp NonContentOpKind = iota
+	// PropertiesOp asserts a node's semantic properties: the backend turns the
+	// neutral Props map into its own property payload (Notion: page properties).
+	PropertiesOp
+	// DeleteOp archives an orphan node: the backend mints its delete/archive block.
+	DeleteOp
+)
+
+// NonContentOp is the neutral descriptor the optimizer hands a Tokenizer so the
+// backend can mint the single AtomicUnit for a CreateNode / SetProperties /
+// DeleteNode op — the counterpart to how SetContent flows through Tokenize. It
+// exists so that all four op types acquire their backend Payload and Cost behind
+// the seam (letting a Notion Bin fuse create + properties + first content into
+// one POST /pages), while the optimizer stays backend-agnostic: it never
+// constructs a backend payload, and it — not the backend — stamps the unit's
+// neutral Group, write-target/parent Refs, and graph provenance.
+//
+// It is deliberately narrower than a graph.Op: the backend needs only what shapes
+// its payload (the kind, and Props for a PropertiesOp). Parent, edges, and
+// symbolic-id bookkeeping remain the optimizer's concern.
+type NonContentOp struct {
+	// Kind selects create / properties / delete.
+	Kind NonContentOpKind
+	// Node is the symbolic id of the node this op acts on. The backend may fold it
+	// into its payload as the transaction's write-target (e.g. the Notion page a
+	// create/append/archive addresses); the transport still resolves it to a real
+	// backend id at execute time.
+	Node SymbolicID
+	// Props are the neutral semantic properties, set only for a PropertiesOp; the
+	// backend reshapes them into its own property payload.
+	Props map[string]any
+}
+
 // --- The transaction and its result -----------------------------------------
 
 // Transaction is one sealed, executable backend API call, produced by

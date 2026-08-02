@@ -86,16 +86,17 @@ func Optimize(g *graph.Graph, tk backend.Tokenizer, cm backend.ConstraintModel) 
 
 // tokenize turns each op into AtomicUnits: it owns the Tokenize call for
 // SetContent (each block-level unit gains its node as a write-target Ref, #164
-// §5), and maps CreateNode / SetProperties / DeleteNode to one unit each. The
-// returned units carry a stable, monotonic seq so ties break deterministically.
+// §5), and routes CreateNode / SetProperties / DeleteNode through the backend's
+// TokenizeOp to mint one unit each. The returned units carry a stable, monotonic
+// seq so ties break deterministically.
 //
-// Only SetContent flows through the backend's Tokenizer; the other three ops
-// carry no backend Payload or Cost here (their semantics live on the Op —
-// Parent, Props, Node). Against the count-based fake backend that is exact. A
-// real fusing backend (Notion collapsing create + props + first content into one
-// POST /pages) will need the create/props units to carry a backend create-block
-// and a real Cost, which is a Tokenizer-contract concern for that backend, not
-// the optimizer's — see the ticket note.
+// All four op types flow through the backend so each unit carries a real backend
+// Payload and Cost — that is what lets a fusing backend (Notion collapsing create
+// + props + first content into one POST /pages) recognise and fuse them inside its
+// Bin. The optimizer stays backend-agnostic: it forwards a neutral NonContentOp
+// (never building a backend payload) and then stamps the unit's neutral Group,
+// write-target/parent Refs, and provenance itself. Against the count-based fake
+// backend (empty payloads) this is exactly the previous behaviour.
 func tokenize(g *graph.Graph, tk backend.Tokenizer) []taggedUnit {
 	var out []taggedUnit
 	seq := 0
@@ -104,7 +105,8 @@ func tokenize(g *graph.Graph, tk backend.Tokenizer) []taggedUnit {
 	for _, op := range g.Ops {
 		switch op.Kind {
 		case graph.CreateNode:
-			u := publish.AtomicUnit{Group: publish.GroupKey(op.Node)}
+			u := tk.TokenizeOp(publish.NonContentOp{Kind: publish.CreateOp, Node: op.Node})
+			u.Group = publish.GroupKey(op.Node)
 			if op.Parent != "" {
 				// Parent-before-child is just the create-unit referencing its parent.
 				u.Refs = []publish.SymbolicID{op.Parent}
@@ -117,13 +119,13 @@ func tokenize(g *graph.Graph, tk backend.Tokenizer) []taggedUnit {
 				seq:      next(),
 			})
 		case graph.SetProperties:
-			// SetProperties(A) carries Ref{node:A} — its write target (#164 §5).
+			// SetProperties(A) carries Ref{node:A} — its write target (#164 §5). The
+			// backend turns op.Props into its own property payload.
+			u := tk.TokenizeOp(publish.NonContentOp{Kind: publish.PropertiesOp, Node: op.Node, Props: op.Props})
+			u.Group = publish.GroupKey(op.Node)
+			u.Refs = []publish.SymbolicID{op.Node}
 			out = append(out, taggedUnit{
-				unit: publish.AtomicUnit{
-					Payload: op.Props,
-					Group:   publish.GroupKey(op.Node),
-					Refs:    []publish.SymbolicID{op.Node},
-				},
+				unit:   u,
 				target: op.Node,
 				phase:  phaseProps,
 				seq:    next(),
@@ -151,11 +153,11 @@ func tokenize(g *graph.Graph, tk backend.Tokenizer) []taggedUnit {
 			// A DeleteNode needs the (scan-seeded) node id to archive it: its write
 			// target as a Ref. No producer emits node:A this run, so it stays exposed
 			// and the transport resolves it from the scan seed — no edge.
+			u := tk.TokenizeOp(publish.NonContentOp{Kind: publish.DeleteOp, Node: op.Node})
+			u.Group = publish.GroupKey(op.Node)
+			u.Refs = []publish.SymbolicID{op.Node}
 			out = append(out, taggedUnit{
-				unit: publish.AtomicUnit{
-					Group: publish.GroupKey(op.Node),
-					Refs:  []publish.SymbolicID{op.Node},
-				},
+				unit:   u,
 				target: op.Node,
 				phase:  phaseDelete,
 				seq:    next(),
