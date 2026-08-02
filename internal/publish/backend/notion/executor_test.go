@@ -137,6 +137,81 @@ func TestExecuteCreateResolvesParent(t *testing.T) {
 	}
 }
 
+// TestExecuteCodeBlockCarriesLanguage: a code child block serializes with the
+// Notion-required `language` field, mapped from the fence token, alongside its
+// rich text. Without this, Notion rejects the create with a 400 validation_error.
+func TestExecuteCodeBlockCarriesLanguage(t *testing.T) {
+	f := newFakeNotion()
+	be := newServer(t, f)
+
+	txn := &Transaction{
+		Group: "node:a.md", Node: "node:a.md", Create: true,
+		Children: []childBlock{{
+			kind:     int(graph.CodeBlock),
+			language: "yml", // alias for yaml
+			runs:     []textRun{{Text: "foo: bar"}},
+		}},
+	}
+	if _, err := be.Execute(context.Background(), txn, stubResolver{}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	body := f.requestsTo("POST", "/pages")[0].Body
+	children, _ := body["children"].([]any)
+	block, _ := children[0].(map[string]any)
+	code := digInto(t, block, "code")
+	if code["language"] != "yaml" {
+		t.Errorf("code block should carry a mapped language, got %v", code["language"])
+	}
+	if _, ok := code["rich_text"]; !ok {
+		t.Errorf("code block should still carry rich_text, got %v", code)
+	}
+}
+
+// TestExecuteCodeBlockDefaultsLanguage: a code block whose fence named no (or an
+// unknown) language defaults to Notion's "plain text", never an empty/undefined
+// value that Notion rejects.
+func TestExecuteCodeBlockDefaultsLanguage(t *testing.T) {
+	f := newFakeNotion()
+	be := newServer(t, f)
+
+	txn := &Transaction{
+		Group: "node:a.md", Node: "node:a.md", Create: true,
+		Children: []childBlock{{kind: int(graph.CodeBlock), runs: []textRun{{Text: "x"}}}},
+	}
+	if _, err := be.Execute(context.Background(), txn, stubResolver{}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	body := f.requestsTo("POST", "/pages")[0].Body
+	children, _ := body["children"].([]any)
+	block, _ := children[0].(map[string]any)
+	code := digInto(t, block, "code")
+	if code["language"] != "plain text" {
+		t.Errorf("code block with no fence language should default to plain text, got %v", code["language"])
+	}
+}
+
+// TestExecuteParagraphHasNoLanguage: only code blocks gain a language key; every
+// other block type keeps its uniform `{type: {rich_text}}` shape.
+func TestExecuteParagraphHasNoLanguage(t *testing.T) {
+	f := newFakeNotion()
+	be := newServer(t, f)
+
+	txn := &Transaction{
+		Group: "node:a.md", Node: "node:a.md", Create: true,
+		Children: []childBlock{paraBlock("hi")},
+	}
+	if _, err := be.Execute(context.Background(), txn, stubResolver{}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	body := f.requestsTo("POST", "/pages")[0].Body
+	children, _ := body["children"].([]any)
+	block, _ := children[0].(map[string]any)
+	para := digInto(t, block, "paragraph")
+	if _, ok := para["language"]; ok {
+		t.Errorf("paragraph should not carry a language key, got %v", para)
+	}
+}
+
 // TestExecuteCreateMapsAnchors: a create whose child hosts an anchor lists the
 // created children and maps the anchor to that child's block id.
 func TestExecuteCreateMapsAnchors(t *testing.T) {

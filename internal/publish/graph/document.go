@@ -1,6 +1,8 @@
 package graph
 
 import (
+	"strings"
+
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/text"
 
@@ -55,6 +57,10 @@ type BlockContent struct {
 	Kind    BlockKind
 	Level   int // heading level or list-item depth; 0 otherwise
 	Inlines []Inline
+	// Language is the fenced code block's info-string language (e.g. "yaml"),
+	// empty for indented code or a bare fence. Only meaningful when Kind is
+	// CodeBlock; a backend maps it to its own code-language vocabulary.
+	Language string
 }
 
 // Inline is one inline node of a block's content: either a text run or a
@@ -153,9 +159,14 @@ func (b *docBuilder) walk(n ast.Node, depth int) {
 			b.emit(ListItem, max(depth, 1), c)
 		case *ast.Blockquote:
 			b.emit(Quote, 0, c)
-		case *ast.FencedCodeBlock, *ast.CodeBlock:
+		case *ast.FencedCodeBlock:
 			// Code carries no inline links, so it contributes nothing to linkIdx.
-			b.emit(CodeBlock, 0, c)
+			// Its body lives in Lines() (not child inlines) and its fence names a
+			// language, both of which emitCode captures.
+			b.emitCode(v, string(v.Language(b.src)))
+		case *ast.CodeBlock:
+			// Indented code: same body-in-Lines() shape, but no fence language.
+			b.emitCode(v, "")
 		case *ast.ThematicBreak:
 			// nothing to carry
 		default:
@@ -194,6 +205,34 @@ func (b *docBuilder) emit(kind BlockKind, level int, n ast.Node) {
 			}
 		}
 	}
+}
+
+// emitCode appends one CodeBlock whose content is the block's literal body and,
+// for a fenced block, its info-string language. A code block's text lives in the
+// AST node's Lines() segments rather than child inline nodes, so inlinesOf (which
+// walks children) would drop it; emitCode reads the segments directly. Code
+// carries no refs or hostable anchors, so none of emit's bookkeeping applies.
+func (b *docBuilder) emitCode(n ast.Node, language string) {
+	var inlines []Inline
+	if text := codeText(n, b.src); text != "" {
+		inlines = []Inline{{Text: text}}
+	}
+	b.blocks = append(b.blocks, publish.Block{
+		Content: BlockContent{Kind: CodeBlock, Inlines: inlines, Language: language},
+	})
+}
+
+// codeText reconstructs a code block's literal body from its source line
+// segments, dropping a single trailing newline (the fence/block boundary) while
+// preserving interior blank lines.
+func codeText(n ast.Node, src []byte) string {
+	lines := n.Lines()
+	var sb strings.Builder
+	for i := 0; i < lines.Len(); i++ {
+		seg := lines.At(i)
+		sb.Write(seg.Value(src))
+	}
+	return strings.TrimSuffix(sb.String(), "\n")
 }
 
 // inlinesOf collects the inline run of block n: text spans verbatim and

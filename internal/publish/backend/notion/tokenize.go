@@ -26,12 +26,12 @@ import (
 func (b *Backend) Tokenize(doc publish.Document) []publish.AtomicUnit {
 	var units []publish.AtomicUnit
 	for _, blk := range doc.Blocks {
-		kind, level, runs, hadInlineRefs := reshape(blk.Content)
+		kind, level, language, runs, hadInlineRefs := reshape(blk.Content)
 		chunks := b.splitRuns(runs)
 
 		for i, chunk := range chunks {
 			u := publish.AtomicUnit{
-				Payload: childBlock{kind: kind, level: level, runs: chunk},
+				Payload: childBlock{kind: kind, level: level, language: language, runs: chunk},
 				Cost:    1,
 				Group:   doc.Group,
 				Refs:    refsOf(chunk),
@@ -71,14 +71,14 @@ func (b *Backend) TokenizeOp(op publish.NonContentOp) publish.AtomicUnit {
 }
 
 // reshape projects a neutral block's opaque Content into an ordered run of Notion
-// inline spans, reporting the block kind, level, and whether the content exposed
-// any first-class inline Refs (so Tokenize knows whether to fall back to the
-// block's aggregate Refs). It understands the shared parser's graph.BlockContent;
+// inline spans, reporting the block kind, level, code-fence language, and whether
+// the content exposed any first-class inline Refs (so Tokenize knows whether to
+// fall back to the block's aggregate Refs). It understands the shared parser's graph.BlockContent;
 // a bare string or nil is tolerated as a degenerate single-run block.
-func reshape(content any) (kind, level int, runs []textRun, hadInlineRefs bool) {
+func reshape(content any) (kind, level int, language string, runs []textRun, hadInlineRefs bool) {
 	switch c := content.(type) {
 	case graph.BlockContent:
-		kind, level = int(c.Kind), c.Level
+		kind, level, language = int(c.Kind), c.Level, c.Language
 		for _, in := range c.Inlines {
 			if in.Ref != nil {
 				runs = append(runs, textRun{Ref: in.Ref.ID})
@@ -98,7 +98,7 @@ func reshape(content any) (kind, level int, runs []textRun, hadInlineRefs bool) 
 	default:
 		runs = append(runs, textRun{Text: fmt.Sprint(c)})
 	}
-	return kind, level, runs, hadInlineRefs
+	return kind, level, language, runs, hadInlineRefs
 }
 
 // splitRuns packs a block's inline runs into chunks whose literal text stays

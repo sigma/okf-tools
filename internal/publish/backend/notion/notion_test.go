@@ -67,6 +67,29 @@ func TestTokenizeSplitsOversizedBlock(t *testing.T) {
 	}
 }
 
+// A code block carries its fence language onto every unit — including each unit
+// produced when an oversized code body is split across the char cap, a case only
+// reachable now that code blocks carry their literal text.
+func TestTokenizeCodeBlockLanguageSurvivesSplit(t *testing.T) {
+	b := New(WithMaxBlockChars(5))
+	doc := publish.Document{Group: "node:a.md", Blocks: []publish.Block{
+		{Content: graph.BlockContent{Kind: graph.CodeBlock, Language: "go", Inlines: []graph.Inline{txt("abcdefghij")}}},
+	}}
+	units := b.Tokenize(doc)
+	if len(units) != 2 {
+		t.Fatalf("got %d units, want 2 (10 chars / cap 5)", len(units))
+	}
+	for i, u := range units {
+		cb := payload(t, u)
+		if cb.kind != int(graph.CodeBlock) {
+			t.Errorf("unit %d kind = %d, want CodeBlock", i, cb.kind)
+		}
+		if cb.language != "go" {
+			t.Errorf("unit %d language = %q, want the fence language on every split chunk", i, cb.language)
+		}
+	}
+}
+
 // A block within the cap is a single unit; the cap only splits oversized content.
 func TestTokenizeSmallBlockStaysWhole(t *testing.T) {
 	b := New() // default 2000-char cap
