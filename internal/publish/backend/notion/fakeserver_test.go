@@ -23,6 +23,15 @@ type fakeNotion struct {
 	// GET /blocks/{id}/children can echo them for anchor mapping.
 	children map[string][]string
 
+	// liveBlocks maps a page id to the canned live block objects GET
+	// /blocks/{id}/children serves the ScanRecompute walk (full block objects, not
+	// just ids). When set for a page it takes precedence over children.
+	liveBlocks map[string][]map[string]any
+
+	// pageProps maps a page id to the canned properties GET /pages/{id} serves the
+	// write-back read-modify-write (reading a parent row's current `hashes` column).
+	pageProps map[string]map[string]any
+
 	// rows are the canned data-source query rows; pageSize > 0 forces pagination.
 	rows     []map[string]any
 	pageSize int
@@ -36,17 +45,36 @@ type recordedReq struct {
 }
 
 func newFakeNotion() *fakeNotion {
-	return &fakeNotion{children: map[string][]string{}}
+	return &fakeNotion{
+		children:   map[string][]string{},
+		liveBlocks: map[string][]map[string]any{},
+		pageProps:  map[string]map[string]any{},
+	}
 }
 
 func (f *fakeNotion) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /pages", f.createPage)
+	mux.HandleFunc("GET /pages/{id}", f.getPage)
 	mux.HandleFunc("PATCH /pages/{id}", f.updatePage)
 	mux.HandleFunc("GET /blocks/{id}/children", f.getChildren)
 	mux.HandleFunc("PATCH /blocks/{id}/children", f.appendChildren)
 	mux.HandleFunc("POST /data_sources/{id}/query", f.query)
 	return mux
+}
+
+// getPage serves the canned properties of a page for the write-back read-modify-
+// write of a parent row's subtree map. An unknown page returns empty properties.
+func (f *fakeNotion) getPage(w http.ResponseWriter, r *http.Request) {
+	f.record(r)
+	id := r.PathValue("id")
+	f.mu.Lock()
+	props := f.pageProps[id]
+	f.mu.Unlock()
+	if props == nil {
+		props = map[string]any{}
+	}
+	writeJSON(w, map[string]any{"id": id, "properties": props})
 }
 
 // record captures a request and returns its decoded body.
@@ -84,9 +112,21 @@ func (f *fakeNotion) updatePage(w http.ResponseWriter, r *http.Request) {
 
 func (f *fakeNotion) getChildren(w http.ResponseWriter, r *http.Request) {
 	f.record(r)
+	id := r.PathValue("id")
 	f.mu.Lock()
-	ids := f.children[r.PathValue("id")]
+	live, hasLive := f.liveBlocks[id]
+	ids := f.children[id]
 	f.mu.Unlock()
+
+	// The ScanRecompute walk needs full block objects (type, child_page, rich_text);
+	// when liveBlocks is seeded for a page, serve those. Otherwise fall back to the
+	// id-only echo the create/anchor-mapping path relies on.
+	if hasLive {
+		results := make([]map[string]any, len(live))
+		copy(results, live)
+		writeJSON(w, map[string]any{"results": results, "has_more": false})
+		return
+	}
 
 	results := make([]map[string]any, 0, len(ids))
 	for _, id := range ids {
@@ -187,6 +227,42 @@ func richProp(s string) map[string]any {
 	return map[string]any{
 		"type":      "rich_text",
 		"rich_text": []any{map[string]any{"plain_text": s}},
+	}
+}
+
+// paraLive builds a canned live paragraph block: an id and one plain-text run.
+func paraLive(id, text string) map[string]any {
+	return map[string]any{
+		"id":   id,
+		"type": "paragraph",
+		"paragraph": map[string]any{
+			"rich_text": []any{map[string]any{"plain_text": text}},
+		},
+	}
+}
+
+// boldLive builds a canned live paragraph whose leading run is bold — a glossary
+// anchor host, whose term the recompute slugifies into an anchor name.
+func boldLive(id, term string) map[string]any {
+	return map[string]any{
+		"id":   id,
+		"type": "paragraph",
+		"paragraph": map[string]any{
+			"rich_text": []any{map[string]any{
+				"plain_text":  term,
+				"annotations": map[string]any{"bold": true},
+			}},
+		},
+	}
+}
+
+// childPageLive builds a canned live child_page block: a subpage's page id and its
+// title (the subpath key the recompute matches against the stored subtree map).
+func childPageLive(id, title string) map[string]any {
+	return map[string]any{
+		"id":         id,
+		"type":       "child_page",
+		"child_page": map[string]any{"title": title},
 	}
 }
 

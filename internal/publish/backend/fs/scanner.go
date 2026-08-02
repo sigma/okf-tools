@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/sigma/okf-tools/internal/publish"
+	"github.com/sigma/okf-tools/internal/publish/backend"
 )
 
 // Scan produces the neutral CurrentState by READING THE EXPORTED TREE FROM DISK —
@@ -28,7 +29,11 @@ import (
 // CreateNode.
 //
 // A missing root is an empty snapshot (the fresh-export case), not an error.
-func (b *Backend) Scan(_ context.Context) (*publish.CurrentState, error) {
+//
+// The ScanMode is accepted for the Scanner-interface contract but ignored: the
+// filesystem export always walks the whole tree from disk, so there is no cheaper
+// steady-state form to opt out of (ScanStored and ScanRecompute are identical here).
+func (b *Backend) Scan(_ context.Context, _ backend.ScanMode) (*publish.CurrentState, error) {
 	nodeIDs := map[publish.SymbolicID]publish.BackendID{}
 	anchorIDs := map[publish.AnchorName]publish.BackendID{}
 

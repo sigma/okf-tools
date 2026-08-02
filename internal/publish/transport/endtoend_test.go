@@ -8,6 +8,7 @@ import (
 
 	"github.com/sigma/okf-tools/internal/bundle"
 	"github.com/sigma/okf-tools/internal/publish"
+	"github.com/sigma/okf-tools/internal/publish/backend"
 	"github.com/sigma/okf-tools/internal/publish/backend/fake"
 	"github.com/sigma/okf-tools/internal/publish/graph"
 	"github.com/sigma/okf-tools/internal/publish/optimize"
@@ -69,7 +70,7 @@ func pipeline(t *testing.T, files map[string]string) (*Result, *optimize.TxnDAG,
 	// optimizer/backend fusion concern, out of scope for transport.)
 	be := fake.New(fake.WithMaxCount(2)) // empty scan by default
 
-	scan, err := be.Scan(context.Background())
+	scan, err := be.Scan(context.Background(), backend.ScanStored)
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}

@@ -22,6 +22,8 @@
 package fs
 
 import (
+	"context"
+
 	"github.com/sigma/okf-tools/internal/publish"
 	"github.com/sigma/okf-tools/internal/publish/backend"
 )
@@ -45,8 +47,20 @@ var (
 	_ backend.ConstraintModel = (*Backend)(nil)
 	_ backend.Executor        = (*Backend)(nil)
 	_ backend.Scanner         = (*Backend)(nil)
+	_ backend.WriteBacker     = (*Backend)(nil)
 	_ backend.Backend         = (*Backend)(nil)
 )
+
+// WriteBack is a no-op for the filesystem export. Execute already writes each
+// node's full content, ids, and anchors to disk on every run, and Scan re-derives
+// them from that tree, so there is no separate provenance to persist between runs
+// — the exact inverse of Notion, where write-back into the mirror's derived
+// columns is what keeps the steady-state scan cheap. Implemented to satisfy the
+// backend.Backend umbrella (and so the transport can call it uniformly); the
+// provenance is intentionally dropped.
+func (b *Backend) WriteBack(_ context.Context, _ publish.Provenance) error {
+	return nil
+}
 
 // Option configures a Backend built by New.
 type Option func(*Backend)

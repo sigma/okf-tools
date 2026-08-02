@@ -48,12 +48,24 @@ type Op struct {
 	// Node is the symbolic id of the node this op acts on or produces:
 	// "node:<bundle-rel-path>" (e.g. "node:docs/adr/0002.md").
 	Node publish.SymbolicID
-	// Parent is the CreateNode parent ref: the symbolic id of the node the new
-	// node is created under, or "" for a node at the top of its area database
-	// (today's null-parent / area-DB row). A parent that already exists in the
-	// scan seeds without an edge; a parent created this run gets a
-	// parent-before-child edge. Set only for CreateNode.
+	// Parent is the symbolic id of the node this node is created / lives under, or
+	// "" for a node at the top of its area database (today's null-parent / area-DB
+	// row). On a CreateNode it is the parent-before-child ref: a parent already in
+	// the scan seeds without an edge; a parent created this run gets an edge. It is
+	// also stamped on a touched node's SetProperties / SetContent ops so publish-
+	// time write-back can route a subpage's provenance into its parent row's
+	// subtree map even when the node already exists (no CreateNode this run).
 	Parent publish.SymbolicID
+	// Hash is the node's expected content hash — the value change detection
+	// computed for this run. It is stamped on a touched node's ops so it can be
+	// threaded to the transport and written back into the node's `hash` derived
+	// column, making the next ScanStored hash-skip it. Zero for a DeleteNode.
+	Hash publish.Hash
+	// Title is the node's display title, stamped on a touched node's ops so
+	// publish-time write-back can record it in a subpage's subtree-map entry — the
+	// key ScanRecompute matches a live page back to its subpath by. Empty for a
+	// DeleteNode.
+	Title string
 	// Props are the semantic properties SetProperties asserts. Set only for
 	// SetProperties.
 	Props map[string]any
