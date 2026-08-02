@@ -356,7 +356,7 @@ func (b *Backend) propertyValue(name string, v any) map[string]any {
 
 	switch kind {
 	case "title":
-		return map[string]any{"title": richTextSpans(fmt.Sprint(v))}
+		return map[string]any{"title": b.richTextSpans(fmt.Sprint(v))}
 	case "select":
 		s := fmt.Sprint(v)
 		if s == "" {
@@ -376,14 +376,22 @@ func (b *Backend) propertyValue(name string, v any) map[string]any {
 	case "checkbox":
 		return map[string]any{"checkbox": notionBool(v)}
 	default: // "text" and any unknown kind
-		return map[string]any{"rich_text": richTextSpans(fmt.Sprint(v))}
+		return map[string]any{"rich_text": b.richTextSpans(fmt.Sprint(v))}
 	}
 }
 
-// richTextSpans wraps a string in the single-span rich-text array a title or
-// rich_text property value carries.
-func richTextSpans(s string) []map[string]any {
-	return []map[string]any{{"type": "text", "text": map[string]any{"content": s}}}
+// richTextSpans wraps s in the rich-text array a title or rich_text property value
+// carries, splitting it into as many spans as the per-span char cap requires so no
+// single span exceeds Notion's 2000-char limit — the same cap splitRuns applies to
+// a block's inline runs (a single oversized span 400s, #94). The spans concatenate
+// on read (plainText), so round-trip reads are unaffected.
+func (b *Backend) richTextSpans(s string) []map[string]any {
+	chunks := splitByChars(s, b.maxChars)
+	spans := make([]map[string]any, len(chunks))
+	for i, c := range chunks {
+		spans[i] = map[string]any{"type": "text", "text": map[string]any{"content": c}}
+	}
+	return spans
 }
 
 // multiSelectNames turns a neutral list value into a Notion multi_select value —

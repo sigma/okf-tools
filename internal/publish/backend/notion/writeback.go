@@ -53,15 +53,15 @@ func (b *Backend) WriteBack(ctx context.Context, prov publish.Provenance) error 
 	for _, node := range topLevel {
 		np := prov.Nodes[node]
 		props := map[string]any{
-			"path": richTextProp(relOfNode(node)),
-			"hash": richTextProp(string(np.Hash)),
+			"path": b.richTextProp(relOfNode(node)),
+			"hash": b.richTextProp(string(np.Hash)),
 		}
 		if len(np.Anchors) > 0 {
 			enc, err := json.Marshal(anchorMap(np.Anchors))
 			if err != nil {
 				return fmt.Errorf("notion: write-back: encode anchors for %s: %w", node, err)
 			}
-			props["anchors"] = richTextProp(string(enc))
+			props["anchors"] = b.richTextProp(string(enc))
 		}
 		if err := b.patchProps(ctx, string(np.ID), props); err != nil {
 			return fmt.Errorf("notion: write-back %s: %w", node, err)
@@ -102,7 +102,7 @@ func (b *Backend) mergeSubtree(ctx context.Context, parentID string, updates map
 	if err != nil {
 		return fmt.Errorf("encode subtree map: %w", err)
 	}
-	return b.patchProps(ctx, parentID, map[string]any{"hashes": richTextProp(string(enc))})
+	return b.patchProps(ctx, parentID, map[string]any{"hashes": b.richTextProp(string(enc))})
 }
 
 // getPageProps reads a page's properties via GET /pages/{id} — the read half of
@@ -122,14 +122,14 @@ func (b *Backend) patchProps(ctx context.Context, pageID string, props map[strin
 	return b.do(ctx, http.MethodPatch, "/pages/"+url.PathEscape(pageID), updatePageReq{Properties: props}, nil)
 }
 
-// richTextProp builds a Notion rich_text property value carrying one text span —
-// the shape the self-describing derived columns use.
-func richTextProp(s string) map[string]any {
-	return map[string]any{
-		"rich_text": []map[string]any{
-			{"type": "text", "text": map[string]any{"content": s}},
-		},
-	}
+// richTextProp builds a Notion rich_text property value from s — the shape the
+// self-describing derived columns use. It splits s into as many spans as the
+// per-span char cap requires, so a value over Notion's 2000-char limit (the
+// glossary host's anchors map is the first derived column to hit it, #94) is
+// chunked rather than 400ing. The spans concatenate on read (plainText), so
+// round-trip reads are unaffected.
+func (b *Backend) richTextProp(s string) map[string]any {
+	return map[string]any{"rich_text": b.richTextSpans(s)}
 }
 
 // anchorMap projects a resolved anchor table to the plain name → id map the

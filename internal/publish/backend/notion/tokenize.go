@@ -135,6 +135,25 @@ func (b *Backend) splitRuns(runs []textRun) [][]textRun {
 	return chunks
 }
 
+// splitByChars slices s into consecutive chunks whose rune length stays within
+// limit — the per-span char cap Notion enforces on every rich_text object. It cuts
+// on rune boundaries (never mid-rune) and always yields at least one chunk, so an
+// empty string still produces one (empty) span. This is the plain-string analogue
+// of splitRuns, which applies the same cap to a block's inline runs; property
+// values (write-back columns, page properties) route through it via richTextSpans.
+func splitByChars(s string, limit int) []string {
+	rs := []rune(s)
+	if limit <= 0 || len(rs) <= limit {
+		return []string{s}
+	}
+	var chunks []string
+	for len(rs) > limit {
+		chunks = append(chunks, string(rs[:limit]))
+		rs = rs[limit:]
+	}
+	return append(chunks, string(rs))
+}
+
 // refsOf collects the symbolic ids of the Ref runs in one chunk, in order.
 func refsOf(chunk []textRun) []publish.SymbolicID {
 	var refs []publish.SymbolicID
