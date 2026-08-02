@@ -207,6 +207,136 @@ func TestFusionSuppressesWriteTarget(t *testing.T) {
 	}
 }
 
+// acyclic reports whether the transaction-DAG has no directed cycle, via a Kahn
+// topological drain: repeatedly remove a zero-indegree txn until none remain. A
+// leftover node means a cycle. This is the property the transport drainer needs —
+// a cyclic txn-DAG has a wavefront that never becomes ready.
+func acyclic(d *optimize.TxnDAG) bool {
+	indeg := make([]int, len(d.Txns))
+	out := make([][]int, len(d.Txns))
+	for _, e := range d.Edges {
+		indeg[e.To]++
+		out[e.From] = append(out[e.From], e.To)
+	}
+	var queue []int
+	for i, n := range indeg {
+		if n == 0 {
+			queue = append(queue, i)
+		}
+	}
+	drained := 0
+	for len(queue) > 0 {
+		v := queue[0]
+		queue = queue[1:]
+		drained++
+		for _, w := range out[v] {
+			indeg[w]--
+			if indeg[w] == 0 {
+				queue = append(queue, w)
+			}
+		}
+	}
+	return drained == len(d.Txns)
+}
+
+// linkGraph builds an op-DAG of new pages whose content links form the edges in
+// links (rel → rel): each page is a CreateNode + a single content block citing its
+// target's node id. It is the minimal shape that fuses into a transaction cycle
+// under an unbounded bin.
+func linkGraph(links map[string]string) *graph.Graph {
+	g := &graph.Graph{}
+	rels := make([]string, 0, len(links))
+	for rel := range links {
+		rels = append(rels, rel)
+	}
+	slices.Sort(rels)
+	for _, rel := range rels {
+		g.Ops = append(g.Ops,
+			&graph.Op{Kind: graph.CreateNode, Node: node(rel)},
+			&graph.Op{Kind: graph.SetContent, Node: node(rel), Doc: &publish.Document{
+				Group:  group(rel),
+				Blocks: []publish.Block{block([]publish.SymbolicID{node(links[rel])}, nil)},
+			}},
+		)
+	}
+	return g
+}
+
+// TestScopedSealBreaksFusionCycle is the optimizer-level guard for strategy #67:
+// with an unbounded (fusing) bin, mutually-linking NEW pages would fuse each
+// node's create+content into one PackedTxn and close a transaction cycle. Optimize
+// must detect that on the real fused DAG and force-split the minimal node set so
+// the emitted txn-DAG is acyclic — for a reciprocal 2-cycle and a one-directional
+// ring alike — while still producing every node exactly once and staying
+// deterministic across runs.
+func TestScopedSealBreaksFusionCycle(t *testing.T) {
+	cases := []struct {
+		name  string
+		links map[string]string
+		nodes []string
+	}{
+		{
+			name:  "reciprocal_2_cycle",
+			links: map[string]string{"a.md": "b.md", "b.md": "a.md"},
+			nodes: []string{"a.md", "b.md"},
+		},
+		{
+			name:  "onedirectional_3_ring",
+			links: map[string]string{"a.md": "b.md", "b.md": "c.md", "c.md": "a.md"},
+			nodes: []string{"a.md", "b.md", "c.md"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := linkGraph(tc.links)
+			be := fake.New() // unbounded: absent the fix, every node fuses into a cycle
+
+			d := optimize.Optimize(g, be, be)
+			if !acyclic(d) {
+				t.Errorf("txn-DAG still cyclic after the scoped-seal loop:\n%s", serialize(d))
+			}
+			// Every node must still be produced exactly once (splitting a create from
+			// its content must not drop or duplicate the create).
+			for _, rel := range tc.nodes {
+				if idx := findProducer(d, node(rel)); idx < 0 {
+					t.Errorf("no txn Produces %s after the split", node(rel))
+				}
+			}
+			// Determinism (#164 §6): the split selection is a total order on Group id,
+			// so a second run is byte-identical.
+			if got, want := serialize(optimize.Optimize(g, be, be)), serialize(d); got != want {
+				t.Errorf("cycle-breaking is nondeterministic\n--- run 2 ---\n%s\n--- run 1 ---\n%s", got, want)
+			}
+		})
+	}
+}
+
+// TestScopedSealCostIsMinimal pins the cost bound from #67: breaking a reciprocal
+// a↔b cycle costs exactly ONE extra transaction — a single node is de-fused
+// (its create+content split into two txns), the other stays fused. Absent a cycle
+// the seam never fires, so a fused pair is two txns and a broken pair is three.
+func TestScopedSealCostIsMinimal(t *testing.T) {
+	g := linkGraph(map[string]string{"a.md": "b.md", "b.md": "a.md"})
+	be := fake.New() // unbounded
+
+	d := optimize.Optimize(g, be, be)
+	// a.md and b.md, unbounded and mutually linked: one splits into {create}+{content}
+	// (2 txns), the other stays fused (1 txn) → 3 total.
+	if got := len(d.Txns); got != 3 {
+		t.Errorf("want 3 txns (one node de-fused, one fused), got %d:\n%s", got, serialize(d))
+	}
+	// The lowest Group id (node:a.md) is the one force-split, so it owns two txns.
+	aTxns := 0
+	for _, tx := range d.Txns {
+		if tx.Group == group("a.md") {
+			aTxns++
+		}
+	}
+	if aTxns != 2 {
+		t.Errorf("lowest-id node a.md should be the one de-fused (2 txns), got %d", aTxns)
+	}
+}
+
 // TestOverflowEdge: with maxCount=2, a.md's create+props fill bin 1 and its
 // content overflows into bin 2, which then exposes node:a.md (not produced there)
 // and gets an edge from the create bin.
