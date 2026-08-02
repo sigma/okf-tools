@@ -152,6 +152,48 @@ func TestExportTree(t *testing.T) {
 	assertNodeDirs(t, out, wantNodes)
 }
 
+// TestExportSelfHostedAnchor reproduces sigma/okf-tools#76: a glossary host that
+// cites one of its OWN terms must publish on the fs backend. The optimizer
+// suppresses a self-hosted anchor ref from the txn's exposed Refs (it assumes the
+// backend resolves an intra-transaction anchor internally), so the fs Execute must
+// resolve the host's own just-hosted anchor from within the same transaction —
+// the transport table has not merged it yet, and a fresh/changed host is absent
+// from the scan seed. Before the fix this failed at Execute with
+// "content ref anchor:glossary/emergency-block did not resolve".
+func TestExportSelfHostedAnchor(t *testing.T) {
+	files := map[string]string{
+		"okf.toml": "[glossary]\nenabled = true\nfiles = [\"CONTEXT.md\"]\n",
+		"index.md": "---\nokf_version: \"0.1\"\n---\n# Root\n",
+		"CONTEXT.md": "# Glossary\n\n" +
+			"**Emergency block**: when tripped, follow the " +
+			"[emergency block](CONTEXT.md#emergency-block) procedure.\n",
+	}
+	b := loadBundle(t, files)
+	out := t.TempDir()
+
+	res := publishToDisk(t, b, out)
+
+	// The self-hosted anchor resolved in the table and was written to anchors.json.
+	anchor := publish.AnchorName("glossary/emergency-block")
+	if got, ok := res.Anchors[anchor]; !ok || string(got) != "CONTEXT.md#glossary/emergency-block" {
+		t.Errorf("anchor %s resolved to %q,%v, want CONTEXT.md#glossary/emergency-block", anchor, got, ok)
+	}
+	// The host's own content rendered the anchor link to its on-disk target rather
+	// than failing to resolve. The citing run may land in any section file, so scan
+	// the whole exported tree for the resolved link.
+	tree := snapshot(t, filepath.Join(out, "CONTEXT.md"))
+	var resolved bool
+	for _, body := range tree {
+		if strings.Contains(body, "(CONTEXT.md#glossary/emergency-block)") {
+			resolved = true
+			break
+		}
+	}
+	if !resolved {
+		t.Errorf("CONTEXT.md content did not resolve its self-hosted anchor link:\n%v", tree)
+	}
+}
+
 // TestExportDeterministic re-exports the same bundle to a second tree and asserts
 // the two trees are byte-identical — reproducible dry-runs.
 func TestExportDeterministic(t *testing.T) {

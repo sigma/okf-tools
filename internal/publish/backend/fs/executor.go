@@ -40,6 +40,16 @@ func (b *Backend) Execute(_ context.Context, txn publish.Transaction, r backend.
 	rel := relOfNode(publish.SymbolicID(t.group))
 	dir := filepath.Join(b.root, filepath.FromSlash(rel))
 
+	// The optimizer suppresses a transaction's self-hosted anchor refs from its
+	// exposed Refs, assuming the backend resolves an intra-transaction anchor
+	// internally (true for Notion's fused single-object POST). The fs backend does
+	// not fuse and resolves inline refs through the transport Resolver, which is
+	// only updated with this txn's anchors AFTER Execute returns. So layer the
+	// txn's own just-hosted anchors over the Resolver for the duration of Execute,
+	// giving renderBlock a resolution table that includes them — the local echo of
+	// the intra-object resolution the suppression assumes. See sigma/okf-tools#76.
+	r = withHostedAnchors(rel, t.units, r)
+
 	var (
 		created   bool
 		contentN  int
@@ -127,6 +137,44 @@ func (b *Backend) Execute(_ context.Context, txn publish.Transaction, r backend.
 type nodeMeta struct {
 	Path   string `json:"path"`
 	Parent string `json:"parent"`
+}
+
+// withHostedAnchors layers a transaction's own hosted anchors over a Resolver.
+// It maps each anchor "name" that any unit of the transaction hosts to the
+// on-disk id Execute will mint for it (rel + "#" + name) — the identical value
+// that later lands in res.Anchors and, after the transport merges the ExecResult,
+// in the resolver table. If the transaction hosts no anchors the base Resolver is
+// returned unwrapped, so the common no-anchor case pays nothing.
+func withHostedAnchors(rel string, units []unit, base backend.Resolver) backend.Resolver {
+	var local map[publish.SymbolicID]publish.BackendID
+	for _, u := range units {
+		for _, a := range u.anchors {
+			if local == nil {
+				local = map[publish.SymbolicID]publish.BackendID{}
+			}
+			local[publish.SymbolicID("anchor:"+string(a))] = publish.BackendID(rel + "#" + string(a))
+		}
+	}
+	if local == nil {
+		return base
+	}
+	return txnResolver{local: local, base: base}
+}
+
+// txnResolver resolves a symbolic id against a transaction-local overlay first,
+// falling back to the transport Resolver. The overlay only ever holds the txn's
+// self-hosted anchors, which the transport table cannot yet resolve mid-Execute;
+// every other id (parents, cross-document links) falls straight through to base.
+type txnResolver struct {
+	local map[publish.SymbolicID]publish.BackendID
+	base  backend.Resolver
+}
+
+func (t txnResolver) Resolve(id publish.SymbolicID) (publish.BackendID, bool) {
+	if b, ok := t.local[id]; ok {
+		return b, true
+	}
+	return t.base.Resolve(id)
 }
 
 // resolveParent resolves a create unit's parent Ref (its single Ref, stamped by
