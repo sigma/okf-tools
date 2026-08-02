@@ -37,11 +37,13 @@ type fakeNotion struct {
 	pageSize int
 }
 
-// recordedReq is one captured request: its method, path, and decoded JSON body.
+// recordedReq is one captured request: its method, path, decoded JSON body, and
+// the Notion-Version header the client pinned on it.
 type recordedReq struct {
-	Method string
-	Path   string
-	Body   map[string]any
+	Method  string
+	Path    string
+	Body    map[string]any
+	Version string
 }
 
 func newFakeNotion() *fakeNotion {
@@ -81,7 +83,12 @@ func (f *fakeNotion) getPage(w http.ResponseWriter, r *http.Request) {
 func (f *fakeNotion) record(r *http.Request) map[string]any {
 	body := decodeBody(r)
 	f.mu.Lock()
-	f.reqs = append(f.reqs, recordedReq{Method: r.Method, Path: r.URL.Path, Body: body})
+	f.reqs = append(f.reqs, recordedReq{
+		Method:  r.Method,
+		Path:    r.URL.Path,
+		Body:    body,
+		Version: r.Header.Get("Notion-Version"),
+	})
 	f.mu.Unlock()
 	return body
 }

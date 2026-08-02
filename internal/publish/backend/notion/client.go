@@ -13,8 +13,12 @@ import (
 // httptest server in tests); the Notion-Version pins the API surface this client
 // speaks.
 const (
-	defaultBaseURL       = "https://api.notion.com/v1"
-	defaultNotionVersion = "2022-06-28"
+	defaultBaseURL = "https://api.notion.com/v1"
+	// The backend queries POST /data_sources/{id}/query and creates pages under
+	// data_source_id parents — routes and payloads the 2025-09-03 data-source API
+	// introduced. The pinned version must name that surface; an older version (e.g.
+	// 2022-06-28) lacks those routes and fails scan with 400 invalid_request_url.
+	defaultNotionVersion = "2025-09-03"
 )
 
 // httpDoer is the one method the shared client needs from net/http. Narrowing to
