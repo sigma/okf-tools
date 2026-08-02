@@ -103,14 +103,30 @@ func TestPropsJSONNumberAndBoolCoercions(t *testing.T) {
 	}
 }
 
-// TestPropsJSONSchemaPresentUnknownKeyFallsBack proves AC6's cited regression case:
-// with a schema present, a key the schema does not declare (a write-back column
-// like path/hash/anchors) still serializes as rich_text rather than erroring.
-func TestPropsJSONSchemaPresentUnknownKeyFallsBack(t *testing.T) {
+// TestPropsJSONSchemaPresentUnknownKeyDropped proves issue #86: with a schema
+// present, a key the schema does not declare as a source:frontmatter column is
+// silently dropped rather than written (which would 400 as "not a property that
+// exists" against a mirror provisioned only from the schema). The derived
+// title/type and declared frontmatter columns on the same page are still written.
+func TestPropsJSONSchemaPresentUnknownKeyDropped(t *testing.T) {
 	be := New(WithSchema(ideasSchema()))
-	out := be.propsJSON(map[string]any{"anchors": `{"x":"y"}`})
-	if _, ok := out["anchors"].(map[string]any)["rich_text"]; !ok {
-		t.Errorf("an undeclared key should fall back to rich_text, got %v", out["anchors"])
+	out := be.propsJSON(map[string]any{
+		"author": "Ada",      // undeclared (e.g. a reserved README's extra key) -> dropped
+		"title":  "Cluster",  // derived title -> kept
+		"type":   "context",  // derived select column -> kept
+		"status": "accepted", // declared source:frontmatter column -> kept
+	})
+	if _, ok := out["author"]; ok {
+		t.Errorf("undeclared key should be dropped, got %v", out["author"])
+	}
+	if _, ok := out["title"].(map[string]any)["title"]; !ok {
+		t.Errorf("derived title should be retained as a title value, got %v", out["title"])
+	}
+	if _, ok := out["type"].(map[string]any)["select"]; !ok {
+		t.Errorf("derived type column should be retained as a select value, got %v", out["type"])
+	}
+	if _, ok := out["status"].(map[string]any)["select"]; !ok {
+		t.Errorf("declared frontmatter column should be retained, got %v", out["status"])
 	}
 }
 

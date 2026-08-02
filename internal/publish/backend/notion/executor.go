@@ -247,12 +247,37 @@ func richTextJSON(runs []textRun, r backend.Resolver) ([]map[string]any, error) 
 // falls back to the legacy behavior — the literal "title" key becomes a title,
 // everything else rich_text. The derived self-describing columns
 // (path/hash/hashes/anchors) are written by the #44 write-back, not here.
+//
+// With a schema present, a key that is neither the pipeline-derived title/type nor
+// a declared source:frontmatter column is silently dropped (issue #86): the mirror
+// is provisioned only from the schema, so writing an undeclared key 400s as "not a
+// property that exists". This lets reserved pages (README/section pages) carry
+// extra frontmatter — e.g. a cluster README's author — and still publish cleanly.
 func (b *Backend) propsJSON(props map[string]any) map[string]any {
 	out := make(map[string]any, len(props))
 	for k, v := range props {
+		if !b.writableColumn(k) {
+			continue
+		}
 		out[k] = b.propertyValue(k, v)
 	}
 	return out
+}
+
+// writableColumn reports whether a neutral property key may be written as a page
+// property. Without a schema every key is writable (legacy behavior). With one,
+// only the pipeline-derived title/type and the schema's declared source:frontmatter
+// columns are writable; any other key (undeclared frontmatter, or a page's extra
+// keys) is dropped so it never reaches a mirror that has no such column.
+func (b *Backend) writableColumn(name string) bool {
+	if b.schema == nil {
+		return true
+	}
+	if name == "title" || name == "type" {
+		return true
+	}
+	col, ok := b.schema.Lookup(name)
+	return ok && col.IsFrontmatter()
 }
 
 // propertyValue serializes one neutral property into its Notion value object. It
