@@ -32,9 +32,31 @@ jobs:
   nix:
     name: nix flake check
     runs-on: ubuntu-latest
+    # The job itself always runs so it always reports a `nix flake check` status
+    # — a `paths:` filter on the trigger would skip the whole run (and the status),
+    # which a branch-protection required check reads as "pending" and never merges.
+    # Instead we gate the expensive Nix steps on an in-job path filter: irrelevant
+    # changes still get a green `nix flake check`, just without the build/test cost.
     steps:
       - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          # Inputs that can actually change what `nix flake check` builds/tests:
+          # the flake, its lock, and the Go module (built by the package's doCheck).
+          # The workflow itself is included so changes to this job stay self-checking.
+          filters: |
+            nix:
+              - 'flake.nix'
+              - 'flake.lock'
+              - 'go.mod'
+              - 'go.sum'
+              - '**/*.go'
+              - '.github/workflows/ci.yml'
       - uses: DeterminateSystems/nix-installer-action@main
+        if: steps.filter.outputs.nix == 'true'
       - uses: DeterminateSystems/magic-nix-cache-action@main
+        if: steps.filter.outputs.nix == 'true'
       # Builds okftool and runs the full go test suite via the package's doCheck.
-      - run: nix flake check -L
+      - if: steps.filter.outputs.nix == 'true'
+        run: nix flake check -L
