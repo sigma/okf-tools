@@ -175,6 +175,14 @@ func Load(root, configPath string) (*Bundle, error) {
 			}
 			return nil
 		}
+		// Skip symlinked entries. A cluster keeps a README.md symlink to its
+		// canonical index.md so GitHub renders the folder entry, but parser
+		// resolves the link, so publishing the symlink would emit a second copy
+		// of the target document. The real target is walked and published
+		// normally; cross-links resolve against it. See #91.
+		if e.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
 		if !strings.HasSuffix(e.Name(), ".md") {
 			return nil
 		}

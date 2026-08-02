@@ -36,6 +36,44 @@ func loadBundle(t *testing.T, files map[string]string) *Bundle {
 	return b
 }
 
+// A README.md symlink to index.md is kept for GitHub folder rendering while
+// index.md stays the OKF-native canonical index. okfpub must publish the real
+// index.md once and treat the symlink as invisible — otherwise the walk emits
+// two pages for one document. See #91.
+func TestSymlinkedFileSkipped(t *testing.T) {
+	dir := writeBundle(t, map[string]string{
+		"okf.toml": "# x\n",
+		"index.md": "---\nokf_version: \"0.1\"\n---\n# root\n",
+		"a.md":     concept,
+	})
+	if err := os.Symlink("index.md", filepath.Join(dir, "README.md")); err != nil {
+		t.Skipf("symlinks unsupported on this platform: %v", err)
+	}
+	root, cfgPath, err := Discover(dir, "", "")
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	b, err := Load(root, cfgPath)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if d := b.byRel["README.md"]; d != nil {
+		t.Errorf("README.md symlink was published as %+v; want it skipped", d)
+	}
+	if b.byRel["index.md"] == nil {
+		t.Error("index.md (the symlink target) should still be published")
+	}
+	// The target document must be published exactly once: index.md + a.md, with
+	// the README.md symlink contributing no extra row.
+	var rels []string
+	for _, d := range b.Docs {
+		rels = append(rels, d.Rel)
+	}
+	if len(b.Docs) != 2 {
+		t.Errorf("published %d docs %v; want exactly 2 (index.md, a.md)", len(b.Docs), rels)
+	}
+}
+
 const concept = "---\ntype: Concept\ndescription: x\n---\nBody.\n"
 
 func TestDiscover(t *testing.T) {
