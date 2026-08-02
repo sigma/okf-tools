@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sigma/okf-tools/internal/bundle"
@@ -113,6 +114,102 @@ func TestEndToEndPublish(t *testing.T) {
 	// The glossary anchor the page cites must have been hosted and resolved.
 	if _, ok := res.Anchors[publish.AnchorName("glossary/root-kek")]; !ok {
 		t.Errorf("anchor glossary/root-kek never resolved, anchors=%v", res.Anchors)
+	}
+}
+
+// ringBundle is a self-contained bundle of N new pages linked in a one-directional
+// ring — a.md → b.md → … → a.md — all new against an empty scan. Unlike the
+// reciprocal a↔b shape it has no mutual link anywhere, yet an unbounded/fusing bin
+// still fuses each node's CreateNode+SetContent into one PackedTxn, so the ring of
+// content-refs-node edges becomes a genuine N-cycle at the transaction layer. A
+// fix that only breaks 2-cycles (reciprocal links) would miss this longer ring.
+func ringBundle(rels ...string) map[string]string {
+	files := map[string]string{
+		"okf.toml":          "",
+		"index.md":          "---\nokf_version: \"0.1\"\n---\n# Root\n",
+		"docs/adr/index.md": "# ADRs\n",
+	}
+	for i, rel := range rels {
+		next := rels[(i+1)%len(rels)] // last wraps back to first — closes the ring
+		title := strings.ToUpper(rel[:1])
+		files["docs/adr/"+rel+".md"] = "---\ntype: adr\ntitle: " + title +
+			"\n---\nSee [next](" + next + ".md).\n"
+	}
+	return files
+}
+
+// publishUnbounded drives a bundle through the full generate → optimize →
+// transport pipeline against a fresh UNBOUNDED (fusing) fake bin — fake.New() with
+// no WithMaxCount. That is the whole point of these acceptance tests: maxCount=2 is
+// the current workaround that seals each node's create separately from its content
+// and hides the fusion cycle; dropping it reproduces the cycle a real fusing bin
+// (Notion at its 100-block cap) exhibits. Returns the transport Result and error so
+// callers assert the observable outcome only — keeping them strategy-independent.
+func publishUnbounded(t *testing.T, files map[string]string) (*Result, error) {
+	t.Helper()
+	b := loadBundle(t, files)
+	be := fake.New() // unbounded / fusing bin — no WithMaxCount
+
+	scan, err := be.Scan(context.Background(), backend.ScanStored)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	g, err := graph.Generate(context.Background(), b, scan)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	dag := optimize.Optimize(g, be, be)
+	return New(be, WithInterval(0)).Run(context.Background(), dag, scan)
+}
+
+// TestEndToEndFusionCycles is the red acceptance test for the reciprocal-link
+// fusion cycle (map sigma/okf-tools#66, ticket #68), routed by the strategy
+// decision (#67) to cover BOTH shapes a general cycle-breaking fix must handle.
+// Each case drives new, mutually-referencing pages through the full generate →
+// optimize → transport pipeline with an UNBOUNDED (fusing) bin: the bin fuses each
+// node's CreateNode+SetContent into a single PackedTxn, so the graph of
+// content-refs-node edges becomes a genuine transaction cycle the transport drainer
+// cannot sequence (transport.go:126, "unresolvable refs"). The existing
+// pipeline/transport tests dodge this by forcing maxCount=2.
+//
+//   - reciprocal 2-cycle:   a ↔ b            (both new, each links the other)
+//   - one-directional ring: a → b → c → a    (all new; a 2-cycle-only fix misses it)
+//
+// EXPECTED RED until the fusion fix ([T3]) lands: both cases assert a clean publish
+// and currently fail at transport with the unresolvable-refs cycle error. When the
+// fix lands they turn green with no change to this test.
+func TestEndToEndFusionCycles(t *testing.T) {
+	cases := []struct {
+		name  string
+		files map[string]string
+		nodes []string // pages that must resolve once the cycle is broken
+	}{
+		{
+			name:  "reciprocal_a_b",
+			files: e2eBundle(), // docs/adr/a.md ↔ docs/adr/b.md, both new
+			nodes: []string{"docs/adr/a.md", "docs/adr/b.md"},
+		},
+		{
+			name:  "onedirectional_ring_a_b_c",
+			files: ringBundle("a", "b", "c"), // a → b → c → a, all new
+			nodes: []string{"docs/adr/a.md", "docs/adr/b.md", "docs/adr/c.md"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := publishUnbounded(t, tc.files)
+			if err != nil {
+				t.Fatalf("%s: new cross-linked pages must publish through the full "+
+					"pipeline with an unbounded bin, but transport failed: %v", tc.name, err)
+			}
+			for _, rel := range tc.nodes {
+				id := publish.SymbolicID("node:" + rel)
+				if _, ok := res.Nodes[id]; !ok {
+					t.Errorf("node %s never resolved — the fusion cycle blocked the drain", id)
+				}
+			}
+		})
 	}
 }
 
