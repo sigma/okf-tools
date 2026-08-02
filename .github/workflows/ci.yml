@@ -24,7 +24,10 @@ jobs:
             echo "These files need gofmt:"; echo "$unformatted"; exit 1
           fi
       - run: go vet ./...
-      - run: go test ./...
+      # -count=1 disables the test result cache so the import-boundary tests in
+      # internal/publish (which shell out to `go list`) always re-run; a warm
+      # GOCACHE could otherwise report a stale pass after a boundary violation.
+      - run: go test -count=1 ./...
 
   nix:
     name: nix flake check
