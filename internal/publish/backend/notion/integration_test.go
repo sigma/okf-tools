@@ -2,6 +2,7 @@ package notion
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/sigma/okf-tools/internal/publish"
@@ -91,6 +92,85 @@ func TestNotionEndToEnd(t *testing.T) {
 	if !bodyMentions(f.requestsTo("POST", "/pages"), anchorID) {
 		t.Errorf("no POST /pages body mentions the resolved anchor id %s", anchorID)
 	}
+}
+
+// TestNotionEndToEndSelfHostedAnchor drives the whole publish for the #89 case: a
+// glossary host that both defines an anchor and cites its own anchor, published to
+// an empty mirror (first publish, no scan-seeded anchor). This is the offline
+// analog of `okfpub run --backend notion` against a verified-empty data source.
+// The optimizer suppresses the self-hosted ref from the transport gate, so the
+// create is scheduled; the executor must then defer the citation out of the POST
+// and patch it in once the anchor block id exists, rather than fail with
+// "content ref … did not resolve". The `fake` backend masks this by honoring
+// intra-txn self-anchor resolution, so the regression lives on the notion path.
+func TestNotionEndToEndSelfHostedAnchor(t *testing.T) {
+	f := newFakeNotion()
+	be := newServer(t, f)
+
+	g := &graph.Graph{Ops: []*graph.Op{
+		createOp("node:CONTEXT.md"), propsOp("node:CONTEXT.md"),
+		// One node, two content blocks: the first hosts the anchor, the second cites
+		// that same anchor — the self-hosted anchor pattern on one glossary host.
+		contentOpBlocks("node:CONTEXT.md",
+			publish.Block{
+				Content: para(txt("Emergency block: a fast, time-boxed suspension")),
+				Anchors: []publish.AnchorName{"glossary/emergency-block"},
+			},
+			publish.Block{
+				Content: para(txt("held while an "), ref("anchor:glossary/emergency-block")),
+			},
+		),
+	}}
+
+	dag := optimize.Optimize(g, be, be)
+	seed := publish.NewCurrentState(nil, nil, nil) // empty mirror: first publish
+	res, err := transport.New(be, transport.WithInterval(0)).Run(context.Background(), dag, seed)
+	if err != nil {
+		t.Fatalf("first publish of a self-hosting glossary to an empty mirror should succeed: %v", err)
+	}
+
+	anchorID := string(res.Anchors["glossary/emergency-block"])
+	if anchorID == "" {
+		t.Fatalf("the self-hosted anchor never resolved, anchors = %v", res.Anchors)
+	}
+
+	// The citation was deferred out of the create and re-materialized by an in-place
+	// block patch carrying the resolved anchor block id.
+	patch, ok := blockContentPatchMentioning(f.reqs, anchorID)
+	if !ok {
+		t.Fatalf("no in-place block patch mentions the resolved anchor id %s; reqs = %v", anchorID, f.reqs)
+	}
+	if patch != "PATCH /blocks/"+anchorID {
+		// The self-defining, self-citing case: the citing run lives in a different
+		// block than the host, so the patched block id differs from the anchor id.
+		// Both are valid; this branch just records which happened.
+		t.Logf("self-cite patched on %s (anchor hosted on block %s)", patch, anchorID)
+	}
+}
+
+// blockContentPatchMentioning finds a PATCH /blocks/{id} (an in-place block content
+// update, not a /children append) whose body mentions the given page id, returning
+// its "METHOD path" and whether one was found.
+func blockContentPatchMentioning(reqs []recordedReq, id string) (string, bool) {
+	for _, req := range reqs {
+		if req.Method != "PATCH" || strings.HasSuffix(req.Path, "/children") {
+			continue
+		}
+		if !strings.HasPrefix(req.Path, "/blocks/") {
+			continue
+		}
+		para, _ := req.Body["paragraph"].(map[string]any)
+		rich, _ := para["rich_text"].([]any)
+		for _, run := range rich {
+			m, _ := run.(map[string]any)
+			mention, _ := m["mention"].(map[string]any)
+			page, _ := mention["page"].(map[string]any)
+			if page["id"] == id {
+				return req.Method + " " + req.Path, true
+			}
+		}
+	}
+	return "", false
 }
 
 // bodyMentions reports whether any recorded create carried a page mention with the
