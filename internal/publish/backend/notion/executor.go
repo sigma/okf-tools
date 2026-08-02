@@ -190,10 +190,18 @@ func blockJSON(cb childBlock, r backend.Resolver) (map[string]any, error) {
 		return nil, err
 	}
 	typ := notionBlockType(cb.kind, cb.level)
+	payload := map[string]any{"rich_text": rich}
+	// A Notion `code` block requires a `language`; every other block type the
+	// uniform builder emits has no such required field. Map the fence token to
+	// Notion's enum, defaulting empty/unknown to "plain text". Key off the neutral
+	// kind rather than the serialized type string so this stays one branch.
+	if cb.kind == int(graph.CodeBlock) {
+		payload["language"] = notionCodeLanguage(cb.language)
+	}
 	return map[string]any{
 		"object": "block",
 		"type":   typ,
-		typ:      map[string]any{"rich_text": rich},
+		typ:      payload,
 	}, nil
 }
 

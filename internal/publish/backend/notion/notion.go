@@ -199,10 +199,11 @@ type deleteBlock struct {
 // block from its AtomicUnit so the Executor, once the block has a real Notion id,
 // can report anchor-name → block-id in its ExecResult (the anchor map).
 type childBlock struct {
-	kind    int // mirrors graph.BlockKind
-	level   int
-	runs    []textRun
-	anchors []publish.AnchorName
+	kind     int // mirrors graph.BlockKind
+	level    int
+	language string // fence language for a code block; empty otherwise
+	runs     []textRun
+	anchors  []publish.AnchorName
 }
 
 // textRun is one inline span of a childBlock: literal Text, or a late-bound Ref
