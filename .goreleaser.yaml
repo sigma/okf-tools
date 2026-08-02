@@ -27,14 +27,46 @@ builds:
       - amd64
       - arm64
 
-# Asset contract (#17): okftool_<version>_<os>_<arch>.tar.gz, lowercase GOOS/GOARCH,
-# `v`-stripped version, single .tar.gz; binary + LICENSE at the archive root.
+  # Second binary, publisher (spec sigma/ideas#172, decision E). Same toolchain,
+  # matrix and version-stamp as okftool; built lockstep from the same tag, so
+  # main.version resolves to the shared {{ .Version }} — no independent okfpub
+  # version (governed by flake.nix's single version line via release.yml).
+  - id: okfpub
+    main: ./cmd/okfpub
+    binary: okfpub
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+# Asset contract (#17): <binary>_<version>_<os>_<arch>.tar.gz, lowercase GOOS/GOARCH,
+# `v`-stripped version, single .tar.gz; binary + LICENSE at the archive root. One
+# separate archive per binary (decision E), each filtered to its own build via `ids`
+# so each install action pulls only its binary.
 archives:
   - id: okftool
+    ids:
+      - okftool
     formats:
       - tar.gz
     wrap_in_directory: false
     name_template: "okftool_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+
+  - id: okfpub
+    ids:
+      - okfpub
+    formats:
+      - tar.gz
+    wrap_in_directory: false
+    name_template: "okfpub_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - LICENSE
 
