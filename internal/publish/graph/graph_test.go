@@ -206,6 +206,84 @@ func TestWorkedExample(t *testing.T) {
 	}
 }
 
+// --- publish scope: only areas.json-declared pages are published ------------
+
+// scopedBundle has one content area (ideas), a glossary host (CONTEXT.md), and
+// out-of-area trees (docs/agents, docs/runbooks) that the export contract
+// excludes. An in-area page links both to another in-area page and to an
+// out-of-area page, so link resolution must still see the whole tree.
+func scopedBundle() map[string]string {
+	return map[string]string{
+		"okf.toml": "[glossary]\nenabled = true\nfiles = [\"CONTEXT.md\"]\n",
+		"areas.json": `{
+			"ideas":   {"directory": "ideas",   "type": "idea"},
+			"context": {"file": "CONTEXT.md", "type": "context", "role": "glossary"}
+		}`,
+		"index.md":       "---\nokf_version: \"0.1\"\n---\nRoot index (out of every area).\n",
+		"ideas/index.md": "Ideas area.\n",
+		"ideas/a.md": "---\ntype: idea\ntitle: A\n---\n" +
+			"See [B](b.md) and the [agent note](../docs/agents/note.md).\n",
+		"ideas/b.md":          "---\ntype: idea\ntitle: B\n---\nThe second idea.\n",
+		"CONTEXT.md":          "# Glossary\n\n**Root KEK**: the root key.\n",
+		"docs/agents/note.md": "---\ntype: idea\ntitle: Note\n---\nAgent tooling, excluded from export.\n",
+		"docs/runbooks/r.md":  "---\ntype: idea\ntitle: Runbook\n---\nA runbook, excluded from export.\n",
+	}
+}
+
+func TestPublishScopedToAreas(t *testing.T) {
+	b := loadBundle(t, scopedBundle())
+
+	// The full tree is still loaded (link resolution needs it): the out-of-area
+	// pages are in the bundle even though they will not be published, and each is
+	// out of the publish scope.
+	for _, rel := range []string{"docs/agents/note.md", "docs/runbooks/r.md", "index.md"} {
+		docByRel(t, b, rel) // fatals if not loaded
+		if b.InPublishScope(rel) {
+			t.Errorf("%s should be outside the publish scope", rel)
+		}
+	}
+
+	g := gen(t, b, publish.NewCurrentState(nil, nil, nil)) // all new
+
+	// In-scope pages (area + glossary host) are published as new nodes.
+	for _, rel := range []string{"ideas/index.md", "ideas/a.md", "ideas/b.md", "CONTEXT.md"} {
+		if opFor(g, nodeRef(rel), CreateNode) == nil {
+			t.Errorf("%s is in scope and should be published (CreateNode), got ops %v", rel, opKinds(g, nodeRef(rel)))
+		}
+	}
+
+	// Out-of-area pages — and the root index, which sits under no declared area —
+	// emit no ops at all: they are not published.
+	for _, rel := range []string{"docs/agents/note.md", "docs/runbooks/r.md", "index.md"} {
+		if k := opKinds(g, nodeRef(rel)); len(k) != 0 {
+			t.Errorf("%s is out of export scope and must not be published, got ops %v", rel, k)
+		}
+	}
+
+	// Cross-link resolution still works: the in-scope → in-scope link resolves to
+	// a node ref, proving the narrowing gates only emission, not loading.
+	sc := opFor(g, nodeRef("ideas/a.md"), SetContent)
+	if sc == nil {
+		t.Fatal("ideas/a.md should have a SetContent op")
+	}
+	if !hasRef(sc.Refs, nodeRef("ideas/b.md")) {
+		t.Errorf("ideas/a.md refs = %v, missing in-scope node ref to ideas/b.md", sc.Refs)
+	}
+}
+
+// TestPublishScopeReconcilesLeakedPages: a page that is out of scope but already
+// present in the mirror (leaked by the pre-scoping publisher) reconciles to a
+// deletion, since publish-set liveness no longer covers it.
+func TestPublishScopeReconcilesLeakedPages(t *testing.T) {
+	b := loadBundle(t, scopedBundle())
+	// The mirror already holds the out-of-area page from a previous whole-tree run.
+	cs := withVanished(t, publish.NewCurrentState(nil, nil, nil), "docs/agents/note.md")
+	g := gen(t, b, cs)
+	if opFor(g, nodeRef("docs/agents/note.md"), DeleteNode) == nil {
+		t.Errorf("a leaked out-of-scope mirror page should reconcile to a DeleteNode")
+	}
+}
+
 // --- diff → ops mapping -----------------------------------------------------
 
 func TestDiffMapping(t *testing.T) {

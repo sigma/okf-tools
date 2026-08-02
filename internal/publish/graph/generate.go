@@ -51,12 +51,21 @@ func Generate(ctx context.Context, b *bundle.Bundle, cs *publish.CurrentState, o
 		cs = publish.NewCurrentState(nil, nil, nil)
 	}
 
+	// The published node set is scoped to areas.json's declared content areas plus
+	// the glossary host (b.PublishDocs). Cross-links are already resolved against
+	// the whole tree at load time (bundle.Load), so narrowing here only gates op
+	// emission — a link from an in-scope page still resolves. An okf.toml-only
+	// bundle has no areas registry and PublishDocs returns every doc, so behaviour
+	// there is unchanged.
+	docs := b.PublishDocs()
+
 	// Concurrent per-page diff → ops. Results are slotted by index so op order is
-	// deterministic (b.Docs is sorted by rel) regardless of goroutine scheduling.
-	src := srcHierarchy(b.Docs)
-	results := make([][]*Op, len(b.Docs))
+	// deterministic (docs preserves b.Docs' rel sort) regardless of goroutine
+	// scheduling.
+	src := srcHierarchy(docs)
+	results := make([][]*Op, len(docs))
 	var wg sync.WaitGroup
-	for i, d := range b.Docs {
+	for i, d := range docs {
 		wg.Add(1)
 		go func(i int, d *bundle.Doc) {
 			defer wg.Done()
@@ -75,8 +84,10 @@ func Generate(ctx context.Context, b *bundle.Bundle, cs *publish.CurrentState, o
 	for _, ops := range results {
 		g.Ops = append(g.Ops, ops...)
 	}
-	// Orphans: scanned nodes with no source → DeleteNode on the subtree roots.
-	g.Ops = append(g.Ops, orphanOps(b, cs)...)
+	// Orphans: scanned nodes with no in-scope source → DeleteNode on the subtree
+	// roots. Liveness is the publish set, so a page that fell out of scope (or was
+	// leaked by the pre-scoping publisher) reconciles to a deletion.
+	g.Ops = append(g.Ops, orphanOps(docs, cs)...)
 
 	g.Edges = assembleEdges(g.Ops)
 	return g, nil
@@ -177,9 +188,9 @@ func (h *hierarchy) parent(rel string) publish.SymbolicID {
 // orphanOps emits a DeleteNode for each vanished subtree root: a scanned node
 // with no source, whose parent has not also vanished (an ancestor's single
 // DeleteNode archives the whole subtree, so no per-child ops).
-func orphanOps(b *bundle.Bundle, cs *publish.CurrentState) []*Op {
+func orphanOps(docs []*bundle.Doc, cs *publish.CurrentState) []*Op {
 	live := map[publish.SymbolicID]bool{}
-	for _, d := range b.Docs {
+	for _, d := range docs {
 		live[nodeRef(d.Rel)] = true
 	}
 	var scanned []string

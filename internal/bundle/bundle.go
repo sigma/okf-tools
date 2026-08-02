@@ -161,7 +161,7 @@ func Load(root, configPath string) (*Bundle, error) {
 		}
 		b.Areas = reg
 		if f, ok := reg.GlossaryFile(); ok {
-			glossaryRel = path.Clean(strings.TrimPrefix(filepath.ToSlash(f), "/"))
+			glossaryRel = normScope(f)
 		}
 	}
 
@@ -266,3 +266,60 @@ func (b *Bundle) Rel(abs string) string {
 // IsRootIndex reports whether d is the bundle-root index.md (the one file that
 // may carry an okf_version frontmatter key).
 func (d *Doc) IsRootIndex() bool { return d.Kind == KindIndex && d.Rel == "index.md" }
+
+// InPublishScope reports whether a bundle-relative page path lies within the
+// export scope declared by areas.json — under a declared area directory, or the
+// declared glossary/anchor-host file (the single file-backed area, e.g.
+// CONTEXT.md). When the bundle carries no areas.json registry (an okf.toml-only
+// bundle), every page is in scope: there is no declared area set to narrow to, so
+// behaviour is unchanged.
+//
+// This narrows only what is *published*, never what is loaded: Load still ingests
+// the whole tree and resolves cross-links there, and PublishDocs applies this
+// predicate to gate the node set the publish pipeline emits ops for. It is the
+// publish-side analogue of the lint command's path-list narrowing.
+func (b *Bundle) InPublishScope(rel string) bool {
+	if b.Areas == nil {
+		return true
+	}
+	rel = normScope(rel)
+	// The glossary/anchor host is published even though it is a single file, not a
+	// directory area. It is resolved from the areas.json role marker, never a
+	// filename literal.
+	if host, ok := b.Areas.GlossaryFile(); ok && rel == normScope(host) {
+		return true
+	}
+	// Otherwise a page is in scope iff it lives under a declared area directory.
+	for _, a := range b.Areas.Areas {
+		if a.Directory == "" {
+			continue
+		}
+		d := normScope(a.Directory)
+		if d == "." || rel == d || strings.HasPrefix(rel, d+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// PublishDocs returns the subset of loaded Docs within the export scope (see
+// InPublishScope), preserving Docs' order. The full Docs slice stays intact for
+// link resolution; only the publish pipeline consumes this narrowed view.
+func (b *Bundle) PublishDocs() []*Doc {
+	if b.Areas == nil {
+		return b.Docs
+	}
+	out := make([]*Doc, 0, len(b.Docs))
+	for _, d := range b.Docs {
+		if b.InPublishScope(d.Rel) {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// normScope normalizes a scope path (an area's directory/file, or a Doc.Rel) to
+// the same shape: forward slashes, no leading slash, cleaned.
+func normScope(p string) string {
+	return path.Clean(strings.TrimPrefix(filepath.ToSlash(p), "/"))
+}
