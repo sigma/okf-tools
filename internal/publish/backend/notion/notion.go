@@ -5,16 +5,30 @@
 // transport entirely behind the backend role interfaces so that no Notion
 // specifics leak into Generation or Optimization.
 //
-// This package implements the two packing-facing roles — Tokenizer (neutral tree
-// → Notion atomic blocks, enforcing the ≤100-blocks/append and per-block char
-// caps) and ConstraintModel/Bin (the accumulator that also performs
-// create+properties+first-content fusion into one POST /pages). The Executor and
-// Scanner (the HTTP client) are a separate ticket (#42).
+// This package implements all four backend roles on one Backend struct, sharing a
+// single Notion HTTP client:
 //
-// See sigma/ideas#172 (ratified #163, #164).
+//   - Tokenizer (neutral tree → Notion atomic blocks, enforcing the
+//     ≤100-blocks/append and per-block char caps) — tokenize.go;
+//   - ConstraintModel/Bin (the accumulator that also performs
+//     create+properties+first-content fusion into one POST /pages) — bin.go;
+//   - Executor (serialize an opaque Transaction into POST /pages, PATCH children,
+//     or an archive, substituting late-bound Refs via the transport's Resolver as
+//     it writes, and returning the ExecResult table updates) — executor.go;
+//   - Scanner in its cheap steady-state ScanStored form (one paginated
+//     data-source query over self-describing derived columns → a neutral
+//     CurrentState) — scanner.go.
+//
+// The full-recompute ScanRecompute and the publish-time derived-column write-back
+// are a separate later ticket (#44).
+//
+// See sigma/ideas#172 (ratified #163, #164, #167).
 package notion
 
 import (
+	"net/http"
+	"strings"
+
 	"github.com/sigma/okf-tools/internal/publish"
 	"github.com/sigma/okf-tools/internal/publish/backend"
 )
@@ -34,24 +48,38 @@ const (
 	maxBlockChars   = 2000
 )
 
-// Backend implements the Notion Tokenizer and ConstraintModel roles. The Executor
-// and Scanner roles (and the shared HTTP client) belong to #42, so a
-// notion.Backend does not yet satisfy the backend.Backend umbrella — the
-// optimizer depends only on the two roles below.
+// Backend implements all four Notion backend roles on one struct, so a single
+// notion.Backend satisfies the backend.Backend umbrella and shares one HTTP client
+// across its Executor and Scanner.
 //
 // The zero value is not usable; construct with New. maxBlocks / maxChars are
 // configurable so a test can dial packing pressure (a low block cap forces
 // overflow; a low char cap forces splitting) exactly as the fake's WithMaxCount
-// does — the production defaults are Notion's real limits.
+// does — the production defaults are Notion's real limits. The HTTP fields are the
+// shared client the Executor and Scanner both trade through: baseURL and http are
+// injectable so tests drive an httptest server offline, with no live workspace.
 type Backend struct {
 	maxBlocks int
 	maxChars  int
+
+	// baseURL is the Notion API root (no trailing slash); token and notionVersion
+	// are the auth / API-version headers; dataSourceID is the NOTION_DB_ID the
+	// scan queries and top-level page-creates parent under; http is the shared
+	// request doer (an *http.Client, or any doer a test injects).
+	baseURL       string
+	token         string
+	notionVersion string
+	dataSourceID  string
+	http          httpDoer
 }
 
-// Compile-time proof that Backend satisfies the two packing-facing roles.
+// Compile-time proof that one Backend satisfies all four roles and the umbrella.
 var (
 	_ backend.Tokenizer       = (*Backend)(nil)
 	_ backend.ConstraintModel = (*Backend)(nil)
+	_ backend.Executor        = (*Backend)(nil)
+	_ backend.Scanner         = (*Backend)(nil)
+	_ backend.Backend         = (*Backend)(nil)
 )
 
 // Option configures a Backend built by New.
@@ -79,9 +107,59 @@ func WithMaxBlockChars(n int) Option {
 	}
 }
 
-// New builds a Notion backend with Notion's real limits, overridable via options.
+// WithBaseURL points the shared HTTP client at a different API root — an httptest
+// server in tests, so the Executor and Scanner run offline. A trailing slash is
+// trimmed. Empty keeps the default.
+func WithBaseURL(u string) Option {
+	return func(b *Backend) {
+		if u != "" {
+			b.baseURL = strings.TrimRight(u, "/")
+		}
+	}
+}
+
+// WithToken sets the Notion integration token sent as the Bearer credential.
+func WithToken(t string) Option {
+	return func(b *Backend) { b.token = t }
+}
+
+// WithDataSourceID sets the NOTION_DB_ID the scan queries and top-level page
+// creates parent under.
+func WithDataSourceID(id string) Option {
+	return func(b *Backend) { b.dataSourceID = id }
+}
+
+// WithHTTPClient injects the HTTP client the Executor and Scanner share. A nil
+// client keeps the default. A test injects an *http.Client whose Transport is a
+// recorded round-tripper, or simply the default client aimed at an httptest server
+// via WithBaseURL.
+func WithHTTPClient(c *http.Client) Option {
+	return func(b *Backend) {
+		if c != nil {
+			b.http = c
+		}
+	}
+}
+
+// WithNotionVersion overrides the Notion-Version header. Empty keeps the default.
+func WithNotionVersion(v string) Option {
+	return func(b *Backend) {
+		if v != "" {
+			b.notionVersion = v
+		}
+	}
+}
+
+// New builds a Notion backend with Notion's real limits and a default HTTP client
+// aimed at the public API, all overridable via options.
 func New(opts ...Option) *Backend {
-	b := &Backend{maxBlocks: maxBlocksPerTxn, maxChars: maxBlockChars}
+	b := &Backend{
+		maxBlocks:     maxBlocksPerTxn,
+		maxChars:      maxBlockChars,
+		baseURL:       defaultBaseURL,
+		notionVersion: defaultNotionVersion,
+		http:          http.DefaultClient,
+	}
 	for _, opt := range opts {
 		opt(b)
 	}
@@ -113,12 +191,16 @@ type deleteBlock struct {
 
 // childBlock is one Notion block appended as a child. runs is the ordered inline
 // content — literal text spans and late-bound Ref placeholders — kept structured
-// so #42 can serialize it into Notion rich text with the Refs resolved. kind and
-// level preserve the neutral block's shape (heading level, list depth).
+// so the Executor can serialize it into Notion rich text with the Refs resolved.
+// kind and level preserve the neutral block's shape (heading level, list depth).
+// anchors are the named anchors this block hosts: the Bin threads them onto the
+// block from its AtomicUnit so the Executor, once the block has a real Notion id,
+// can report anchor-name → block-id in its ExecResult (the anchor map).
 type childBlock struct {
-	kind  int // mirrors graph.BlockKind
-	level int
-	runs  []textRun
+	kind    int // mirrors graph.BlockKind
+	level   int
+	runs    []textRun
+	anchors []publish.AnchorName
 }
 
 // textRun is one inline span of a childBlock: literal Text, or a late-bound Ref
