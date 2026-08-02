@@ -1,5 +1,7 @@
 package publish
 
+import "strings"
+
 // This file defines the backend-neutral currency that flows between the three
 // okfpub pipeline stages. The pipeline speaks only this vocabulary; every
 // backend specific (Notion's block model, its two coupled API limits, its HTTP
@@ -24,6 +26,18 @@ type BackendID string
 // (today's anchor-ref target). The backend reports, per AtomicUnit, which
 // anchors that unit hosts so the anchor map can be built.
 type AnchorName string
+
+// AnchorRefName reports whether a symbolic id is an anchor reference
+// ("anchor:<name>") and, if so, the AnchorName it targets. It is the reader
+// counterpart to how anchor Refs are minted, kept here in the neutral vocabulary
+// so every stage matches an anchor Ref to a producer's Anchors the same way
+// (Stage 1 wiring op-DAG edges, Stage 2 wiring transaction-DAG edges).
+func AnchorRefName(id SymbolicID) (AnchorName, bool) {
+	if rest, ok := strings.CutPrefix(string(id), "anchor:"); ok {
+		return AnchorName(rest), true
+	}
+	return "", false
+}
 
 // Hash is a content hash used by change detection: a node whose scanned hash
 // matches its expected hash is hash-skipped (no SetContent). Its concrete
@@ -96,6 +110,39 @@ type ExecResult struct {
 	Nodes map[SymbolicID]BackendID
 	// Anchors maps each anchor this transaction hosted to its backend id.
 	Anchors map[AnchorName]BackendID
+}
+
+// --- The packed transaction (optimization output) ---------------------------
+
+// PackedTxn is the transaction-DAG's node: one sealed backend Transaction plus
+// the backend-neutral metadata the transport needs, aggregated by optimization
+// (Stage 2) from the AtomicUnits that went into the bin. It is a boundary type —
+// transport consumes it — so it lives here in internal/publish rather than inside
+// the optimizer, which only holds the opaque Transaction.
+//
+// The three id fields serve two consumers from one vocabulary: the optimizer
+// reads them to wire the transaction-DAG's edges (a T depends on U iff a T.Refs id
+// is in U.Produces or U.Anchors), and the transport reads them to gate readiness
+// (Refs) and pace (Group) at runtime. Produces here is the SYMBOLIC side, known
+// before execution and used only to wire edges; the real symbolic-id → BackendID
+// pairs come back after execution in ExecResult (#164 §2).
+type PackedTxn struct {
+	// Txn is the opaque sealed API call Bin.Build produced; only the backend
+	// executes it.
+	Txn Transaction
+	// Group is the shared affinity key of every unit in the bin — the transport's
+	// per-target pacing key.
+	Group GroupKey
+	// Refs are the exposed unresolved symbolic ids this transaction still needs
+	// (the readiness gate), after intra-transaction Ref-suppression: the union of
+	// its units' Refs minus anything this same transaction Produces or Anchors.
+	// A Ref satisfied inside the same bin creates no edge and is not exposed.
+	Refs []SymbolicID
+	// Anchors are the named anchors this transaction hosts (union of its units').
+	Anchors []AnchorName
+	// Produces are the symbolic ids this transaction creates — used for edge
+	// derivation and, at runtime, to seed the resolution table from ExecResult.
+	Produces []SymbolicID
 }
 
 // --- The neutral document handoff (tokenizer input) -------------------------

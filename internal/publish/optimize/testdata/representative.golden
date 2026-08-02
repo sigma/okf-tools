@@ -1,0 +1,19 @@
+txn 0 group=node:a.md produces=[node:a.md] anchors=[] refs=[node:index.md]
+txn 1 group=node:a.md produces=[] anchors=[] refs=[anchor:glossary/term node:a.md node:b.md]
+txn 2 group=node:a.md produces=[] anchors=[] refs=[node:a.md]
+txn 3 group=node:b.md produces=[node:b.md] anchors=[] refs=[node:index.md]
+txn 4 group=node:b.md produces=[] anchors=[] refs=[node:b.md]
+txn 5 group=node:glossary.md produces=[node:glossary.md] anchors=[] refs=[]
+txn 6 group=node:glossary.md produces=[] anchors=[glossary/term] refs=[node:glossary.md]
+txn 7 group=node:index.md produces=[node:index.md] anchors=[] refs=[]
+txn 8 group=node:index.md produces=[] anchors=[] refs=[node:index.md]
+txn 9 group=node:old.md produces=[] anchors=[] refs=[node:old.md]
+edge 0->1
+edge 0->2
+edge 3->1
+edge 3->4
+edge 5->6
+edge 6->1
+edge 7->0
+edge 7->3
+edge 7->8
