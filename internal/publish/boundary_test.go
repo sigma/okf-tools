@@ -1,4 +1,8 @@
-package publish
+// External test package (publish_test, not publish): the blank imports below
+// pull in internal/publish/backend, which imports internal/publish — from the
+// in-package test that would be an import cycle, so the boundary check lives
+// outside the package under test.
+package publish_test
 
 import (
 	"os/exec"
@@ -17,6 +21,7 @@ import (
 	// and the plain `go` CI job passes `-count=1` (see .github/workflows/ci.yml).
 	// Locally, run `go test -count=1 ./...` to bypass the cache.
 	_ "github.com/sigma/okf-tools/internal/publish/backend"
+	_ "github.com/sigma/okf-tools/internal/publish/backend/fake"
 	_ "github.com/sigma/okf-tools/internal/publish/backend/notion"
 	_ "github.com/sigma/okf-tools/internal/publish/graph"
 	_ "github.com/sigma/okf-tools/internal/publish/optimize"
