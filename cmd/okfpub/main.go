@@ -154,5 +154,10 @@ Run flags:
 Environment:
   NOTION_TOKEN  Notion integration token (required by the notion backend)
   NOTION_DB_ID  Notion data-source id    (required by the notion backend)
+
+Note: under the 2025-09-03 API a database id and its data-source id differ (a
+database can host several data sources), and NOTION_DB_ID must be the *data-source*
+id — not the database id from a Notion URL. Resolve a database id to its data
+source with GET /v1/databases/{id} and read .data_sources[].
 `)
 }

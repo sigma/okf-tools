@@ -158,3 +158,33 @@ func TestScanUnchangedGlossaryResolvesAnchorsFromSeed(t *testing.T) {
 		t.Errorf("unchanged glossary anchor should seed directly, got %q,%v", id, ok)
 	}
 }
+
+// TestScanQueryPinsDataSourceAPIVersion: the scan queries the 2025-09-03-only
+// route POST /data_sources/{id}/query, so the default Notion-Version it pins must
+// name that API surface. Under an older version (e.g. 2022-06-28) that route does
+// not exist and Notion answers 400 invalid_request_url before anything publishes
+// (sigma/okf-tools#78).
+func TestScanQueryPinsDataSourceAPIVersion(t *testing.T) {
+	f := newFakeNotion()
+	f.rows = []map[string]any{
+		row("page-a", map[string]any{
+			"path": richProp("docs/adr/a.md"),
+			"hash": richProp("hA"),
+		}),
+	}
+	be := newServer(t, f)
+
+	if _, err := be.Scan(context.Background(), backend.ScanStored); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	reqs := f.requestsTo("POST", "/data_sources/ds1/query")
+	if len(reqs) == 0 {
+		t.Fatalf("scan issued no data-source query")
+	}
+	for _, r := range reqs {
+		if r.Version != "2025-09-03" {
+			t.Errorf("scan query Notion-Version = %q, want 2025-09-03 (the data-source API surface)", r.Version)
+		}
+	}
+}
