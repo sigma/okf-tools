@@ -33,6 +33,7 @@ type Option func(*options)
 
 type options struct {
 	transportOpts []transport.Option
+	scanMode      backend.ScanMode
 }
 
 // WithTransportOptions forwards options to Stage 3 (Transport) — chiefly the
@@ -40,6 +41,14 @@ type options struct {
 // without wall-clock delay.
 func WithTransportOptions(opts ...transport.Option) Option {
 	return func(o *options) { o.transportOpts = append(o.transportOpts, opts...) }
+}
+
+// WithScanMode selects the scan producer mode: backend.ScanStored (the cheap
+// steady-state default) or backend.ScanRecompute (the opt-in full live-block walk
+// for true drift detection and subpage/anchor self-healing). Steady-state publishes
+// leave it unset; a scheduled/periodic drift sweep opts into recompute.
+func WithScanMode(mode backend.ScanMode) Option {
+	return func(o *options) { o.scanMode = mode }
 }
 
 // Run drives one publish of b against be, wiring the three stages behind a single
@@ -58,7 +67,7 @@ func Run(ctx context.Context, be backend.Backend, b *bundle.Bundle, opts ...Opti
 		opt(&o)
 	}
 
-	scan, err := be.Scan(ctx)
+	scan, err := be.Scan(ctx, o.scanMode)
 	if err != nil {
 		return nil, fmt.Errorf("scan: %w", err)
 	}

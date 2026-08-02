@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/sigma/okf-tools/internal/publish"
+	"github.com/sigma/okf-tools/internal/publish/backend"
 )
 
 // TestScanStoredSeedsCurrentState: one data-source query over self-describing
@@ -32,7 +33,7 @@ func TestScanStoredSeedsCurrentState(t *testing.T) {
 	}
 	be := newServer(t, f)
 
-	cs, err := be.Scan(context.Background())
+	cs, err := be.Scan(context.Background(), backend.ScanStored)
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
@@ -81,7 +82,7 @@ func TestScanStoredPaginates(t *testing.T) {
 	}
 	be := newServer(t, f)
 
-	cs, err := be.Scan(context.Background())
+	cs, err := be.Scan(context.Background(), backend.ScanStored)
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
@@ -105,7 +106,7 @@ func TestScanStoredSkipsStrayRows(t *testing.T) {
 	}
 	be := newServer(t, f)
 
-	cs, err := be.Scan(context.Background())
+	cs, err := be.Scan(context.Background(), backend.ScanStored)
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
@@ -128,7 +129,7 @@ func TestScanStoredDuplicatePathErrors(t *testing.T) {
 	}
 	be := newServer(t, f)
 
-	if _, err := be.Scan(context.Background()); err == nil {
+	if _, err := be.Scan(context.Background(), backend.ScanStored); err == nil {
 		t.Fatal("expected a hard error for a duplicated path")
 	}
 }
@@ -147,7 +148,7 @@ func TestScanUnchangedGlossaryResolvesAnchorsFromSeed(t *testing.T) {
 	}
 	be := newServer(t, f)
 
-	cs, err := be.Scan(context.Background())
+	cs, err := be.Scan(context.Background(), backend.ScanStored)
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}

@@ -7,23 +7,33 @@ import (
 	"net/http"
 
 	"github.com/sigma/okf-tools/internal/publish"
+	"github.com/sigma/okf-tools/internal/publish/backend"
 )
 
-// Scan produces the neutral CurrentState in the cheap steady-state ScanStored
-// form: a single paginated data-source query over self-describing derived columns,
-// with zero per-page block reads. Every top-level row carries the columns that seed
-// the whole snapshot — `path` (the node's repo path → its SymbolicID), `hash`
-// (its content hash), `hashes` (the #146 subtree map of `subpath → {id, hash}` for
-// cluster subpages), and, on the glossary-role row, `anchors` (`anchor-name →
-// block id`). So one query resolves NodeID, ContentHash, AnchorID, and Nodes()
-// with no follow-on reads.
+// Scan produces the neutral CurrentState, dispatching on the producer-side mode
+// (#167 decision 1). Both modes return the identical neutral CurrentState, so the
+// #163 consumer seam is untouched; only the reconstruction behind it differs:
 //
-// The opt-in full-recompute ScanRecompute (a live block walk for true drift) and
-// the publish-time write-back that keeps these columns current are a separate later
-// ticket (#44); this method is the ScanStored producer only. The mode is therefore
-// fixed here — both modes return the identical neutral CurrentState, so adding the
-// recompute mode later does not touch this consumer contract.
-func (b *Backend) Scan(ctx context.Context) (*publish.CurrentState, error) {
+//   - ScanStored (steady-state default): one paginated data-source query over the
+//     self-describing derived columns, zero per-page block reads (scanStored).
+//   - ScanRecompute (opt-in): the full live block walk that recomputes ContentHash
+//     from live content and re-derives subpage ids and the anchor map, self-healing
+//     staleness the cheap path cannot see (scanRecompute, recompute.go).
+func (b *Backend) Scan(ctx context.Context, mode backend.ScanMode) (*publish.CurrentState, error) {
+	if mode == backend.ScanRecompute {
+		return b.scanRecompute(ctx)
+	}
+	return b.scanStored(ctx)
+}
+
+// scanStored is the cheap steady-state producer: a single paginated data-source
+// query over self-describing derived columns, with zero per-page block reads.
+// Every top-level row carries the columns that seed the whole snapshot — `path`
+// (the node's repo path → its SymbolicID), `hash` (its content hash), `hashes`
+// (the #146 subtree map of `subpath → {id, hash}` for cluster subpages), and, on
+// the glossary-role row, `anchors` (`anchor-name → block id`). So one query
+// resolves NodeID, ContentHash, AnchorID, and Nodes() with no follow-on reads.
+func (b *Backend) scanStored(ctx context.Context) (*publish.CurrentState, error) {
 	rows, err := b.queryAllRows(ctx)
 	if err != nil {
 		return nil, err
@@ -32,18 +42,7 @@ func (b *Backend) Scan(ctx context.Context) (*publish.CurrentState, error) {
 	nodeIDs := map[publish.SymbolicID]publish.BackendID{}
 	hashes := map[publish.SymbolicID]publish.Hash{}
 	anchorIDs := map[publish.AnchorName]publish.BackendID{}
-	// owner tracks which page first claimed a repo path, so a second claim (a
-	// top-level row or a subtree-map entry) is a hard error naming both — never a
-	// silent last-writer-wins over unrepairable state.
-	owner := map[string]string{}
-
-	claim := func(path, by string) error {
-		if prev, dup := owner[path]; dup {
-			return fmt.Errorf("notion: scan: path %q claimed by two pages (%s and %s)", path, prev, by)
-		}
-		owner[path] = by
-		return nil
-	}
+	claim := newPathClaimer()
 
 	for _, row := range rows {
 		path := plainText(row.Properties["path"])
@@ -94,23 +93,24 @@ func (b *Backend) queryAllRows(ctx context.Context) ([]queryRow, error) {
 }
 
 // subtreeEntry is one cluster subpage's self-description in the #146 subtree map:
-// its real Notion page id and its content hash, so NodeID and ContentHash resolve
-// for a subpage the top-level query never returns as its own row.
+// its real Notion page id and content hash (so NodeID and ContentHash resolve for a
+// subpage the top-level query never returns as its own row) plus its live page
+// title. The title is what lets ScanRecompute match a live child_page back to its
+// subpath when the id has gone stale (a page title is all Notion carries; the repo
+// path is not recoverable from the live block otherwise), so the id can self-heal.
 type subtreeEntry struct {
-	ID   string `json:"id"`
-	Hash string `json:"hash"`
+	ID    string `json:"id"`
+	Hash  string `json:"hash"`
+	Title string `json:"title,omitempty"`
 }
 
 // readSubtree folds a row's `hashes` subtree-map column into the node/hash tables:
 // each subpath becomes node:<subpath> resolving to the stored id and hash, with the
 // same 1:1 path-uniqueness guard as top-level rows.
 func readSubtree(raw, rowID string, claim func(path, by string) error, nodeIDs map[publish.SymbolicID]publish.BackendID, hashes map[publish.SymbolicID]publish.Hash) error {
-	if raw == "" {
-		return nil
-	}
-	var sub map[string]subtreeEntry
-	if err := json.Unmarshal([]byte(raw), &sub); err != nil {
-		return fmt.Errorf("notion: scan: row %s hashes column: %w", rowID, err)
+	sub, err := storedSubtree(raw, rowID)
+	if err != nil {
+		return err
 	}
 	for subpath, e := range sub {
 		if err := claim(subpath, "subtree of "+rowID); err != nil {
@@ -148,4 +148,19 @@ func readAnchors(raw string, anchorIDs map[publish.AnchorName]publish.BackendID)
 // Generation embeds, so a Ref resolves against this seed.
 func nodeSym(path string) publish.SymbolicID {
 	return publish.SymbolicID("node:" + path)
+}
+
+// newPathClaimer returns a claim closure guarding the mirror's 1:1 path invariant:
+// the first page to claim a repo path owns it; a second claim (another top-level
+// row, or a subtree-map entry) is a hard error naming both pages — never a silent
+// last-writer-wins over unrepairable state. Both scan modes share it.
+func newPathClaimer() func(path, by string) error {
+	owner := map[string]string{}
+	return func(path, by string) error {
+		if prev, dup := owner[path]; dup {
+			return fmt.Errorf("notion: scan: path %q claimed by two pages (%s and %s)", path, prev, by)
+		}
+		owner[path] = by
+		return nil
+	}
 }

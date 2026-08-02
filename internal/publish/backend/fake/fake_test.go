@@ -136,7 +136,7 @@ func TestScanReturnsCannedState(t *testing.T) {
 	)
 	b := fake.New(fake.WithScan(cs))
 
-	got, err := b.Scan(context.Background())
+	got, err := b.Scan(context.Background(), backend.ScanStored)
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestScanReturnsCannedState(t *testing.T) {
 
 // A default fake with no seeded scan returns an empty (non-nil) CurrentState.
 func TestScanDefaultsToEmpty(t *testing.T) {
-	got, err := fake.New().Scan(context.Background())
+	got, err := fake.New().Scan(context.Background(), backend.ScanStored)
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}

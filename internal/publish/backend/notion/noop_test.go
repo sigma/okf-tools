@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/sigma/okf-tools/internal/bundle"
+	"github.com/sigma/okf-tools/internal/publish/backend"
 	"github.com/sigma/okf-tools/internal/publish/graph"
 	"github.com/sigma/okf-tools/internal/publish/optimize"
 	"github.com/sigma/okf-tools/internal/publish/transport"
@@ -70,7 +71,7 @@ func TestNotionNearNoopRerun(t *testing.T) {
 	be := newServer(t, f)
 
 	ctx := context.Background()
-	scan, err := be.Scan(ctx)
+	scan, err := be.Scan(ctx, backend.ScanStored)
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}

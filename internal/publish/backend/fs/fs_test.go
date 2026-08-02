@@ -16,6 +16,7 @@ import (
 
 	"github.com/sigma/okf-tools/internal/bundle"
 	"github.com/sigma/okf-tools/internal/publish"
+	"github.com/sigma/okf-tools/internal/publish/backend"
 	fsbackend "github.com/sigma/okf-tools/internal/publish/backend/fs"
 	"github.com/sigma/okf-tools/internal/publish/graph"
 	"github.com/sigma/okf-tools/internal/publish/optimize"
@@ -72,7 +73,7 @@ func publishToDisk(t *testing.T, b *bundle.Bundle, out string) *transport.Result
 	t.Helper()
 	be := fsbackend.New(fsbackend.WithRoot(out))
 
-	scan, err := be.Scan(context.Background())
+	scan, err := be.Scan(context.Background(), backend.ScanStored)
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
@@ -179,7 +180,7 @@ func TestScanRoundTrip(t *testing.T) {
 	publishToDisk(t, b, out)
 
 	be := fsbackend.New(fsbackend.WithRoot(out))
-	cs, err := be.Scan(context.Background())
+	cs, err := be.Scan(context.Background(), backend.ScanStored)
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
@@ -198,7 +199,7 @@ func TestScanRoundTrip(t *testing.T) {
 // the fresh-export case — rather than erroring.
 func TestScanEmptyRoot(t *testing.T) {
 	be := fsbackend.New(fsbackend.WithRoot(filepath.Join(t.TempDir(), "does-not-exist")))
-	cs, err := be.Scan(context.Background())
+	cs, err := be.Scan(context.Background(), backend.ScanStored)
 	if err != nil {
 		t.Fatalf("scan of missing root: %v", err)
 	}

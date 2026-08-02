@@ -79,21 +79,67 @@ type Resolver interface {
 	Resolve(id publish.SymbolicID) (publish.BackendID, bool)
 }
 
-// Scanner produces the backend-neutral current-state snapshot that seeds the
-// resolution table and drives change detection. #163 fixes only this consumer
-// contract; the backend-specific reconstruction (hashes, anchor ids, pagination)
-// is #167's meat.
-type Scanner interface {
-	Scan(ctx context.Context) (*publish.CurrentState, error)
+// ScanMode selects how a Scanner reconstructs the neutral CurrentState. It is a
+// producer-side parameter only (#167 decision 1): both modes return the identical
+// CurrentState interface, so Generation, Optimization, and Transport never learn
+// which mode ran — the consumer seam fixed in #163 is untouched.
+type ScanMode int
+
+const (
+	// ScanStored is the cheap steady-state default: one paginated data-source query
+	// over the self-describing derived columns, with zero per-page block reads. It
+	// catches authored changes but is blind to live-content drift, which is
+	// acceptable on the push-triggered path where source is the authority.
+	ScanStored ScanMode = iota
+	// ScanRecompute is the opt-in full live block walk: it reads every node's live
+	// blocks to recompute ContentHash (true drift) and re-derives subpage ids and
+	// the anchor map from the live tree, self-healing the staleness the cheap path
+	// cannot see. It costs O(nodes) block-list round-trips, so it is never the
+	// default.
+	ScanRecompute
+)
+
+func (m ScanMode) String() string {
+	switch m {
+	case ScanStored:
+		return "stored"
+	case ScanRecompute:
+		return "recompute"
+	default:
+		return "ScanMode(?)"
+	}
 }
 
-// Backend is the umbrella that embeds all four roles for construction and wiring.
-// One concrete backend struct satisfies all four (sharing, e.g., its HTTP client
-// across them); a stage that needs only one role depends on that role, not on
-// Backend.
+// Scanner produces the backend-neutral current-state snapshot that seeds the
+// resolution table and drives change detection. #163 fixes only this consumer
+// contract; #167 adds the producer-side mode argument (ScanStored default,
+// ScanRecompute opt-in) — both modes return the same neutral CurrentState, so the
+// mode is invisible past this seam. The backend-specific reconstruction (hashes,
+// anchor ids, pagination, the recompute live walk) stays behind it.
+type Scanner interface {
+	Scan(ctx context.Context, mode ScanMode) (*publish.CurrentState, error)
+}
+
+// WriteBacker persists a publish's provenance back into the backend's
+// self-describing state so the NEXT ScanStored is accurate (#167 decision 7).
+// Self-description only works if the derived columns stay current: after a
+// successful drain the transport hands the backend the run's Provenance — the new
+// node ids and content hashes, hosted anchor ids, and subpage→parent routing — and
+// the backend writes them into its derived columns / subtree map. It is a
+// publish-time obligation, not a scan concern; an unchanged run produces empty
+// Provenance and writes nothing (the near-noop property holds).
+type WriteBacker interface {
+	WriteBack(ctx context.Context, prov publish.Provenance) error
+}
+
+// Backend is the umbrella that embeds every role for construction and wiring.
+// One concrete backend struct satisfies all of them (sharing, e.g., its HTTP
+// client across them); a stage that needs only one role depends on that role, not
+// on Backend.
 type Backend interface {
 	Tokenizer
 	ConstraintModel
 	Executor
 	Scanner
+	WriteBacker
 }

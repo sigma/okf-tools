@@ -91,16 +91,22 @@ func Generate(ctx context.Context, b *bundle.Bundle, cs *publish.CurrentState, o
 // (Vanished nodes have no source and are handled by orphanOps.)
 func diffDoc(d *bundle.Doc, cs *publish.CurrentState, o *options, src *hierarchy) []*Op {
 	node := nodeRef(d.Rel)
+	parent := src.parent(d.Rel)
+	hash := o.hash(d)
+	title := d.Title()
 	doc, refs, anchors := buildDocument(d)
-	setProps := &Op{Kind: SetProperties, Node: node, Props: propsOf(d)}
-	setContent := &Op{Kind: SetContent, Node: node, Doc: doc, Refs: refs, Anchors: anchors}
+	// Stamp the parent, expected hash, and title on the property/content ops (not
+	// just the create) so publish-time write-back can route and record a touched
+	// node whether it is new or a re-asserted existing one.
+	setProps := &Op{Kind: SetProperties, Node: node, Props: propsOf(d), Parent: parent, Hash: hash, Title: title}
+	setContent := &Op{Kind: SetContent, Node: node, Doc: doc, Refs: refs, Anchors: anchors, Parent: parent, Hash: hash, Title: title}
 
 	if _, exists := cs.NodeID(node); !exists {
-		return []*Op{{Kind: CreateNode, Node: node, Parent: src.parent(d.Rel)}, setProps, setContent}
+		return []*Op{{Kind: CreateNode, Node: node, Parent: parent, Hash: hash, Title: title}, setProps, setContent}
 	}
 	// Existing: hash-skip iff the scanned hash matches the expected one. A missing
 	// scanned hash cannot confirm "unchanged", so it falls through to "changed".
-	if got, ok := cs.ContentHash(node); ok && got == o.hash(d) {
+	if got, ok := cs.ContentHash(node); ok && got == hash {
 		return nil
 	}
 	return []*Op{setProps, setContent}

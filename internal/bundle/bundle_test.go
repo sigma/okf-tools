@@ -198,7 +198,7 @@ func TestSlug(t *testing.T) {
 		"C++ & Go!":           "c-go",
 	}
 	for in, want := range cases {
-		if got := slug(in); got != want {
+		if got := Slug(in); got != want {
 			t.Errorf("slug(%q) = %q, want %q", in, got, want)
 		}
 	}

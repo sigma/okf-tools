@@ -32,13 +32,17 @@ type Anchor struct {
 	Kind AnchorKind // term or heading
 }
 
-// slug turns text into a fixed, GitHub-style anchor slug: lowercase, drop every
+// Slug turns text into a fixed, GitHub-style anchor slug: lowercase, drop every
 // character but [a-z0-9], space and hyphen, map spaces to hyphens, then collapse
 // runs of hyphens into one. The algorithm is intentionally NOT configurable so
 // it can't drift from a consumer (e.g. the Notion sync) that resolves the same
-// anchors. slug("Root KEK") == "root-kek", slug("Foreign-rooted leaf") ==
+// anchors. Slug("Root KEK") == "root-kek", Slug("Foreign-rooted leaf") ==
 // "foreign-rooted-leaf".
-func slug(text string) string {
+//
+// It is exported so the publishing backend's ScanRecompute re-derives anchor
+// names from live glossary block text with the exact same normalization the
+// bundle parser used — the shared algorithm that keeps both sides in lockstep.
+func Slug(text string) string {
 	var b strings.Builder
 	for _, r := range strings.ToLower(text) {
 		switch {
@@ -62,10 +66,10 @@ func slug(text string) string {
 func buildAnchors(d *Doc) {
 	anchors := make([]Anchor, 0, len(d.Terms)+len(d.Headings))
 	for _, t := range d.Terms {
-		anchors = append(anchors, Anchor{Slug: slug(t.Text), Text: t.Text, Line: t.Line, Kind: AnchorTerm})
+		anchors = append(anchors, Anchor{Slug: Slug(t.Text), Text: t.Text, Line: t.Line, Kind: AnchorTerm})
 	}
 	for _, h := range d.Headings {
-		anchors = append(anchors, Anchor{Slug: slug(h.Text), Text: h.Text, Line: h.Line, Kind: AnchorHeading})
+		anchors = append(anchors, Anchor{Slug: Slug(h.Text), Text: h.Text, Line: h.Line, Kind: AnchorHeading})
 	}
 	sort.SliceStable(anchors, func(i, j int) bool { return anchors[i].Line < anchors[j].Line })
 	d.Anchors = anchors

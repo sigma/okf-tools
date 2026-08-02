@@ -32,6 +32,9 @@ type Backend struct {
 	mu       sync.Mutex
 	seq      int                   // monotonic source of synthetic backend ids
 	executed []publish.Transaction // every transaction Execute has sealed, in order
+	written  []publish.Provenance  // every Provenance WriteBack has recorded, in order
+	lastMode backend.ScanMode      // the mode of the most recent Scan call
+	scanned  bool                  // whether Scan has been called at least once
 }
 
 // Option configures a Backend built by New.
@@ -186,7 +189,46 @@ func (b *Backend) Executed() []publish.Transaction {
 // --- Scanner ----------------------------------------------------------------
 
 // Scan returns the canned CurrentState the fake was seeded with (empty by
-// default).
-func (b *Backend) Scan(context.Context) (*publish.CurrentState, error) {
+// default). The fake reconstructs one snapshot, so both scan modes return it
+// identically — the mode is a producer concern the in-memory harness has no
+// distinct cheap/expensive path for; a Notion-style split is exercised by the
+// Notion backend's own tests.
+func (b *Backend) Scan(_ context.Context, mode backend.ScanMode) (*publish.CurrentState, error) {
+	b.mu.Lock()
+	b.lastMode = mode
+	b.scanned = true
+	b.mu.Unlock()
 	return b.scan, nil
+}
+
+// LastScanMode reports the mode of the most recent Scan call and whether Scan has
+// been called at all — a test hook for asserting that the steady-state default and
+// an opt-in recompute reach the scanner as expected.
+func (b *Backend) LastScanMode() (backend.ScanMode, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.lastMode, b.scanned
+}
+
+// --- WriteBacker ------------------------------------------------------------
+
+// WriteBack records the run's Provenance so a transport test can assert what the
+// publish would persist (ids, hashes, anchors, subpage routing) without a real
+// backend. It performs no I/O.
+func (b *Backend) WriteBack(_ context.Context, prov publish.Provenance) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.written = append(b.written, prov)
+	return nil
+}
+
+// WrittenBack returns the Provenance values WriteBack has recorded, in order — a
+// test hook for asserting the publish-time write-back. The returned slice is a
+// snapshot.
+func (b *Backend) WrittenBack() []publish.Provenance {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := make([]publish.Provenance, len(b.written))
+	copy(out, b.written)
+	return out
 }

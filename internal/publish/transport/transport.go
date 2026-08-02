@@ -140,7 +140,64 @@ func (t *Transport) Run(ctx context.Context, dag *optimize.TxnDAG, seed *publish
 		remaining = blocked
 	}
 
+	// Publish-time write-back (#167 decision 7): once the whole graph has drained,
+	// persist the run's provenance back into the backend's self-describing state so
+	// the next ScanStored is accurate. It is an obligation of the execution path, so
+	// the transport owns triggering it; the backend that knows its derived-column
+	// shape performs the actual writes. A backend that does not implement WriteBacker
+	// (or an unchanged run, whose provenance is empty) writes nothing.
+	if wb, ok := t.exec.(backend.WriteBacker); ok {
+		prov := buildProvenance(dag, tbl)
+		if len(prov.Nodes) > 0 {
+			if err := wb.WriteBack(ctx, prov); err != nil {
+				return nil, fmt.Errorf("transport: write-back: %w", err)
+			}
+		}
+	}
+
 	return &Result{Nodes: tbl.nodesCopy(), Anchors: tbl.anchorsCopy()}, nil
+}
+
+// buildProvenance assembles the run's write-back provenance from the drained
+// transaction-DAG and the final resolution table. Each transaction that wrote a
+// node's content (a non-empty Hash — this excludes DeleteNode archives) contributes
+// that node's resolved id, expected hash, parent routing, and any hosted anchors.
+// Transactions of the same node (a fused create plus its content overflow) merge
+// into one record: the hash/parent agree, and the anchor maps union.
+func buildProvenance(dag *optimize.TxnDAG, tbl *table) publish.Provenance {
+	prov := publish.Provenance{Nodes: map[publish.SymbolicID]publish.NodeProvenance{}}
+	for _, txn := range dag.Txns {
+		if txn.Hash == "" {
+			continue // no node content written (e.g. a DeleteNode) — nothing to record
+		}
+		node := publish.SymbolicID(txn.Group)
+		id, ok := tbl.Resolve(node)
+		if !ok {
+			continue // unresolved write-target; the drain would have failed already
+		}
+
+		np, seen := prov.Nodes[node]
+		if !seen {
+			np = publish.NodeProvenance{ID: id, Hash: txn.Hash, Parent: txn.Parent, Title: txn.Title}
+			if txn.Parent != "" {
+				if pid, ok := tbl.Resolve(txn.Parent); ok {
+					np.ParentID = pid
+				}
+			}
+		}
+		for _, name := range txn.Anchors {
+			aid, ok := tbl.Resolve(publish.SymbolicID("anchor:" + name))
+			if !ok {
+				continue
+			}
+			if np.Anchors == nil {
+				np.Anchors = map[publish.AnchorName]publish.BackendID{}
+			}
+			np.Anchors[name] = aid
+		}
+		prov.Nodes[node] = np
+	}
+	return prov
 }
 
 // pace enforces the per-Group interval: it delays a transaction's execution until

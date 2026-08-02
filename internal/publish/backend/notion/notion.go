@@ -15,12 +15,13 @@
 //   - Executor (serialize an opaque Transaction into POST /pages, PATCH children,
 //     or an archive, substituting late-bound Refs via the transport's Resolver as
 //     it writes, and returning the ExecResult table updates) — executor.go;
-//   - Scanner in its cheap steady-state ScanStored form (one paginated
-//     data-source query over self-describing derived columns → a neutral
-//     CurrentState) — scanner.go.
-//
-// The full-recompute ScanRecompute and the publish-time derived-column write-back
-// are a separate later ticket (#44).
+//   - Scanner in both provenance modes — the cheap steady-state ScanStored (one
+//     paginated data-source query over self-describing derived columns) and the
+//     opt-in ScanRecompute (a full live block walk that recomputes hashes and
+//     self-heals subpage/anchor ids) — scanner.go and recompute.go;
+//   - WriteBacker (the publish-time obligation that persists ids/hashes/anchors
+//     back into the derived columns and subtree map so the next ScanStored is
+//     accurate) — writeback.go.
 //
 // See sigma/ideas#172 (ratified #163, #164, #167).
 package notion
@@ -79,6 +80,7 @@ var (
 	_ backend.ConstraintModel = (*Backend)(nil)
 	_ backend.Executor        = (*Backend)(nil)
 	_ backend.Scanner         = (*Backend)(nil)
+	_ backend.WriteBacker     = (*Backend)(nil)
 	_ backend.Backend         = (*Backend)(nil)
 )
 

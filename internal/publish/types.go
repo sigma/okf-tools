@@ -188,6 +188,60 @@ type PackedTxn struct {
 	// Produces are the symbolic ids this transaction creates — used for edge
 	// derivation and, at runtime, to seed the resolution table from ExecResult.
 	Produces []SymbolicID
+	// Hash is the expected content hash of the node this transaction writes — the
+	// value the publish-time write-back records into the node's `hash` derived
+	// column so the next ScanStored hash-skips it. It is generation-time provenance
+	// (the same hash change detection compared against), threaded through so the
+	// transport can assemble Provenance without re-reading source. Empty for a
+	// transaction that writes no node content (e.g. a DeleteNode).
+	Hash Hash
+	// Parent is the symbolic id of the write-target node's parent — "" for a
+	// top-level data-source row, else the cluster root a subpage lives under. It
+	// routes write-back: a subpage's {id, hash} folds into its parent row's subtree
+	// map, a top-level node's into its own row.
+	Parent SymbolicID
+	// Title is the node's display title. Write-back records it in a subpage's
+	// subtree-map entry so a later ScanRecompute can match the live page (which
+	// carries only a title, not a repo path) back to its subpath and self-heal a
+	// stale id. Empty for a transaction that writes no node.
+	Title string
+}
+
+// --- Publish-time write-back provenance (#167 decision 7) -------------------
+
+// Provenance is what a publish records back into the backend's self-describing
+// state so the next ScanStored reads current ids/hashes/anchors. The transport
+// assembles it from the run's executed transactions and its resolution table, and
+// hands it to a WriteBacker after a successful drain. An unchanged run yields an
+// empty Provenance (no nodes touched), so write-back stays a true no-op.
+type Provenance struct {
+	// Nodes is the per-node provenance for every node this run (re)wrote, keyed by
+	// its symbolic id.
+	Nodes map[SymbolicID]NodeProvenance
+}
+
+// NodeProvenance is one node's write-back record: its real backend id, the
+// content hash to store, its parent routing (top-level row vs. subtree-map
+// member), and any anchors its content hosts.
+type NodeProvenance struct {
+	// ID is the node's real backend id, resolved from the run (minted for a new
+	// node, scan-seeded for a re-asserted existing one).
+	ID BackendID
+	// Hash is the content hash to persist into the node's `hash` derived column (or
+	// its entry in a parent's subtree map).
+	Hash Hash
+	// Parent is the node's parent symbolic id: "" routes write-back to the node's
+	// own top-level row; non-empty routes {ID, Hash} into ParentID's subtree map.
+	Parent SymbolicID
+	// ParentID is the parent's resolved backend id (the row whose subtree map a
+	// subpage folds into), set only when Parent is non-empty.
+	ParentID BackendID
+	// Title is the node's display title, recorded in a subpage's subtree-map entry
+	// so ScanRecompute can match a live page back to its subpath by title.
+	Title string
+	// Anchors are the anchors this node's content hosts, name → backend block id,
+	// written into the node's `anchors` derived column (the glossary role row).
+	Anchors map[AnchorName]BackendID
 }
 
 // --- The neutral document handoff (tokenizer input) -------------------------

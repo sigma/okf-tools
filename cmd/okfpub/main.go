@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 
 	"github.com/sigma/okf-tools/internal/bundle"
+	"github.com/sigma/okf-tools/internal/publish/backend"
 	"github.com/sigma/okf-tools/internal/publish/pipeline"
 )
 
@@ -56,6 +57,7 @@ func runCmd(args []string) error {
 	schemaPath := fs.String("schema", "", "schema.json path (default: <root>/schema.json if present)")
 	outDir := fs.String("out", "", "output dir for the fs/export backend (default: "+pipeline.DefaultOutDir+")")
 	dryRun := fs.Bool("dry-run", false, "export to the filesystem instead of publishing (implies --backend fs)")
+	recompute := fs.Bool("recompute", false, "opt into the full live-block scan (true drift + subpage/anchor self-heal); default is the cheap steady-state scan")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -102,7 +104,11 @@ func runCmd(args []string) error {
 		fmt.Printf("okfpub: schema: %d column(s)\n", len(cfg.Schema.Columns))
 	}
 
-	res, err := pipeline.Run(context.Background(), be, b)
+	var runOpts []pipeline.Option
+	if *recompute {
+		runOpts = append(runOpts, pipeline.WithScanMode(backend.ScanRecompute))
+	}
+	res, err := pipeline.Run(context.Background(), be, b, runOpts...)
 	if err != nil {
 		return err
 	}
@@ -143,6 +149,7 @@ Run flags:
   --schema   schema.json path       (default: <root>/schema.json if present)
   --out      fs/export output dir   (default: okfpub-export)
   --dry-run  export to the filesystem instead of publishing (implies --backend fs)
+  --recompute                       full live-block scan (true drift + self-heal)
 
 Environment:
   NOTION_TOKEN  Notion integration token (required by the notion backend)
