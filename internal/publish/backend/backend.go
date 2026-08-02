@@ -17,14 +17,24 @@ import (
 	"github.com/sigma/okf-tools/internal/publish"
 )
 
-// Tokenizer breaks a backend-neutral Document into the backend's own AtomicUnits
-// — one packing loop's worth of currency. It applies the backend's constraints
-// (Notion's block model, per-block char caps by splitting oversized content into
-// several units) and preserves each block's Refs and hosted Anchors so late-bound
-// references survive and the anchor map can be built. It never resolves a Ref;
-// resolution is the transport's job.
+// Tokenizer turns a backend-neutral op into the backend's own AtomicUnits — one
+// packing loop's worth of currency. Tokenize handles SetContent's block-granular
+// Document (applying the backend's constraints: Notion's block model and its
+// per-block char caps, by splitting oversized content into several units);
+// TokenizeOp handles the three non-content ops (CreateNode / SetProperties /
+// DeleteNode), each minting one unit. It preserves every unit's Refs and hosted
+// Anchors so late-bound references survive and the anchor map can be built, and it
+// never resolves a Ref; resolution is the transport's job.
+//
+// TokenizeOp is what lets all four op types flow through one AtomicUnit/Bin path
+// carrying a real backend Payload and Cost, so backend-specific fusion (Notion's
+// POST /pages collapsing create + properties + first content) can live entirely
+// inside a Bin. The optimizer stays backend-agnostic: it forwards the neutral
+// NonContentOp and then stamps the returned unit's Group, write-target/parent
+// Refs, and graph provenance itself — the backend fills only Payload and Cost.
 type Tokenizer interface {
 	Tokenize(doc publish.Document) []publish.AtomicUnit
+	TokenizeOp(op publish.NonContentOp) publish.AtomicUnit
 }
 
 // ConstraintModel advertises a backend's capacity behaviorally rather than as

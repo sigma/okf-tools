@@ -82,6 +82,14 @@ func (b *Backend) Tokenize(doc publish.Document) []publish.AtomicUnit {
 	return units
 }
 
+// TokenizeOp mints the single trivial unit for a non-content op: Cost 1 (so a
+// count-bounded Bin treats create/properties/delete exactly like a content unit),
+// no payload. The fake never fuses, so it carries no create/properties/delete
+// payload to distinguish — the optimizer stamps the unit's Group and Refs.
+func (b *Backend) TokenizeOp(publish.NonContentOp) publish.AtomicUnit {
+	return publish.AtomicUnit{Cost: 1}
+}
+
 // --- ConstraintModel / Bin --------------------------------------------------
 
 // NewBin returns a fresh count-bounded Bin honoring the backend's MaxCount.
