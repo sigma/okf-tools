@@ -172,3 +172,48 @@ func TestNilRegistryGlossaryFile(t *testing.T) {
 		t.Fatal("nil Registry GlossaryFile ok = true, want false")
 	}
 }
+
+// TypeFor maps a bundle-relative page path to the declared type of the area
+// that owns it: an exact file match, else the longest matching directory
+// prefix, else "". This is the source of the type fallback for pages that
+// carry no frontmatter `type`.
+func TestTypeFor(t *testing.T) {
+	p := writeAreas(t, `{
+	  "adr":      { "directory": "docs/adr", "type": "adr" },
+	  "docs":     { "directory": "docs", "type": "doc" },
+	  "research": { "directory": "docs/research", "type": "research" },
+	  "ideas":    { "directory": "ideas", "type": "idea" },
+	  "context":  { "file": "CONTEXT.md", "type": "context", "role": "glossary" }
+	}`)
+	r, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	cases := []struct {
+		rel  string
+		want string
+	}{
+		{"ideas/foo.md", "idea"},                // plain directory match
+		{"docs/research/notion.md", "research"}, // nested: longest prefix wins over docs
+		{"docs/adr/0001.md", "adr"},             // nested: longest prefix wins over docs
+		{"docs/misc/notes.md", "doc"},           // falls back to the shallower docs area
+		{"CONTEXT.md", "context"},               // exact file match
+		{"unclaimed/x.md", ""},                  // no area owns it
+		{"docs", "doc"},                         // the directory path itself
+		{"CONTEXT.md.bak", ""},                  // file match is exact, not a prefix
+	}
+	for _, tc := range cases {
+		if got := r.TypeFor(tc.rel); got != tc.want {
+			t.Errorf("TypeFor(%q) = %q, want %q", tc.rel, got, tc.want)
+		}
+	}
+}
+
+// A nil registry (a bundle with no areas.json) resolves no type, so callers can
+// keep a nil Areas field without special-casing it.
+func TestNilRegistryTypeFor(t *testing.T) {
+	var r *Registry
+	if got := r.TypeFor("ideas/foo.md"); got != "" {
+		t.Fatalf("nil Registry TypeFor = %q, want \"\"", got)
+	}
+}

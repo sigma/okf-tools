@@ -51,24 +51,44 @@ func (b *Bundle) Graph() (nodes []*Doc, edges []Edge) {
 	return nodes, edges
 }
 
-// Title returns a concept's display title: frontmatter title, else its rel path.
+// Title returns a concept's display title: the frontmatter title, else the
+// document's top-level (level-1) H1, else its rel path. The H1 fallback keeps
+// frontmatter-less pages (research notes, etc.) from publishing under their file
+// path. See #99.
 func (d *Doc) Title() string {
 	if d.Frontmatter != nil {
 		if t, ok := d.Frontmatter["title"].(string); ok && t != "" {
 			return t
 		}
 	}
+	if h := d.firstH1(); h != "" {
+		return h
+	}
 	return d.Rel
 }
 
-// Type returns a concept's frontmatter type, or "" if absent.
-func (d *Doc) Type() string {
-	if d.Frontmatter != nil {
-		if t, ok := d.Frontmatter["type"].(string); ok {
-			return t
+// firstH1 returns the text of the document's first top-level (level-1) heading,
+// or "" when it has none.
+func (d *Doc) firstH1() string {
+	for _, h := range d.Headings {
+		if h.Level == 1 {
+			return h.Text
 		}
 	}
 	return ""
+}
+
+// Type returns a concept's type: the frontmatter type, else the declared type of
+// the area that owns the page (AreaType, resolved from areas.json at load), else
+// "". The area fallback types unauthored pages by their directory — the area
+// *is* the type when the page declares none. See #99.
+func (d *Doc) Type() string {
+	if d.Frontmatter != nil {
+		if t, ok := d.Frontmatter["type"].(string); ok && t != "" {
+			return t
+		}
+	}
+	return d.AreaType
 }
 
 // Description returns a concept's frontmatter description, or "".

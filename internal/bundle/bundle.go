@@ -37,6 +37,12 @@ type Doc struct {
 	Inbound  int      // concept cross-links pointing at this doc (orphan analysis)
 	Glossary bool     // declared as a glossary file (config [glossary] files)
 	Anchors  []Anchor // anchor-addressable targets, when Glossary (term + heading slugs)
+	// AreaType is the declared type of the areas.json area that owns this page,
+	// resolved once at load time; "" when no area claims it or there is no
+	// registry. Type() falls back to it when the page carries no frontmatter
+	// type, so an unauthored page still types by its area (the area *is* the
+	// type). See #99.
+	AreaType string
 }
 
 // Bundle is the in-memory model rules run against.
@@ -192,7 +198,7 @@ func Load(root, configPath string) (*Bundle, error) {
 		}
 		rel, _ := filepath.Rel(root, p)
 		rel = filepath.ToSlash(rel)
-		d := &Doc{Document: doc, Rel: rel, Base: e.Name()}
+		d := &Doc{Document: doc, Rel: rel, Base: e.Name(), AreaType: b.Areas.TypeFor(rel)}
 		switch {
 		case reserved[e.Name()] && e.Name() == "index.md":
 			d.Kind, d.Reserved = KindIndex, true
