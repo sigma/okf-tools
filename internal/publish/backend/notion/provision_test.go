@@ -3,7 +3,86 @@ package notion
 import (
 	"context"
 	"testing"
+
+	"github.com/sigma/okf-tools/internal/schema"
 )
+
+// TestProvisionAddsSelfDescribingColumns: okfpub's own self-describing columns
+// (path, hash, hashes, anchors) are provisioned regardless of what the consumer's
+// schema declares — they are okfpub's write-back bookkeeping, not consumer-semantic
+// columns. Against a data source holding only its title and a schema that declares
+// none of the four, Provision creates all four as rich_text, so write-back to a
+// fresh data source does not 400 on a missing hash/anchors column (#96).
+func TestProvisionAddsSelfDescribingColumns(t *testing.T) {
+	f := newFakeNotion()
+	f.dsProps = map[string]map[string]any{
+		"Name": {"type": "title"}, // a fresh data source ships with its title
+	}
+	// A schema declaring none of the self-describing columns.
+	minimal := &schema.Schema{Columns: map[string]schema.Column{
+		"Name":   {Kind: "title", Source: "derived"},
+		"status": {Kind: "select", Source: "frontmatter", Options: []string{"proposed", "accepted"}},
+	}}
+	be := newServer(t, f, WithSchema(minimal))
+
+	if err := be.Provision(context.Background()); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+
+	patches := f.requestsTo("PATCH", "/data_sources/ds1")
+	if len(patches) != 1 {
+		t.Fatalf("want 1 PATCH /data_sources, got %d", len(patches))
+	}
+	added, _ := patches[0].Body["properties"].(map[string]any)
+	if added == nil {
+		t.Fatalf("PATCH body missing properties: %v", patches[0].Body)
+	}
+
+	for _, name := range []string{"path", "hash", "hashes", "anchors"} {
+		def, ok := added[name].(map[string]any)
+		if !ok {
+			t.Errorf("self-describing column %q not provisioned, added = %v", name, added)
+			continue
+		}
+		if _, ok := def["rich_text"]; !ok {
+			t.Errorf("self-describing column %q should be provisioned as rich_text, got %v", name, def)
+		}
+	}
+}
+
+// TestProvisionSelfDescribingCaseInsensitive: a self-describing column that already
+// exists under a different casing (e.g. "Anchors") is not re-added — the path
+// queued()/EqualFold guards. Only the genuinely-missing self-describing columns are
+// provisioned.
+func TestProvisionSelfDescribingCaseInsensitive(t *testing.T) {
+	f := newFakeNotion()
+	f.dsProps = map[string]map[string]any{
+		"Name":    {"type": "title"},
+		"Anchors": {"type": "rich_text"}, // self-describing "anchors", differently cased
+	}
+	minimal := &schema.Schema{Columns: map[string]schema.Column{
+		"Name": {Kind: "title", Source: "derived"},
+	}}
+	be := newServer(t, f, WithSchema(minimal))
+
+	if err := be.Provision(context.Background()); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	patches := f.requestsTo("PATCH", "/data_sources/ds1")
+	if len(patches) != 1 {
+		t.Fatalf("want 1 PATCH, got %d", len(patches))
+	}
+	added, _ := patches[0].Body["properties"].(map[string]any)
+	if _, ok := added["anchors"]; ok {
+		t.Errorf("anchors already exists (as Anchors) and must not be re-added, got %v", added["anchors"])
+	}
+	// The other three self-describing columns are still provisioned.
+	for _, name := range []string{"path", "hash", "hashes"} {
+		if _, ok := added[name].(map[string]any); !ok {
+			t.Errorf("self-describing column %q should still be provisioned, added = %v", name, added)
+		}
+	}
+}
 
 // TestProvisionAddsMissingTypedColumns: against a data source holding only its
 // title, Provision adds every other schema column with the Notion type its kind
@@ -73,6 +152,8 @@ func TestProvisionIdempotent(t *testing.T) {
 	f.dsProps = map[string]map[string]any{
 		"Name":        {"type": "title"},
 		"path":        {"type": "rich_text"},
+		"hash":        {"type": "rich_text"}, // okfpub self-describing
+		"anchors":     {"type": "rich_text"}, // okfpub self-describing
 		"type":        {"type": "select"},
 		"hashes":      {"type": "rich_text"},
 		"identifier":  {"type": "rich_text"},

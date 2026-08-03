@@ -11,12 +11,14 @@ import (
 	"github.com/sigma/okf-tools/internal/schema"
 )
 
-// Provision reconciles the data source's columns against schema.json before a
-// publish, so a fresh data source Just Works instead of requiring the columns to
-// be hand-created. It reads the data source's current properties, then adds any
-// schema-declared column that is missing, typed from the column's kind (text →
+// Provision reconciles the data source's columns before a publish, so a fresh data
+// source Just Works instead of requiring the columns to be hand-created. It reads
+// the data source's current properties, then adds any missing column from two
+// sources: the consumer's schema.json columns, typed from each column's kind (text →
 // rich_text, select → select+options, list → multi_select+options, date → date,
-// number → number, checkbox → checkbox).
+// number → number, checkbox → checkbox); and okfpub's own self-describing write-back
+// columns (path, hash, hashes, anchors — all rich_text), which okfpub owns rather
+// than requiring the consumer to declare (see selfDescribingColumns).
 //
 // It is idempotent and additive: an already-present column is left exactly as it
 // is (never recreated or retyped), and a fully-provisioned data source issues no
@@ -62,6 +64,26 @@ func (b *Backend) Provision(ctx context.Context) error {
 		}
 		add[name] = def
 	}
+
+	// okfpub's self-describing columns are its own write-back bookkeeping, not
+	// consumer-semantic columns, so Provision owns them rather than requiring the
+	// consumer to declare them in schema.json — the omission that otherwise 400s
+	// write-back on a fresh data source (#96). Additive and idempotent like the
+	// schema columns: skip any that already exist or are already queued (a consumer
+	// may legitimately declare one, e.g. `path`), matching case-insensitively.
+	for _, name := range selfDescribingColumns {
+		if existing[strings.ToLower(name)] {
+			continue
+		}
+		if queued(add, name) {
+			continue
+		}
+		// All self-describing columns are rich_text; route through the same seam as
+		// schema columns so the Notion representation lives in one place.
+		def, _ := columnPropertyDef(schema.Column{Kind: "text"})
+		add[name] = def
+	}
+
 	if len(add) == 0 {
 		return nil // already provisioned: no write, preserving the near-noop property
 	}
@@ -71,6 +93,24 @@ func (b *Backend) Provision(ctx context.Context) error {
 		return fmt.Errorf("notion: provision: add columns: %w", err)
 	}
 	return nil
+}
+
+// selfDescribingColumns are the derived columns okfpub writes back to persist each
+// row's identity, hashes, and anchor map — the scan model's "the mirror is
+// self-describing" (okfpub-scan-model §3, decision 2/4/7). They are okfpub's own
+// bookkeeping (the persistence behind the cheap stored-scan path), so Provision
+// always ensures them, independent of the consumer's schema.json. All are rich_text.
+var selfDescribingColumns = []string{"path", "hash", "hashes", "anchors"}
+
+// queued reports whether a column name is already staged to be added, matched
+// case-insensitively so a consumer-declared column (any casing) is not duplicated.
+func queued(add map[string]any, name string) bool {
+	for k := range add {
+		if strings.EqualFold(k, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // columnPropertyDef maps a schema column to the Notion property definition that
