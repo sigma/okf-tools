@@ -233,7 +233,17 @@ func TestSlug(t *testing.T) {
 		"Re-share":            "re-share",
 		"re share":            "re-share",
 		"  Trailing  ":        "trailing",
-		"C++ & Go!":           "c-go",
+		// GitHub's github-slugger maps each whitespace char to a hyphen without
+		// collapsing runs: punctuation stripped from between two spaces leaves a
+		// double hyphen. See OKF203 (okf-tools#116).
+		"C++ & Go!": "c--go",
+		"TL;DR — the landscape splits into three layers":       "tldr--the-landscape-splits-into-three-layers",
+		"Standing obligation — a consumer of the resource set": "standing-obligation--a-consumer-of-the-resource-set",
+		// Leading/trailing hyphens are NOT trimmed (only surrounding
+		// whitespace is), matching github-slugger and the resolve.ts reference:
+		// a stripped em-dash at an edge leaves an edge hyphen.
+		"— Edge": "-edge",
+		"Edge —": "edge-",
 	}
 	for in, want := range cases {
 		if got := Slug(in); got != want {

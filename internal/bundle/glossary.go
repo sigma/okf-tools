@@ -3,6 +3,7 @@ package bundle
 import (
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // AnchorKind distinguishes the two sources of a glossary anchor: a bold-lead
@@ -32,32 +33,35 @@ type Anchor struct {
 	Kind AnchorKind // term or heading
 }
 
-// Slug turns text into a fixed, GitHub-style anchor slug: lowercase, drop every
-// character but [a-z0-9], space and hyphen, map spaces to hyphens, then collapse
-// runs of hyphens into one. The algorithm is intentionally NOT configurable so
-// it can't drift from a consumer (e.g. the Notion sync) that resolves the same
-// anchors. Slug("Root KEK") == "root-kek", Slug("Foreign-rooted leaf") ==
-// "foreign-rooted-leaf".
+// Slug turns text into a fixed, GitHub-style anchor slug matching
+// github-slugger byte-for-byte: trim surrounding whitespace, lowercase, drop
+// every character but [a-z0-9], whitespace and hyphen, then map each whitespace
+// character to a single hyphen — WITHOUT collapsing runs. Collapsing was the
+// OKF203 divergence (okf-tools#116): GitHub does not collapse, so a "; — "-style
+// gap where punctuation is stripped from between two spaces slugs to "--", and
+// collapsing it to "-" produced false positives on GitHub-correct links. See the
+// validated reference in sigma/ideas' retired sync/src/resolve.ts (ADR-0013).
+// The algorithm is intentionally NOT configurable so it can't drift from a
+// consumer (e.g. the Notion sync) that resolves the same anchors.
+// Slug("Root KEK") == "root-kek", Slug("Foreign-rooted leaf") ==
+// "foreign-rooted-leaf", Slug("TL;DR — the plan") == "tldr--the-plan".
 //
 // It is exported so the publishing backend's ScanRecompute re-derives anchor
 // names from live glossary block text with the exact same normalization the
 // bundle parser used — the shared algorithm that keeps both sides in lockstep.
 func Slug(text string) string {
 	var b strings.Builder
-	for _, r := range strings.ToLower(text) {
+	for _, r := range strings.ToLower(strings.TrimSpace(text)) {
 		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
 			b.WriteRune(r)
-		case r == ' ' || r == '-':
+		case unicode.IsSpace(r):
+			// Each whitespace char maps to one hyphen; runs are NOT collapsed,
+			// matching github-slugger ("a & b" -> "a--b").
 			b.WriteByte('-')
 		}
 	}
-	// Collapse runs of '-' (from spaces/hyphens) and trim the ends.
-	out := b.String()
-	for strings.Contains(out, "--") {
-		out = strings.ReplaceAll(out, "--", "-")
-	}
-	return strings.Trim(out, "-")
+	return b.String()
 }
 
 // buildAnchors populates d.Anchors from its terms and headings, in file-line
