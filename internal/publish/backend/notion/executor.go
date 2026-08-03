@@ -81,17 +81,13 @@ func (b *Backend) create(ctx context.Context, t *Transaction, r backend.Resolver
 	if hosted == nil {
 		return nil
 	}
+	// The POST /pages does not echo the created child ids, so GET them to learn the
+	// server-minted block ids before mapping anchors and patching deferred citations.
 	ids, err := b.listChildIDs(ctx, page.ID)
 	if err != nil {
 		return err
 	}
-	if err := mapAnchors(t.Children, ids, res.Anchors); err != nil {
-		return fmt.Errorf("notion: create %s: %w", writeTarget(t), err)
-	}
-	if err := b.patchSelfHostedCites(ctx, t.Children, ids, deferred, res.Anchors, r); err != nil {
-		return fmt.Errorf("notion: create %s: %w", writeTarget(t), err)
-	}
-	return nil
+	return b.resolveSelfHostedAnchors(ctx, fmt.Sprintf("notion: create %s", writeTarget(t)), t.Children, ids, deferred, res.Anchors, r)
 }
 
 // patchSelfHostedCites re-materializes the self-hosted anchor citations the POST
@@ -124,6 +120,16 @@ func (b *Backend) patchSelfHostedCites(ctx context.Context, children []childBloc
 // a property PATCH (a standalone SetProperties, or a fused properties-without-
 // create write) and/or a PATCH children append (content overflow). The page id is
 // resolved from the transaction's write-target Ref, which the transport gated on.
+//
+// A self-hosted anchor can ride the append too, not just the create (sigma/okf-
+// tools#102): when cluster subpage nesting force-splits a glossary host's create
+// away from its content, the block that both hosts and cites its own anchor lands in
+// this append. On a fresh publish that anchor is not scan-seeded, and — as in the
+// create path (#89) — its Notion block id is minted only by the append. So the
+// append mirrors the create's two-phase write: defer the self-hosted citation out of
+// the append, learn the appended block ids, then patch the citation back in. (The
+// scan-seeded re-publish, where the anchor id is already resolved and hosted by no
+// child of this append, defers nothing and patches nothing — see the #89 tests.)
 func (b *Backend) update(ctx context.Context, t *Transaction, r backend.Resolver, res *publish.ExecResult) error {
 	target := writeTarget(t)
 	id, ok := r.Resolve(target)
@@ -139,7 +145,9 @@ func (b *Backend) update(ctx context.Context, t *Transaction, r backend.Resolver
 	}
 
 	if len(t.Children) > 0 {
-		children, err := b.childrenJSON(t.Children, r)
+		hosted := hostedAnchorNames(t.Children)
+		appendChildren, deferred := deferSelfHostedCites(t.Children, hosted)
+		children, err := b.childrenJSON(appendChildren, r)
 		if err != nil {
 			return err
 		}
@@ -148,11 +156,30 @@ func (b *Backend) update(ctx context.Context, t *Transaction, r backend.Resolver
 		if err := b.do(ctx, http.MethodPatch, path, appendChildrenReq{Children: children}, &out); err != nil {
 			return err
 		}
-		if hostsAnchors(t.Children) {
-			if err := mapAnchors(t.Children, objectIDs(out.Results), res.Anchors); err != nil {
-				return fmt.Errorf("notion: append to %s: %w", target, err)
+		if hosted != nil {
+			// The append echoes the minted block ids directly (unlike the create's
+			// POST /pages, which needs a follow-up GET), so map anchors against them.
+			if err := b.resolveSelfHostedAnchors(ctx, fmt.Sprintf("notion: append to %s", target), t.Children, objectIDs(out.Results), deferred, res.Anchors, r); err != nil {
+				return err
 			}
 		}
+	}
+	return nil
+}
+
+// resolveSelfHostedAnchors completes the two-phase self-hosted-anchor write once the
+// hosting blocks exist and their ids are known (positionally aligned with children):
+// it records each hosted anchor's block id, then re-materializes the citations
+// deferred out of the write. The create and append paths share this tail and differ
+// only in how they learn ids — the create GETs the page's children, the append reads
+// them from its response (sigma/okf-tools#89, #102). errPrefix labels the wrapped
+// error with the operation and its write-target.
+func (b *Backend) resolveSelfHostedAnchors(ctx context.Context, errPrefix string, children []childBlock, ids []string, deferred []int, anchors map[publish.AnchorName]publish.BackendID, r backend.Resolver) error {
+	if err := mapAnchors(children, ids, anchors); err != nil {
+		return fmt.Errorf("%s: %w", errPrefix, err)
+	}
+	if err := b.patchSelfHostedCites(ctx, children, ids, deferred, anchors, r); err != nil {
+		return fmt.Errorf("%s: %w", errPrefix, err)
 	}
 	return nil
 }
@@ -627,16 +654,6 @@ func (h hostedAnchorResolver) Resolve(id publish.SymbolicID) (publish.BackendID,
 		}
 	}
 	return h.base.Resolve(id)
-}
-
-// hostsAnchors reports whether any child block hosts a named anchor.
-func hostsAnchors(children []childBlock) bool {
-	for _, cb := range children {
-		if len(cb.anchors) > 0 {
-			return true
-		}
-	}
-	return false
 }
 
 // mapAnchors matches sent child blocks to their created block ids positionally
