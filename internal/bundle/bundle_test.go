@@ -292,3 +292,83 @@ func TestGlossaryAnchors(t *testing.T) {
 		t.Error("index.md should not be a glossary")
 	}
 }
+
+// docByRel finds a loaded doc by its bundle-relative path, failing the test if
+// it is absent.
+func docByRel(t *testing.T, b *Bundle, rel string) *Doc {
+	t.Helper()
+	for _, d := range b.Docs {
+		if d.Rel == rel {
+			return d
+		}
+	}
+	t.Fatalf("no doc with rel %q", rel)
+	return nil
+}
+
+// A frontmatter-less page must title itself by its top-level H1 and type itself
+// from the area that owns it (areas.json) — matching the production mirror,
+// rather than emitting the rel path as title and an empty type. See #99.
+func TestTitleAndTypeFallbacks(t *testing.T) {
+	b := loadBundle(t, map[string]string{
+		"okf.toml": "# x\n",
+		"areas.json": `{
+		  "research": { "directory": "docs/research", "type": "research" },
+		  "ideas":    { "directory": "ideas", "type": "idea" }
+		}`,
+		// no frontmatter, opens with an H1, under a declared area
+		"docs/research/notion.md": "# Notion API: schema mutation\n\nbody\n",
+		// no frontmatter, no H1
+		"ideas/no-h1.md": "just prose, no heading\n",
+		// authored frontmatter wins over both fallbacks
+		"ideas/authored.md": "---\ntitle: Authored Title\ntype: essay\n---\n\n# Ignored H1\n",
+		// frontmatter-less, not under any area -> empty type
+		"loose/orphan.md": "# Loose Note\n\nbody\n",
+	})
+
+	if d := docByRel(t, b, "docs/research/notion.md"); d.Title() != "Notion API: schema mutation" || d.Type() != "research" {
+		t.Errorf("research page: Title=%q Type=%q, want (\"Notion API: schema mutation\", \"research\")", d.Title(), d.Type())
+	}
+	if d := docByRel(t, b, "ideas/no-h1.md"); d.Title() != "ideas/no-h1.md" {
+		t.Errorf("no-H1 page: Title=%q, want the rel path", d.Title())
+	}
+	if d := docByRel(t, b, "ideas/no-h1.md"); d.Type() != "idea" {
+		t.Errorf("no-H1 page: Type=%q, want \"idea\" (area fallback)", d.Type())
+	}
+	if d := docByRel(t, b, "ideas/authored.md"); d.Title() != "Authored Title" || d.Type() != "essay" {
+		t.Errorf("authored page: Title=%q Type=%q, want (\"Authored Title\", \"essay\")", d.Title(), d.Type())
+	}
+	if d := docByRel(t, b, "loose/orphan.md"); d.Title() != "Loose Note" || d.Type() != "" {
+		t.Errorf("orphan page: Title=%q Type=%q, want (\"Loose Note\", \"\")", d.Title(), d.Type())
+	}
+}
+
+// With no areas.json at all, a frontmatter-less page still degrades to an empty
+// type (and H1 title) — the registry is optional and its absence is not an error.
+func TestTypeFallbackNoAreasRegistry(t *testing.T) {
+	b := loadBundle(t, map[string]string{
+		"okf.toml": "# x\n",
+		"a.md":     "# A Heading\n\nbody\n",
+	})
+	d := docByRel(t, b, "a.md")
+	if d.Title() != "A Heading" {
+		t.Errorf("Title=%q, want \"A Heading\"", d.Title())
+	}
+	if d.Type() != "" {
+		t.Errorf("Type=%q, want \"\" (no registry)", d.Type())
+	}
+}
+
+// An explicitly empty frontmatter `type: ""` is treated as unauthored, so the
+// area fallback applies — symmetric with Title()'s empty-string guard. This
+// pins the "missing key or empty value" intent behind Type()'s t != "" check.
+func TestEmptyFrontmatterTypeFallsBackToArea(t *testing.T) {
+	b := loadBundle(t, map[string]string{
+		"okf.toml":            "# x\n",
+		"areas.json":          `{ "ideas": { "directory": "ideas", "type": "idea" } }`,
+		"ideas/blank-type.md": "---\ntype: \"\"\n---\n\n# Blank Type\n",
+	})
+	if d := docByRel(t, b, "ideas/blank-type.md"); d.Type() != "idea" {
+		t.Errorf("empty-string type: Type=%q, want \"idea\" (area fallback)", d.Type())
+	}
+}

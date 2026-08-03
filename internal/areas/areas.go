@@ -143,6 +143,41 @@ func (r *Registry) GlossaryFile() (string, bool) {
 	return a.File, true
 }
 
+// TypeFor returns the declared type of the area that owns the given
+// bundle-relative path (forward slashes), or "" when no area claims it — or the
+// registry is nil (a bundle configured entirely through okf.toml). It is the
+// source of the type fallback for pages that carry no frontmatter `type`: the
+// area *is* the type when unauthored. A file-backed area matches only its exact
+// file; a directory-backed area matches any path under it, and nested areas
+// (e.g. docs/adr inside docs) are resolved by the longest matching directory
+// prefix so the most specific area wins.
+func (r *Registry) TypeFor(rel string) string {
+	if r == nil {
+		return ""
+	}
+	best := ""
+	bestLen := -1
+	for _, name := range r.sortedNames() {
+		a := r.Areas[name]
+		switch {
+		case a.File != "":
+			// An exact file is the most specific possible match; it outranks any
+			// directory prefix and returns immediately.
+			if a.File == rel {
+				return a.Type
+			}
+		case a.Directory != "":
+			d := strings.TrimSuffix(a.Directory, "/")
+			if rel == d || strings.HasPrefix(rel, d+"/") {
+				if len(d) > bestLen {
+					best, bestLen = a.Type, len(d)
+				}
+			}
+		}
+	}
+	return best
+}
+
 func (r *Registry) sortedNames() []string {
 	names := make([]string, 0, len(r.Areas))
 	for n := range r.Areas {
