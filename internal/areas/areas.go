@@ -178,6 +178,28 @@ func (r *Registry) TypeFor(rel string) string {
 	return best
 }
 
+// IsAreaRoot reports whether dir (bundle-relative, forward slashes) is exactly a
+// declared directory-backed area's root — the directory that maps 1:1 to a
+// unified database. It is the test that separates an area's own section-landing
+// page (e.g. `specs/README.md`, which is not a row in the specs database) from a
+// cluster page nested *within* an area (e.g. `specs/startup-infrastructure/…`,
+// which is). File-backed areas have no directory root and never match. A nil
+// registry, or a dir matching no area, reports false.
+func (r *Registry) IsAreaRoot(dir string) bool {
+	if r == nil {
+		return false
+	}
+	for _, a := range r.Areas {
+		if a.Directory == "" {
+			continue
+		}
+		if strings.TrimSuffix(a.Directory, "/") == dir {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *Registry) sortedNames() []string {
 	names := make([]string, 0, len(r.Areas))
 	for n := range r.Areas {

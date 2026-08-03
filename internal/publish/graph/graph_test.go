@@ -659,3 +659,87 @@ func cyclic(g *Graph) bool {
 	}
 	return visited != len(nodes)
 }
+
+// --- README-clustered subpage nesting (#90) ---------------------------------
+
+// A cluster whose entry point is README.md (no index.md) must parent its sibling
+// pages under that README, and the area-root README must not publish as a row.
+func TestReadmeClusterNesting(t *testing.T) {
+	b := loadBundle(t, map[string]string{
+		"okf.toml": "[glossary]\nenabled = true\nfiles = [\"CONTEXT.md\"]\n",
+		"areas.json": `{
+			"specs":   {"directory": "specs", "type": "spec"},
+			"context": {"file": "CONTEXT.md", "type": "context", "role": "glossary"}
+		}`,
+		"index.md":                "---\nokf_version: \"0.1\"\n---\nRoot (out of every area).\n",
+		"specs/README.md":         "# Specs\nArea landing.\n",
+		"specs/top.md":            "---\ntype: spec\ntitle: Top\n---\nA top-level spec.\n",
+		"specs/cluster/README.md": "---\ntype: spec\ntitle: Cluster\n---\nCluster entry point.\n",
+		"specs/cluster/a.md":      "---\ntype: spec\ntitle: A\n---\nChild A.\n",
+		"specs/cluster/b.md":      "---\ntype: spec\ntitle: B\n---\nChild B.\n",
+		"CONTEXT.md":              "# Glossary\n",
+	})
+
+	g := gen(t, b, nil) // fresh scan: every in-scope page is a CreateNode
+
+	// The area-root README is not a row.
+	if op := opFor(g, nodeRef("specs/README.md"), CreateNode); op != nil {
+		t.Errorf("area-root README published as a node (parent %q); it must be skipped", op.Parent)
+	}
+
+	// Cluster siblings nest under the cluster README.
+	wantParent := map[string]publish.SymbolicID{
+		"specs/cluster/a.md":      nodeRef("specs/cluster/README.md"),
+		"specs/cluster/b.md":      nodeRef("specs/cluster/README.md"),
+		"specs/cluster/README.md": "", // the cluster page is itself a top-level row of the area DB
+		"specs/top.md":            "", // a plain area page is top-level
+	}
+	for rel, want := range wantParent {
+		op := opFor(g, nodeRef(rel), CreateNode)
+		if op == nil {
+			t.Fatalf("no CreateNode for %q", rel)
+		}
+		if op.Parent != want {
+			t.Errorf("parent(%q) = %q, want %q", rel, op.Parent, want)
+		}
+	}
+
+	// The parent-before-child edge for the cluster is present (README created this
+	// run, so its children depend on it).
+	parentEdges := edgesByCause(g, ParentBeforeChild)
+	want := map[[2]publish.SymbolicID]bool{
+		{nodeRef("specs/cluster/README.md"), nodeRef("specs/cluster/a.md")}: false,
+		{nodeRef("specs/cluster/README.md"), nodeRef("specs/cluster/b.md")}: false,
+	}
+	for _, e := range parentEdges {
+		key := [2]publish.SymbolicID{e.From.Node, e.To.Node}
+		if _, ok := want[key]; ok {
+			want[key] = true
+		}
+	}
+	for key, seen := range want {
+		if !seen {
+			t.Errorf("missing parent edge %s → %s", key[0], key[1])
+		}
+	}
+}
+
+// index.md still outranks a sibling README.md as a directory's index, so a
+// mixed directory nests under index.md (README recognition is a fallback only).
+func TestIndexMdOutranksReadme(t *testing.T) {
+	b := loadBundle(t, map[string]string{
+		"okf.toml":      "",
+		"index.md":      "---\nokf_version: \"0.1\"\n---\nRoot.\n",
+		"sub/index.md":  "# Sub\n",
+		"sub/README.md": "# Sub readme\n",
+		"sub/leaf.md":   "---\ntitle: Leaf\n---\nLeaf.\n",
+	})
+	g := gen(t, b, nil)
+	if op := opFor(g, nodeRef("sub/leaf.md"), CreateNode); op == nil || op.Parent != nodeRef("sub/index.md") {
+		var got publish.SymbolicID
+		if op != nil {
+			got = op.Parent
+		}
+		t.Errorf("parent(sub/leaf.md) = %q, want the index.md (index.md outranks README.md)", got)
+	}
+}

@@ -111,3 +111,42 @@ func TestPublishDocsWithoutAreasReturnsAll(t *testing.T) {
 		t.Errorf("PublishDocs = %d docs, want all %d (no areas.json to narrow by)", len(b.PublishDocs()), len(b.Docs))
 	}
 }
+
+// An area's own root README.md is the section-landing page of the area, which
+// maps to the unified database itself — not a row in it — so it is out of publish
+// scope. A README inside a *sub*directory of the area is a cluster entry point and
+// stays in scope (it becomes the nesting parent for its siblings).
+func TestInPublishScopeSkipsAreaRootReadme(t *testing.T) {
+	b := loadBundle(t, map[string]string{
+		"okf.toml": "[glossary]\nenabled = true\nfiles = [\"CONTEXT.md\"]\n",
+		"areas.json": `{
+			"specs":   {"directory": "specs", "type": "spec"},
+			"context": {"file": "CONTEXT.md", "type": "context", "role": "glossary"}
+		}`,
+		"index.md":                "---\nokf_version: \"0.1\"\n---\nRoot.\n",
+		"specs/README.md":         "# Specs\nArea landing page.\n",
+		"specs/top.md":            concept,
+		"specs/cluster/README.md": "# Cluster\nCluster entry point.\n",
+		"specs/cluster/a.md":      concept,
+		"CONTEXT.md":              "# Glossary\n",
+	})
+
+	if b.InPublishScope("specs/README.md") {
+		t.Errorf("area-root README.md must be out of publish scope (not a database row)")
+	}
+	if !b.InPublishScope("specs/cluster/README.md") {
+		t.Errorf("a cluster (subdirectory) README.md must stay in publish scope")
+	}
+	for _, rel := range []string{"specs/top.md", "specs/cluster/a.md"} {
+		if !b.InPublishScope(rel) {
+			t.Errorf("InPublishScope(%q) = false, want true (ordinary area page)", rel)
+		}
+	}
+
+	// PublishDocs reflects the same skip.
+	for _, d := range b.PublishDocs() {
+		if d.Rel == "specs/README.md" {
+			t.Errorf("PublishDocs still includes the area-root README %q", d.Rel)
+		}
+	}
+}
