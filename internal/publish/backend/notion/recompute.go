@@ -2,12 +2,11 @@ package notion
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/sigma/okf-tools/internal/areas"
 	"github.com/sigma/okf-tools/internal/bundle"
@@ -84,7 +83,7 @@ func (b *Backend) scanRecompute(ctx context.Context) (*publish.CurrentState, err
 		}
 		byID, byTitle := subtreeIndexes(stored)
 		for _, blk := range blocks {
-			if blk.typ != "child_page" {
+			if blk.typ != nTypeChildPage {
 				continue
 			}
 			subpath, ok := byID[blk.id]
@@ -181,9 +180,12 @@ type liveBlock struct {
 }
 
 // listLiveBlocks drains the paginated GET /blocks/{id}/children for one page,
-// projecting each block to a liveBlock. It does not recurse on its own; the caller
-// recurses into child_page ids it cares about (cluster subpages), so the walk cost
-// stays O(nodes) round-trips as the design bounds it.
+// projecting each block to a liveBlock. It recurses into a table's own children
+// (its table_row blocks, whose cell text no top-level walk would otherwise see) so
+// a table's live content is fingerprinted; the extra round-trip is spent only on
+// pages that actually hold a table, keeping the walk O(nodes + tables). It does not
+// recurse into child_page ids — the caller does that for cluster subpages, which
+// are their own nodes.
 func (b *Backend) listLiveBlocks(ctx context.Context, pageID string) ([]liveBlock, error) {
 	var out []liveBlock
 	cursor := ""
@@ -202,6 +204,16 @@ func (b *Backend) listLiveBlocks(ctx context.Context, pageID string) ([]liveBloc
 				return nil, err
 			}
 			out = append(out, lb)
+			// A table's rows are its children (never flat siblings), so pull them in
+			// right after the table line. table_row blocks hold no tables, so this
+			// recurses exactly one level.
+			if lb.typ == nTypeTable && lb.id != "" {
+				rows, err := b.listLiveBlocks(ctx, lb.id)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, rows...)
+			}
 		}
 		if !page.HasMore || page.NextCursor == "" {
 			break
@@ -228,12 +240,18 @@ type blockEnvelope struct {
 	} `json:"child_page"`
 }
 
-// annotatedRun is one rich-text span with the single annotation ScanRecompute
-// reads (bold, to spot a glossary anchor's leading term).
+// annotatedRun is one rich-text span ScanRecompute reads: its type (to fold a
+// page mention to the ref placeholder, matching the source side), its plain text
+// and any external link URL (folded into the content fingerprint), and the one
+// annotation the glossary self-heal needs (bold, to spot an anchor's leading term).
 type annotatedRun struct {
+	Type      string `json:"type"`
 	PlainText string `json:"plain_text"`
 	Text      struct {
 		Content string `json:"content"`
+		Link    *struct {
+			URL string `json:"url"`
+		} `json:"link"`
 	} `json:"text"`
 	Annotations struct {
 		Bold bool `json:"bold"`
@@ -246,6 +264,12 @@ type richTextHolder struct {
 	RichText []annotatedRun `json:"rich_text"`
 }
 
+// tableRowHolder is the `{ "cells": [[run…]…] }` shape a table_row block nests
+// under its type key: an ordered row of cells, each an ordered rich-text run.
+type tableRowHolder struct {
+	Cells [][]annotatedRun `json:"cells"`
+}
+
 // parseLiveBlock decodes one raw block: its envelope, then — for a text-bearing
 // block — the rich_text under its type key, from which it derives the block's plain
 // text and any leading bold term. A child_page block carries its title instead.
@@ -255,40 +279,61 @@ func parseLiveBlock(raw json.RawMessage) (liveBlock, error) {
 		return liveBlock{}, fmt.Errorf("notion: scan: decode block: %w", err)
 	}
 	lb := liveBlock{id: env.ID, typ: env.Type}
-	if env.Type == "child_page" {
+	if env.Type == nTypeChildPage {
 		if env.ChildPage != nil {
 			lb.childPageTitle = env.ChildPage.Title
 		}
 		return lb, nil
 	}
 
-	// Pull the type-keyed object and read its rich_text (absent for blocks that
-	// carry none, e.g. a divider — those contribute an empty text run).
+	// Pull the type-keyed object and read its content. A table_row carries cells
+	// rather than a flat rich_text run; every other text-bearing block carries
+	// rich_text (absent for blocks that carry none, e.g. a divider — an empty run).
 	var byType map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &byType); err != nil {
 		return liveBlock{}, fmt.Errorf("notion: scan: decode block body: %w", err)
 	}
 	if body, ok := byType[env.Type]; ok {
-		var holder richTextHolder
-		if err := json.Unmarshal(body, &holder); err == nil {
-			lb.text = liveRunsText(holder.RichText)
-			if len(holder.RichText) > 0 && holder.RichText[0].Annotations.Bold {
-				lb.boldLead = runText(holder.RichText[0])
+		if env.Type == nTypeTableRow {
+			var holder tableRowHolder
+			if err := json.Unmarshal(body, &holder); err == nil {
+				cells := make([]string, len(holder.Cells))
+				for i, cell := range holder.Cells {
+					cells[i] = liveCanonRunsText(cell)
+				}
+				lb.text = strings.Join(cells, canonCellSep)
+			}
+		} else {
+			var holder richTextHolder
+			if err := json.Unmarshal(body, &holder); err == nil {
+				lb.text = liveCanonRunsText(holder.RichText)
+				if len(holder.RichText) > 0 && holder.RichText[0].Annotations.Bold {
+					lb.boldLead = runText(holder.RichText[0])
+				}
 			}
 		}
 	}
 	return lb, nil
 }
 
-// liveRunsText concatenates the plain text of a live rich-text run slice,
-// preferring the server-provided plain_text and falling back to the authored
-// content.
-func liveRunsText(runs []annotatedRun) string {
-	var s string
+// liveCanonRunsText extracts a live rich-text run slice's canonical text, the
+// mirror of the source side's canonRunsText: a page mention folds to the ref
+// placeholder, every other run contributes its plain text (preferring the
+// server-filled plain_text) plus any external link URL.
+func liveCanonRunsText(runs []annotatedRun) string {
+	var s strings.Builder
 	for _, r := range runs {
-		s += runText(r)
+		if r.Type == nTypeMention {
+			s.WriteString(canonRefPlaceholder)
+			continue
+		}
+		s.WriteString(runText(r))
+		if r.Text.Link != nil && r.Text.Link.URL != "" {
+			s.WriteString(canonLinkSep)
+			s.WriteString(r.Text.Link.URL)
+		}
 	}
-	return s
+	return s.String()
 }
 
 func runText(r annotatedRun) string {
@@ -298,17 +343,20 @@ func runText(r annotatedRun) string {
 	return r.Text.Content
 }
 
-// liveContentHash fingerprints a node's live content: a SHA-256 over the ordered,
-// non-child_page blocks' type and text. child_page blocks are excluded (they are
-// their own nodes, hashed separately), so a page's hash reflects only its own body.
-// It is the true-drift signal — a live edit changes the text and thus the hash.
+// liveContentHash fingerprints a node's live content over the ordered,
+// non-child_page blocks, through the same canonical serializer the source side
+// runs (recompute_hash.go). child_page blocks are excluded (they are their own
+// nodes); a table's rows ride as their own table_row liveBlocks (listLiveBlocks
+// recurses), so cell text is covered. It is the true-drift signal — a live edit
+// changes the text and thus the hash — and, aligned with sourceContentHash, lets
+// an unchanged node hash-skip under --recompute (#110).
 func liveContentHash(blocks []liveBlock) publish.Hash {
-	h := sha256.New()
+	var cbs []canonBlock
 	for _, blk := range blocks {
 		if blk.childPageTitle != "" {
 			continue
 		}
-		fmt.Fprintf(h, "%s:%s\n", blk.typ, blk.text)
+		cbs = append(cbs, canonBlock{typ: blk.typ, text: blk.text})
 	}
-	return publish.Hash(hex.EncodeToString(h.Sum(nil)))
+	return hashCanonBlocks(cbs)
 }

@@ -163,6 +163,17 @@ func buildDocument(d *bundle.Doc, banner *Banner) (doc *publish.Document, refs [
 	return doc, refs, anchors
 }
 
+// ProjectDocument builds the backend-neutral block stream for a source doc,
+// exactly as SetContent carries it (block-0 banner included when bn != nil). A
+// backend's recompute hasher reuses this to fingerprint the same realized content
+// its live scanner reconstructs from Notion blocks — the source half of the
+// WithHasher round-trip contract (see hash.go). Refs and anchors are irrelevant to
+// a content fingerprint and dropped; only the ordered blocks matter.
+func ProjectDocument(d *bundle.Doc, bn *Banner) publish.Document {
+	doc, _, _ := buildDocument(d, bn)
+	return *doc
+}
+
 // docBuilder accumulates the neutral blocks of one document during an AST walk.
 // linkIdx is the running ordinal into doc.Resolved: the k-th link-like inline
 // node encountered (in the same depth-first order the parser used) resolves to
