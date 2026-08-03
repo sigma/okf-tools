@@ -44,7 +44,7 @@ func (b *Backend) WriteBack(ctx context.Context, prov publish.Provenance) error 
 			m = map[string]subtreeEntry{}
 			subByParent[np.ParentID] = m
 		}
-		m[relOfNode(node)] = subtreeEntry{ID: string(np.ID), Hash: string(np.Hash), Title: np.Title}
+		m[relOfNode(node)] = subtreeEntry{ID: string(np.ID), Hash: string(np.Hash), PropHash: string(np.PropHash), Title: np.Title}
 	}
 
 	// Own-row writes for top-level nodes, in sorted order for deterministic request
@@ -54,7 +54,9 @@ func (b *Backend) WriteBack(ctx context.Context, prov publish.Provenance) error 
 		np := prov.Nodes[node]
 		props := map[string]any{
 			"path": b.richTextProp(relOfNode(node)),
-			"hash": b.richTextProp(string(np.Hash)),
+			// The `hash` column stores content and property hashes as one compound
+			// value, so the two-hash split needs no new Notion column (#110 phase 2).
+			"hash": b.richTextProp(encodeHashPair(np.Hash, np.PropHash)),
 		}
 		if len(np.Anchors) > 0 {
 			enc, err := json.Marshal(anchorMap(np.Anchors))

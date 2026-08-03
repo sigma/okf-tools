@@ -17,29 +17,42 @@ import (
 // consumer-side queries — the contract Generation compiles against; the
 // producer-side reconstruction, and any extra fields it needs, are #167's.
 type CurrentState struct {
-	nodeIDs   map[SymbolicID]BackendID
-	hashes    map[SymbolicID]Hash
-	anchorIDs map[AnchorName]BackendID
+	nodeIDs    map[SymbolicID]BackendID
+	hashes     map[SymbolicID]Hash
+	propHashes map[SymbolicID]Hash
+	anchorIDs  map[AnchorName]BackendID
 	// order is the deterministic iteration order for Nodes(), derived once at
 	// construction from the sorted node ids.
 	order []SymbolicID
 }
 
-// NewCurrentState builds a neutral CurrentState from a backend's reconstructed
-// tables. It defensively copies the maps so a backend may reuse its own, and
-// precomputes a deterministic node-iteration order. Passing nil for any table is
-// treated as empty. #167 will extend this constructor as it adds fields.
+// NewCurrentState builds a neutral CurrentState from a backend that reconstructs no
+// property hashes (the common seam: the content hash and anchors alone). It is a
+// thin wrapper over NewCurrentStateWithProps with an empty property-hash table.
 func NewCurrentState(nodeIDs map[SymbolicID]BackendID, hashes map[SymbolicID]Hash, anchorIDs map[AnchorName]BackendID) *CurrentState {
+	return NewCurrentStateWithProps(nodeIDs, hashes, nil, anchorIDs)
+}
+
+// NewCurrentStateWithProps builds a neutral CurrentState including the per-node
+// property-hash table the two-hash split needs (#110 phase 2): a scanner that reads
+// back a stored property hash supplies it here so SetProperties can hash-skip
+// independently of SetContent. It defensively copies the maps and precomputes a
+// deterministic node-iteration order. Passing nil for any table is treated as empty.
+func NewCurrentStateWithProps(nodeIDs map[SymbolicID]BackendID, hashes, propHashes map[SymbolicID]Hash, anchorIDs map[AnchorName]BackendID) *CurrentState {
 	cs := &CurrentState{
-		nodeIDs:   maps.Clone(nodeIDs),
-		hashes:    maps.Clone(hashes),
-		anchorIDs: maps.Clone(anchorIDs),
+		nodeIDs:    maps.Clone(nodeIDs),
+		hashes:     maps.Clone(hashes),
+		propHashes: maps.Clone(propHashes),
+		anchorIDs:  maps.Clone(anchorIDs),
 	}
 	if cs.nodeIDs == nil {
 		cs.nodeIDs = map[SymbolicID]BackendID{}
 	}
 	if cs.hashes == nil {
 		cs.hashes = map[SymbolicID]Hash{}
+	}
+	if cs.propHashes == nil {
+		cs.propHashes = map[SymbolicID]Hash{}
 	}
 	if cs.anchorIDs == nil {
 		cs.anchorIDs = map[AnchorName]BackendID{}
@@ -61,6 +74,15 @@ func (cs *CurrentState) NodeID(id SymbolicID) (BackendID, bool) {
 // hash-skipped.
 func (cs *CurrentState) ContentHash(id SymbolicID) (Hash, bool) {
 	h, ok := cs.hashes[id]
+	return h, ok
+}
+
+// PropertyHash returns the last-known property hash of a node: the "properties
+// drifted?" arm of the diff, gating SetProperties independently of ContentHash. A
+// scanner that reconstructs no property hash leaves this absent, which the gate
+// reads leniently (no forced property rewrite).
+func (cs *CurrentState) PropertyHash(id SymbolicID) (Hash, bool) {
+	h, ok := cs.propHashes[id]
 	return h, ok
 }
 

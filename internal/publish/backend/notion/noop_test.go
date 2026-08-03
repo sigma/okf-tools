@@ -62,20 +62,25 @@ func TestNotionNearNoopRerun(t *testing.T) {
 	// same content hash Generation computes — the write-back a real steady state would
 	// have left behind (#44).
 	f := newFakeNotion()
+	be := newServer(t, f)
 	for _, d := range b.Docs {
+		// Seed each row's `hash` column with the compound content.prop value the
+		// steady state would have left — the aligned source content hash the wired
+		// hasher now computes, paired with the property hash (#110 phase 2).
 		f.rows = append(f.rows, row("page-"+d.Rel, map[string]any{
 			"path": richProp(d.Rel),
-			"hash": richProp(string(graph.ContentHash(d))),
+			"hash": richProp(encodeHashPair(be.sourceContentHash(d, nil), graph.PropertyHash(d))),
 		}))
 	}
-	be := newServer(t, f)
 
 	ctx := context.Background()
 	scan, err := be.Scan(ctx, backend.ScanStored)
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
-	g, err := graph.Generate(ctx, b, scan)
+	// Wire the same source-side hasher the pipeline wires for this backend, so change
+	// detection compares the aligned content hash against the seeded one (#110).
+	g, err := graph.Generate(ctx, b, scan, graph.WithHasher(be.RecomputeContentHasher(nil)))
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}

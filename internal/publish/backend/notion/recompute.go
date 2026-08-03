@@ -42,6 +42,7 @@ func (b *Backend) scanRecompute(ctx context.Context) (*publish.CurrentState, err
 
 	nodeIDs := map[publish.SymbolicID]publish.BackendID{}
 	hashes := map[publish.SymbolicID]publish.Hash{}
+	propHashes := map[publish.SymbolicID]publish.Hash{}
 	anchorIDs := map[publish.AnchorName]publish.BackendID{}
 	owner := map[string]string{}
 	claim := func(path, by string) error {
@@ -67,8 +68,14 @@ func (b *Backend) scanRecompute(ctx context.Context) (*publish.CurrentState, err
 		if err != nil {
 			return nil, err
 		}
-		// True drift: hash the live content of this row's own blocks.
+		// True drift: hash the live content of this row's own blocks. The property
+		// hash is not reconstructed from live properties — recompute reads it back
+		// from the stored compound `hash` column (grilling decision 5), so live
+		// reconstruction stays scoped to body content only.
 		hashes[node] = liveContentHash(blocks)
+		if _, prop := decodeHashPair(plainText(row.Properties["hash"])); prop != "" {
+			propHashes[node] = prop
+		}
 
 		// Subpages: re-derive each cluster subpage's id from the live child_page
 		// walk (self-heal), falling back to the stored subtree map for any subpath
@@ -103,6 +110,11 @@ func (b *Backend) scanRecompute(ctx context.Context) (*publish.CurrentState, err
 				return nil, err
 			}
 			hashes[sub] = liveContentHash(subBlocks)
+			// The subpage's property hash rides its stored subtree entry (stored-
+			// readback), even as its content hash is reconstructed live.
+			if e, ok := stored[subpath]; ok && e.PropHash != "" {
+				propHashes[sub] = publish.Hash(e.PropHash)
+			}
 			delete(stored, subpath)
 		}
 		for subpath, e := range stored {
@@ -115,6 +127,9 @@ func (b *Backend) scanRecompute(ctx context.Context) (*publish.CurrentState, err
 			}
 			if e.Hash != "" {
 				hashes[sub] = publish.Hash(e.Hash)
+			}
+			if e.PropHash != "" {
+				propHashes[sub] = publish.Hash(e.PropHash)
 			}
 		}
 
@@ -133,7 +148,7 @@ func (b *Backend) scanRecompute(ctx context.Context) (*publish.CurrentState, err
 		}
 	}
 
-	return publish.NewCurrentState(nodeIDs, hashes, anchorIDs), nil
+	return publish.NewCurrentStateWithProps(nodeIDs, hashes, propHashes, anchorIDs), nil
 }
 
 // subtreeIndexes builds the reverse lookups the live child_page walk matches

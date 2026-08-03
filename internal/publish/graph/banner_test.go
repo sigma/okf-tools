@@ -143,11 +143,13 @@ func TestGenerateBannerFoldedHashGatesSkip(t *testing.T) {
 	bn := &Banner{Text: "GEN", BaseURL: "https://h/r", Ref: "main"}
 	node := nodeRef("a.md")
 
-	// (1) Scan seeded with the banner-folded hash → hash-skip (near-noop re-run).
+	// (1) Scan seeded with the banner-folded hash (and matching property hash) →
+	// hash-skip (near-noop re-run).
 	folded := bn.hash(ContentHash(d), "a.md")
-	csFolded := publish.NewCurrentState(
+	csFolded := publish.NewCurrentStateWithProps(
 		map[publish.SymbolicID]publish.BackendID{node: "be-a"},
 		map[publish.SymbolicID]publish.Hash{node: folded},
+		map[publish.SymbolicID]publish.Hash{node: PropertyHash(d)},
 		nil,
 	)
 	g, err := Generate(context.Background(), b, csFolded, WithBanner(bn))

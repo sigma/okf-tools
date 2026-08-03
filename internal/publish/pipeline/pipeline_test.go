@@ -61,12 +61,14 @@ func smallBundle() map[string]string {
 func scanAfterPublish(b *bundle.Bundle) *publish.CurrentState {
 	nodes := map[publish.SymbolicID]publish.BackendID{}
 	hashes := map[publish.SymbolicID]publish.Hash{}
+	propHashes := map[publish.SymbolicID]publish.Hash{}
 	for _, d := range b.Docs {
 		id := publish.SymbolicID("node:" + d.Rel)
 		nodes[id] = publish.BackendID("existing-" + d.Rel)
 		hashes[id] = graph.ContentHash(d)
+		propHashes[id] = graph.PropertyHash(d)
 	}
-	return publish.NewCurrentState(nodes, hashes, nil)
+	return publish.NewCurrentStateWithProps(nodes, hashes, propHashes, nil)
 }
 
 // TestRunPublishesEverythingAgainstFake: a first publish against an empty scan
@@ -183,6 +185,7 @@ func TestRunNearNoopSingleChange(t *testing.T) {
 	changed := publish.SymbolicID("node:docs/adr/b.md")
 	nodes := map[publish.SymbolicID]publish.BackendID{}
 	hashes := map[publish.SymbolicID]publish.Hash{}
+	propHashes := map[publish.SymbolicID]publish.Hash{}
 	for id := range seed.Nodes() {
 		nodes[id], _ = seed.NodeID(id)
 		h, _ := seed.ContentHash(id)
@@ -190,8 +193,11 @@ func TestRunNearNoopSingleChange(t *testing.T) {
 			h = "stale-hash"
 		}
 		hashes[id] = h
+		// Carry the matching property hash so only b.md's content drifts — every
+		// other page still hash-skips both arms.
+		propHashes[id], _ = seed.PropertyHash(id)
 	}
-	be := fake.New(fake.WithScan(publish.NewCurrentState(nodes, hashes, nil)))
+	be := fake.New(fake.WithScan(publish.NewCurrentStateWithProps(nodes, hashes, propHashes, nil)))
 
 	res, err := Run(context.Background(), be, b, WithTransportOptions(transport.WithInterval(0)))
 	if err != nil {
