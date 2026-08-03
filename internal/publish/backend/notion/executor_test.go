@@ -430,6 +430,85 @@ func TestExecuteScanSeededAnchorCiteNeedsNoDeferral(t *testing.T) {
 	}
 }
 
+// TestExecuteAppendResolvesSelfHostedAnchor reproduces #102: #89's self-hosted
+// anchor fix covered only the create path, but cluster subpage nesting can force the
+// optimizer to split a glossary host's create away from its content, so the block
+// that both hosts and cites its own anchor rides a non-create *append* transaction.
+// On a fresh publish the anchor is not scan-seeded (contrast
+// TestExecuteScanSeededAnchorCiteNeedsNoDeferral) — it is hosted *in this append* —
+// so the append, like the create, must defer the self-citation out of the append,
+// learn the appended block ids, and patch the citation back in, rather than fail
+// with "content ref … did not resolve".
+func TestExecuteAppendResolvesSelfHostedAnchor(t *testing.T) {
+	f := newFakeNotion()
+	be := newServer(t, f)
+
+	hosting := paraBlock("Emergency block: a fast, time-boxed suspension")
+	hosting.anchors = []publish.AnchorName{"glossary/emergency-block"}
+	citing := childBlock{
+		kind: int(graph.Paragraph),
+		runs: []textRun{{Text: "held while an "}, {Ref: "anchor:glossary/emergency-block"}},
+	}
+	// A non-create (append) transaction: the page already exists (its create ran in an
+	// earlier txn from the force-split), but the anchor is hosted in this append, not
+	// scan-seeded — so the resolver resolves the page and nothing else.
+	txn := &Transaction{
+		Group: "node:CONTEXT.md", Node: "node:CONTEXT.md",
+		Children: []childBlock{hosting, citing},
+	}
+	r := stubResolver{"node:CONTEXT.md": "page-ctx-real"}
+
+	res, err := be.Execute(context.Background(), txn, r)
+	if err != nil {
+		t.Fatalf("Execute: a fresh append hosting+citing its own anchor should succeed, got %v", err)
+	}
+
+	if f.countPath("POST", "/pages") != 0 {
+		t.Errorf("an append must not create a page")
+	}
+	// The anchor maps to its hosting child's appended block id (block-1: the first
+	// appended child, block-2 the second — no page is minted on an append).
+	anchorID, ok := res.Anchors["glossary/emergency-block"]
+	if !ok || anchorID == "" {
+		t.Fatalf("the self-hosted anchor never resolved, anchors = %v", res.Anchors)
+	}
+
+	// The append defers the self-hosted citation: the citing block carries no mention.
+	appends := f.requestsTo("PATCH", "/blocks/page-ctx-real/children")
+	if len(appends) != 1 {
+		t.Fatalf("want 1 content append to the existing host, got %d", len(appends))
+	}
+	children, _ := appends[0].Body["children"].([]any)
+	if len(children) != 2 {
+		t.Fatalf("want 2 children appended (blocks preserved one-for-one), got %v", children)
+	}
+	citedInAppend := digInto(t, children[1].(map[string]any), "paragraph")
+	for _, run := range asSlice(citedInAppend["rich_text"]) {
+		if m, _ := run.(map[string]any); m["type"] == "mention" {
+			t.Errorf("the append must defer the self-hosted citation, not send an unresolved mention: %v", m)
+		}
+	}
+
+	// The deferred citation is patched in once the appended block ids exist, carrying
+	// the real anchor block id as the mention target. block-2 is the citing child
+	// (block-1 the hosting child).
+	citingID := "block-2"
+	blockPatches := f.requestsTo("PATCH", "/blocks/"+citingID)
+	if len(blockPatches) != 1 {
+		t.Fatalf("want 1 in-place patch of the citing block %s, got %d (reqs: %v)", citingID, len(blockPatches), f.reqs)
+	}
+	patched := digInto(t, blockPatches[0].Body, "paragraph")
+	var mentionID any
+	for _, run := range asSlice(patched["rich_text"]) {
+		if m, _ := run.(map[string]any); m["type"] == "mention" {
+			mentionID = digInto(t, m, "mention", "page")["id"]
+		}
+	}
+	if mentionID != string(anchorID) {
+		t.Errorf("patched citation should mention the anchor's block id %q, got %v", anchorID, mentionID)
+	}
+}
+
 // TestExecuteAppendsOverflow: a non-create content transaction appends its children
 // to the resolved write-target page via PATCH /blocks/{id}/children.
 func TestExecuteAppendsOverflow(t *testing.T) {

@@ -148,6 +148,85 @@ func TestNotionEndToEndSelfHostedAnchor(t *testing.T) {
 	}
 }
 
+// TestNotionEndToEndSelfHostedAnchorUnderNesting drives the #102 case: the same
+// self-hosting glossary host as #89, but now a cluster index with a nested child
+// that cites its anchor, and whose own content links that child. Parent-before-child
+// (CONTEXT.md create → child create) plus the back-link (CONTEXT.md content → child)
+// close a new-page fusion cycle, so the optimizer force-splits CONTEXT.md's
+// create[+props] away from its content (and the child likewise). CONTEXT.md's
+// content — which both hosts the glossary anchor and cites it — therefore executes
+// as a non-create *append*, not the fused create #89 fixed. The append path must
+// defer-and-patch the self-citation exactly as the create path does, rather than
+// fail with "content ref … did not resolve" against a not-yet-minted anchor id. This
+// is the offline analog of publishing the ideas bundle once a cluster index.md
+// nests its siblings.
+func TestNotionEndToEndSelfHostedAnchorUnderNesting(t *testing.T) {
+	f := newFakeNotion()
+	be := newServer(t, f)
+
+	g := &graph.Graph{Ops: []*graph.Op{
+		// CONTEXT.md — top-level glossary host and cluster index (parent of the child).
+		createOp("node:CONTEXT.md"), propsOp("node:CONTEXT.md"),
+		contentOpBlocks("node:CONTEXT.md",
+			publish.Block{
+				Content: para(txt("Emergency block: a fast, time-boxed suspension")),
+				Anchors: []publish.AnchorName{"glossary/emergency-block"},
+			},
+			// Cites its own anchor (self-hosted) and links its nested child — the
+			// back-edge that, with parent-before-child, closes the fusion cycle.
+			publish.Block{
+				Content: para(txt("held while an "), ref("anchor:glossary/emergency-block"),
+					txt(" — see "), ref("node:specs/x.md")),
+			},
+		),
+		// specs/x.md — nests under CONTEXT.md and cites the glossary anchor.
+		{Kind: graph.CreateNode, Node: "node:specs/x.md", Parent: "node:CONTEXT.md"},
+		propsOp("node:specs/x.md"),
+		contentOpBlocks("node:specs/x.md",
+			publish.Block{Content: para(txt("cites "), ref("anchor:glossary/emergency-block"))},
+		),
+	}}
+
+	dag := optimize.Optimize(g, be, be)
+	seed := publish.NewCurrentState(nil, nil, nil) // empty mirror: first publish
+	res, err := transport.New(be, transport.WithInterval(0)).Run(context.Background(), dag, seed)
+	if err != nil {
+		t.Fatalf("first publish of a nested self-hosting glossary to an empty mirror should succeed: %v", err)
+	}
+
+	anchorID := string(res.Anchors["glossary/emergency-block"])
+	if anchorID == "" {
+		t.Fatalf("the self-hosted anchor never resolved, anchors = %v", res.Anchors)
+	}
+
+	// CONTEXT.md's content was force-split into an append (a PATCH /blocks/{id}/children
+	// on a minted page), not carried by its create's POST — the #102 routing.
+	if f.countPath("POST", "/pages") == 0 {
+		t.Fatal("expected node creates via POST /pages")
+	}
+	if !anyAppendChildren(f.reqs) {
+		t.Error("expected CONTEXT.md's content to ride a PATCH /blocks/{id}/children append after the force-split")
+	}
+
+	// The self-citation was deferred out of that append and re-materialized by an
+	// in-place block patch carrying the resolved anchor block id — proof the append
+	// path now honors the #89 defer-and-patch.
+	if _, ok := blockContentPatchMentioning(f.reqs, anchorID); !ok {
+		t.Fatalf("no in-place block patch mentions the resolved anchor id %s; reqs = %v", anchorID, f.reqs)
+	}
+}
+
+// anyAppendChildren reports whether any recorded request is a PATCH
+// /blocks/{id}/children content append.
+func anyAppendChildren(reqs []recordedReq) bool {
+	for _, req := range reqs {
+		if req.Method == "PATCH" && strings.HasSuffix(req.Path, "/children") {
+			return true
+		}
+	}
+	return false
+}
+
 // blockContentPatchMentioning finds a PATCH /blocks/{id} (an in-place block content
 // update, not a /children append) whose body mentions the given page id, returning
 // its "METHOD path" and whether one was found.
