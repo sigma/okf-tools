@@ -46,6 +46,12 @@ type Links struct {
 	// CheckBroken governs OKF202: off|info|warning|error. Defaults to "info"; a
 	// bundle may escalate broken links to a hard failure (see docs/RULES.md).
 	CheckBroken string `toml:"check_broken"`
+	// CheckAnchors governs OKF203: off|info|warning|error. Defaults to "info". The
+	// heading-anchor sibling of CheckBroken — CheckBroken validates a cross-link's
+	// target *file*, CheckAnchors validates its #heading *fragment* against
+	// ordinary (non-glossary) pages. A bundle may escalate dangling anchors to a
+	// hard failure (sigma/ideas does, to match its retired sync/ gate).
+	CheckAnchors string `toml:"check_anchors"`
 }
 
 type Filenames struct {
@@ -151,6 +157,7 @@ func Default() *Config {
 			Style:          "any",
 			AllowWikilinks: false,
 			CheckBroken:    "info",
+			CheckAnchors:   "info",
 		},
 		Filenames: Filenames{
 			Case:     "kebab",
@@ -233,6 +240,7 @@ func (c *Config) Validate() error {
 	}{
 		{"links.style", c.Links.Style, []string{"relative", "absolute", "any"}},
 		{"links.check_broken", c.Links.CheckBroken, severities},
+		{"links.check_anchors", c.Links.CheckAnchors, severities},
 		{"filenames.case", c.Filenames.Case, []string{"kebab", "any"}},
 		{"filenames.severity", c.Filenames.Severity, severities},
 		{"frontmatter.timestamp_format", c.Frontmatter.TimestampFormat, []string{"rfc3339", "date"}},

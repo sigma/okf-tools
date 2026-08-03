@@ -179,6 +179,19 @@ bundle may set `links.check_broken` or `[rules]."OKF202"` up to `error` to make
 dead links a hard CI gate. *Config: `links.check_broken` = `off` | `info` |
 `warning` | `error`.*
 
+### `OKF203` heading-anchor-resolves
+A `#heading` anchor — cross-file (`other.md#frag`) or same-file (`#frag`) — that
+names no heading on an ordinary **non-glossary** page. Closes the gap between
+`OKF202` (checks the target *file*, ignores the fragment) and
+`OKFEXT-GLOSSARY-02` (resolves fragments only into/within declared glossary
+files): glossary targets and glossary sources are skipped here so the two never
+double-report, and a missing target file stays `OKF202`'s to flag. Colliding
+heading slugs are **not** disambiguated (`-1`/`-2`) — a bare `#frag` resolves iff
+some heading GitHub-slugs to it. **Defaults to `info`** but promotable — a bundle
+may set `links.check_anchors` or `[rules]."OKF203"` up to `error` to make dangling
+anchors a hard CI gate. *Config: `links.check_anchors` = `off` | `info` |
+`warning` | `error`.*
+
 ### `OKF206` citation-target-exists *(optional, off by default)*
 A `# Citations` link with an on-disk path (e.g. `../import/x.md`) points to a
 file that exists. Catches typo'd source filenames. Distinct from `OKF202`

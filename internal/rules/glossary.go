@@ -163,13 +163,24 @@ func undefinedAnchorMsg(g *bundle.Doc, frag string) string {
 // nearestAnchor returns the defined anchor slug closest to frag by edit distance,
 // or "" when nothing is within a small threshold (so we don't invent noise).
 func nearestAnchor(g *bundle.Doc, frag string) string {
+	slugs := make([]string, len(g.Anchors))
+	for i, a := range g.Anchors {
+		slugs[i] = a.Slug
+	}
+	return nearestSlug(frag, slugs)
+}
+
+// nearestSlug returns the slug closest to frag by edit distance, or "" when
+// nothing is within a small threshold (within a third of frag's length, min 2)
+// — so a "did you mean" hint only fires on a genuinely close match rather than
+// inventing noise. Shared by the glossary-anchor and heading-anchor rules.
+func nearestSlug(frag string, slugs []string) string {
 	best, bestDist := "", maxInt
-	for _, a := range g.Anchors {
-		if d := levenshtein(frag, a.Slug); d < bestDist {
-			best, bestDist = a.Slug, d
+	for _, s := range slugs {
+		if d := levenshtein(frag, s); d < bestDist {
+			best, bestDist = s, d
 		}
 	}
-	// Only suggest a genuinely close match: within a third of the length, min 2.
 	limit := len(frag) / 3
 	if limit < 2 {
 		limit = 2

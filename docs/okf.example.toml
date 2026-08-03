@@ -27,6 +27,11 @@ allow_wikilinks = false
 # broken cross-links may be not-yet-written knowledge (SPEC §5.3) — but a bundle
 # may promote it (here or via [rules]."OKF202") to make dead links a hard CI gate.
 check_broken = "info"
+# OKF203 severity: "off" | "info" | "warning" | "error". Defaults to "info".
+# Validates a #heading anchor — cross-file (other.md#frag) or same-file (#frag) —
+# against ordinary non-glossary pages; the heading-anchor sibling of check_broken.
+# Promote it (here or via [rules]."OKF203") to gate on dangling heading anchors.
+check_anchors = "info"
 
 [filenames]
 # OKF103: concept filename case. "kebab" = lowercase, hyphen-separated.
