@@ -17,9 +17,10 @@ func TestWriteBackTopLevelRow(t *testing.T) {
 
 	prov := publish.Provenance{Nodes: map[publish.SymbolicID]publish.NodeProvenance{
 		"node:CONTEXT.md": {
-			ID:      "page-g",
-			Hash:    "hG",
-			Anchors: map[publish.AnchorName]publish.BackendID{"glossary/root-kek": "block-kek"},
+			ID:       "page-g",
+			Hash:     "hG",
+			PropHash: "pG",
+			Anchors:  map[publish.AnchorName]publish.BackendID{"glossary/root-kek": "block-kek"},
 		},
 	}}
 	if err := be.WriteBack(context.Background(), prov); err != nil {
@@ -34,8 +35,9 @@ func TestWriteBackTopLevelRow(t *testing.T) {
 	if got := columnText(t, props, "path"); got != "CONTEXT.md" {
 		t.Errorf("path column = %q, want CONTEXT.md", got)
 	}
-	if got := columnText(t, props, "hash"); got != "hG" {
-		t.Errorf("hash column = %q, want hG", got)
+	// The `hash` column carries the compound content.prop value (two-hash split).
+	if got := columnText(t, props, "hash"); got != "hG.pG" {
+		t.Errorf("hash column = %q, want hG.pG", got)
 	}
 	var anchors map[string]string
 	if err := json.Unmarshal([]byte(columnText(t, props, "anchors")), &anchors); err != nil {
@@ -107,9 +109,10 @@ func TestWriteBackChunksOversizedColumn(t *testing.T) {
 
 	prov := publish.Provenance{Nodes: map[publish.SymbolicID]publish.NodeProvenance{
 		"node:CONTEXT.md": {
-			ID:      "page-g",
-			Hash:    "hG",
-			Anchors: map[publish.AnchorName]publish.BackendID{"glossary/root-kek": "block-kek"},
+			ID:       "page-g",
+			Hash:     "hG",
+			PropHash: "pG",
+			Anchors:  map[publish.AnchorName]publish.BackendID{"glossary/root-kek": "block-kek"},
 		},
 	}}
 	if err := be.WriteBack(context.Background(), prov); err != nil {

@@ -41,6 +41,7 @@ func (b *Backend) scanStored(ctx context.Context) (*publish.CurrentState, error)
 
 	nodeIDs := map[publish.SymbolicID]publish.BackendID{}
 	hashes := map[publish.SymbolicID]publish.Hash{}
+	propHashes := map[publish.SymbolicID]publish.Hash{}
 	anchorIDs := map[publish.AnchorName]publish.BackendID{}
 	claim := newPathClaimer()
 
@@ -57,10 +58,15 @@ func (b *Backend) scanStored(ctx context.Context) (*publish.CurrentState, error)
 		sym := nodeSym(path)
 		nodeIDs[sym] = publish.BackendID(row.ID)
 		if h := plainText(row.Properties["hash"]); h != "" {
-			hashes[sym] = publish.Hash(h)
+			// The `hash` column stores content and property hashes as one compound
+			// value (the two-hash split, #110 phase 2); split it into both tables so
+			// SetContent and SetProperties hash-skip independently.
+			content, prop := decodeHashPair(h)
+			hashes[sym] = content
+			propHashes[sym] = prop
 		}
 
-		if err := readSubtree(plainText(row.Properties["hashes"]), row.ID, claim, nodeIDs, hashes); err != nil {
+		if err := readSubtree(plainText(row.Properties["hashes"]), row.ID, claim, nodeIDs, hashes, propHashes); err != nil {
 			return nil, err
 		}
 		if err := readAnchors(plainText(row.Properties["anchors"]), anchorIDs); err != nil {
@@ -68,7 +74,7 @@ func (b *Backend) scanStored(ctx context.Context) (*publish.CurrentState, error)
 		}
 	}
 
-	return publish.NewCurrentState(nodeIDs, hashes, anchorIDs), nil
+	return publish.NewCurrentStateWithProps(nodeIDs, hashes, propHashes, anchorIDs), nil
 }
 
 // queryAllRows drains the paginated POST /data_sources/{id}/query, returning every
@@ -99,15 +105,16 @@ func (b *Backend) queryAllRows(ctx context.Context) ([]queryRow, error) {
 // subpath when the id has gone stale (a page title is all Notion carries; the repo
 // path is not recoverable from the live block otherwise), so the id can self-heal.
 type subtreeEntry struct {
-	ID    string `json:"id"`
-	Hash  string `json:"hash"`
-	Title string `json:"title,omitempty"`
+	ID       string `json:"id"`
+	Hash     string `json:"hash"`
+	PropHash string `json:"prop_hash,omitempty"`
+	Title    string `json:"title,omitempty"`
 }
 
 // readSubtree folds a row's `hashes` subtree-map column into the node/hash tables:
 // each subpath becomes node:<subpath> resolving to the stored id and hash, with the
 // same 1:1 path-uniqueness guard as top-level rows.
-func readSubtree(raw, rowID string, claim func(path, by string) error, nodeIDs map[publish.SymbolicID]publish.BackendID, hashes map[publish.SymbolicID]publish.Hash) error {
+func readSubtree(raw, rowID string, claim func(path, by string) error, nodeIDs map[publish.SymbolicID]publish.BackendID, hashes, propHashes map[publish.SymbolicID]publish.Hash) error {
 	sub, err := storedSubtree(raw, rowID)
 	if err != nil {
 		return err
@@ -122,6 +129,9 @@ func readSubtree(raw, rowID string, claim func(path, by string) error, nodeIDs m
 		}
 		if e.Hash != "" {
 			hashes[sym] = publish.Hash(e.Hash)
+		}
+		if e.PropHash != "" {
+			propHashes[sym] = publish.Hash(e.PropHash)
 		}
 	}
 	return nil

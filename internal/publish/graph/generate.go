@@ -19,15 +19,23 @@ type Option func(*options)
 type options struct {
 	hash   func(*bundle.Doc) publish.Hash
 	banner *Banner
+	// customHasher records that WithHasher installed a backend hasher that already
+	// accounts for the banner in its own projection (the notion recompute hasher
+	// hashes the realized block-0 quote), so Generate must not double-fold the
+	// banner into the hash the way it does for the default ContentHash.
+	customHasher bool
 }
 
 // WithHasher overrides the expected-content hasher used for change detection, so
 // a backend whose scanner reconstructs a matching hash can keep both sides in
-// lockstep. The default is ContentHash.
+// lockstep. Such a hasher owns banner handling itself (it hashes the realized
+// block list, block-0 included), so Generate skips the default banner fold for it.
+// The default is ContentHash.
 func WithHasher(fn func(*bundle.Doc) publish.Hash) Option {
 	return func(o *options) {
 		if fn != nil {
 			o.hash = fn
+			o.customHasher = true
 		}
 	}
 }
@@ -59,6 +67,15 @@ func Generate(ctx context.Context, b *bundle.Bundle, cs *publish.CurrentState, o
 	o := options{hash: ContentHash}
 	for _, opt := range opts {
 		opt(&o)
+	}
+	// Fold the banner into the default content hasher so a banner copy or per-page
+	// source-URL change re-publishes the page (ADR-0015): the default ContentHash
+	// covers only raw source, not the injected block-0. A custom hasher (WithHasher)
+	// already hashes the realized block list including the banner, so it is left
+	// alone — folding again would double-count.
+	if o.banner != nil && !o.customHasher {
+		base, bn := o.hash, o.banner
+		o.hash = func(d *bundle.Doc) publish.Hash { return bn.hash(base(d), d.Rel) }
 	}
 	if cs == nil {
 		cs = publish.NewCurrentState(nil, nil, nil)
@@ -117,29 +134,33 @@ func diffDoc(d *bundle.Doc, cs *publish.CurrentState, o *options, src *hierarchy
 	node := nodeRef(d.Rel)
 	parent := src.parent(d.Rel)
 	hash := o.hash(d)
-	if o.banner != nil {
-		// Fold the banner into the expected hash so a banner copy or per-page
-		// source-URL change re-publishes this page; ContentHash covers only the raw
-		// source, not the injected block-0 (ADR-0015).
-		hash = o.banner.hash(hash, d.Rel)
-	}
+	propHash := PropertyHash(d)
 	title := d.Title()
 	doc, refs, anchors := buildDocument(d, o.banner)
-	// Stamp the parent, expected hash, and title on the property/content ops (not
-	// just the create) so publish-time write-back can route and record a touched
-	// node whether it is new or a re-asserted existing one.
-	setProps := &Op{Kind: SetProperties, Node: node, Props: propsOf(d), Parent: parent, Hash: hash, Title: title}
-	setContent := &Op{Kind: SetContent, Node: node, Doc: doc, Refs: refs, Anchors: anchors, Parent: parent, Hash: hash, Title: title}
+	// Stamp the parent, both expected hashes, and title on every op (not just the
+	// create) so publish-time write-back can route and record a touched node — new
+	// or re-asserted — and stamp both hash columns from whichever arm survives.
+	setProps := &Op{Kind: SetProperties, Node: node, Props: propsOf(d), Parent: parent, Hash: hash, PropHash: propHash, Title: title}
+	setContent := &Op{Kind: SetContent, Node: node, Doc: doc, Refs: refs, Anchors: anchors, Parent: parent, Hash: hash, PropHash: propHash, Title: title}
 
 	if _, exists := cs.NodeID(node); !exists {
-		return []*Op{{Kind: CreateNode, Node: node, Parent: parent, Hash: hash, Title: title}, setProps, setContent}
+		return []*Op{{Kind: CreateNode, Node: node, Parent: parent, Hash: hash, PropHash: propHash, Title: title}, setProps, setContent}
 	}
-	// Existing: hash-skip iff the scanned hash matches the expected one. A missing
-	// scanned hash cannot confirm "unchanged", so it falls through to "changed".
-	if got, ok := cs.ContentHash(node); ok && got == hash {
-		return nil
+	// Existing: gate the two arms independently, each by its own scanned hash. An arm
+	// hash-skips iff its scanned hash is present and equals the expected one; a
+	// missing scanned hash cannot confirm "unchanged", so it re-asserts. So a body-
+	// only edit emits just SetContent, a title/type-only edit just SetProperties,
+	// both edits both arms, and an unchanged node nothing.
+	contentGot, cok := cs.ContentHash(node)
+	propGot, pok := cs.PropertyHash(node)
+	var ops []*Op
+	if !(pok && propGot == propHash) {
+		ops = append(ops, setProps)
 	}
-	return []*Op{setProps, setContent}
+	if !(cok && contentGot == hash) {
+		ops = append(ops, setContent)
+	}
+	return ops
 }
 
 // propsOf builds the semantic property set SetProperties asserts: the doc's

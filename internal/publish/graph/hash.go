@@ -3,6 +3,10 @@ package graph
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/sigma/okf-tools/internal/bundle"
 	"github.com/sigma/okf-tools/internal/publish"
@@ -26,4 +30,25 @@ import (
 func ContentHash(d *bundle.Doc) publish.Hash {
 	sum := sha256.Sum256([]byte(d.Content))
 	return publish.Hash(hex.EncodeToString(sum[:]))
+}
+
+// PropertyHash is the expected-state hash of a doc's semantic properties — the
+// SetProperties arm's change signal, split out from ContentHash so a title/type/
+// frontmatter edit re-asserts properties without a body rewrite and a body edit
+// never forces a property write (#110 phase 2). It fingerprints exactly what
+// SetProperties asserts, propsOf(d) (frontmatter + derived title + type), as a
+// SHA-256 over the properties in sorted-key order with each value JSON-encoded, so
+// it is stable across runs and independent of map iteration order.
+//
+// Unlike the content hash, it needs no round-trip alignment with a live scan: the
+// recompute path reads it back from stored state rather than reconstructing it from
+// live Notion properties, so only cross-run stability matters here.
+func PropertyHash(d *bundle.Doc) publish.Hash {
+	props := propsOf(d)
+	h := sha256.New()
+	for _, k := range slices.Sorted(maps.Keys(props)) {
+		v, _ := json.Marshal(props[k])
+		fmt.Fprintf(h, "%s=%s\n", k, v)
+	}
+	return publish.Hash(hex.EncodeToString(h.Sum(nil)))
 }

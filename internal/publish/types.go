@@ -195,6 +195,10 @@ type PackedTxn struct {
 	// transport can assemble Provenance without re-reading source. Empty for a
 	// transaction that writes no node content (e.g. a DeleteNode).
 	Hash Hash
+	// PropHash is the expected property hash of the node, threaded alongside Hash so
+	// write-back can persist both columns of the two-hash split (#110 phase 2). Every
+	// unit of a touched node carries it, so it survives whichever arm packed the bin.
+	PropHash Hash
 	// Parent is the symbolic id of the write-target node's parent — "" for a
 	// top-level data-source row, else the cluster root a subpage lives under. It
 	// routes write-back: a subpage's {id, hash} folds into its parent row's subtree
@@ -230,6 +234,11 @@ type NodeProvenance struct {
 	// Hash is the content hash to persist into the node's `hash` derived column (or
 	// its entry in a parent's subtree map).
 	Hash Hash
+	// PropHash is the property hash to persist alongside Hash (the two-hash split,
+	// #110 phase 2). The backend stores both per node — a compound value in the
+	// `hash` column for a top-level row, a second field in the subtree-map entry for
+	// a subpage — so the next scan can gate SetProperties and SetContent apart.
+	PropHash Hash
 	// Parent is the node's parent symbolic id: "" routes write-back to the node's
 	// own top-level row; non-empty routes {ID, Hash} into ParentID's subtree map.
 	Parent SymbolicID

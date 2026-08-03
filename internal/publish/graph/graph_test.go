@@ -59,21 +59,27 @@ func (s seed) build(t *testing.T, b *bundle.Bundle) *publish.CurrentState {
 	t.Helper()
 	nodeIDs := map[publish.SymbolicID]publish.BackendID{}
 	hashes := map[publish.SymbolicID]publish.Hash{}
+	propHashes := map[publish.SymbolicID]publish.Hash{}
 	for _, rel := range s.unchanged {
 		id := nodeRef(rel)
 		nodeIDs[id] = publish.BackendID("be-" + rel)
+		// An unchanged node hash-skips both arms, so seed both the content and the
+		// property hash to their matching source values (the two-hash split).
 		hashes[id] = ContentHash(docByRel(t, b, rel))
+		propHashes[id] = PropertyHash(docByRel(t, b, rel))
 	}
 	for rel, h := range s.changed {
 		id := nodeRef(rel)
 		nodeIDs[id] = publish.BackendID("be-" + rel)
+		// A stale content hash with no property hash re-asserts both arms — the
+		// coupled "changed" case. Arm-independent cases seed via NewCurrentStateWithProps.
 		hashes[id] = h
 	}
 	anchorIDs := map[publish.AnchorName]publish.BackendID{}
 	for name := range s.anchors {
 		anchorIDs[name] = publish.BackendID("be-anchor-" + string(name))
 	}
-	return publish.NewCurrentState(nodeIDs, hashes, anchorIDs)
+	return publish.NewCurrentStateWithProps(nodeIDs, hashes, propHashes, anchorIDs)
 }
 
 // --- helpers over a Graph ---------------------------------------------------
@@ -132,6 +138,46 @@ func gen(t *testing.T, b *bundle.Bundle, cs *publish.CurrentState) *Graph {
 		t.Fatalf("Generate: %v", err)
 	}
 	return g
+}
+
+// TestDiffArmsIndependent proves the two-hash split (#110 phase 2): with content
+// and property hashes gated separately, a body-only edit emits only SetContent, a
+// title/type-only edit only SetProperties, and a page unchanged on both stays
+// hash-skipped — none of them coupled the way a single hash forced them to be.
+func TestDiffArmsIndependent(t *testing.T) {
+	b := loadBundle(t, map[string]string{
+		"okf.toml": "",
+		"index.md": "---\nokf_version: \"0.1\"\n---\nRoot.\n",
+		"a.md":     "---\ntype: c\ntitle: A\n---\nBody.\n",
+	})
+	d := docByRel(t, b, "a.md")
+	node := nodeRef("a.md")
+	nodes := map[publish.SymbolicID]publish.BackendID{node: "be-a"}
+
+	seedCS := func(content, prop publish.Hash) *publish.CurrentState {
+		return publish.NewCurrentStateWithProps(nodes,
+			map[publish.SymbolicID]publish.Hash{node: content},
+			map[publish.SymbolicID]publish.Hash{node: prop}, nil)
+	}
+	content, prop := ContentHash(d), PropertyHash(d)
+
+	cases := []struct {
+		name string
+		cs   *publish.CurrentState
+		want []OpKind
+	}{
+		{"unchanged", seedCS(content, prop), nil},
+		{"body-only edit", seedCS("stale", prop), []OpKind{SetContent}},
+		{"property-only edit", seedCS(content, "stale"), []OpKind{SetProperties}},
+		{"both edited", seedCS("stale", "stale"), []OpKind{SetProperties, SetContent}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := opKinds(gen(t, b, c.cs), node); !sameKinds(got, c.want) {
+				t.Errorf("ops = %v, want %v", got, c.want)
+			}
+		})
+	}
 }
 
 // --- the #162 worked example ------------------------------------------------
@@ -329,11 +375,15 @@ func withVanished(t *testing.T, cs *publish.CurrentState, rels ...string) *publi
 	t.Helper()
 	nodeIDs := map[publish.SymbolicID]publish.BackendID{}
 	hashes := map[publish.SymbolicID]publish.Hash{}
+	propHashes := map[publish.SymbolicID]publish.Hash{}
 	for id := range cs.Nodes() {
 		be, _ := cs.NodeID(id)
 		nodeIDs[id] = be
 		if h, ok := cs.ContentHash(id); ok {
 			hashes[id] = h
+		}
+		if h, ok := cs.PropertyHash(id); ok {
+			propHashes[id] = h
 		}
 	}
 	for _, rel := range rels {
@@ -341,7 +391,7 @@ func withVanished(t *testing.T, cs *publish.CurrentState, rels ...string) *publi
 		nodeIDs[id] = publish.BackendID("be-" + rel)
 		hashes[id] = "gone"
 	}
-	return publish.NewCurrentState(nodeIDs, hashes, nil)
+	return publish.NewCurrentStateWithProps(nodeIDs, hashes, propHashes, nil)
 }
 
 // --- edge: parent-before-child ---------------------------------------------

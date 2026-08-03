@@ -60,7 +60,19 @@ type Op struct {
 	// computed for this run. It is stamped on a touched node's ops so it can be
 	// threaded to the transport and written back into the node's `hash` derived
 	// column, making the next ScanStored hash-skip it. Zero for a DeleteNode.
+	//
+	// Every op a touched node emits carries the node's FULL expected hash state
+	// (both Hash and PropHash), not just the arm it represents, so write-back can
+	// stamp both columns to their expected values from whichever arm survived the
+	// gate — a content-only re-publish still re-asserts the (unchanged) property
+	// hash, and vice-versa, without a partial-column read-modify-write.
 	Hash publish.Hash
+	// PropHash is the node's expected property hash — a fingerprint over its
+	// semantic properties (title, type, frontmatter; graph.PropertyHash). It gates
+	// SetProperties independently of Hash gating SetContent, so a title-only edit
+	// re-asserts properties without rewriting the body and a body-only edit rewrites
+	// content without touching properties. Zero for a DeleteNode.
+	PropHash publish.Hash
 	// Title is the node's display title, stamped on a touched node's ops so
 	// publish-time write-back can record it in a subpage's subtree-map entry — the
 	// key ScanRecompute matches a live page back to its subpath by. Empty for a

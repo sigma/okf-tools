@@ -94,6 +94,17 @@ func Run(ctx context.Context, be backend.Backend, b *bundle.Bundle, opts ...Opti
 	if o.banner != nil {
 		genOpts = append(genOpts, graph.WithBanner(o.banner))
 	}
+	// A backend that reconstructs a matching content hash from its live scan supplies
+	// a source-side hasher so change detection compares like against like. Without it
+	// the Notion --recompute path can never hash-skip and re-clobbers every node every
+	// run (#110). The hasher owns banner handling (it hashes the realized block-0), so
+	// it is threaded whether or not a banner is set, and for both scan modes so the
+	// stored hash stays consistent across them.
+	if ch, ok := be.(interface {
+		RecomputeContentHasher(*graph.Banner) func(*bundle.Doc) publish.Hash
+	}); ok {
+		genOpts = append(genOpts, graph.WithHasher(ch.RecomputeContentHasher(o.banner)))
+	}
 	g, err := graph.Generate(ctx, b, scan, genOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("generate: %w", err)

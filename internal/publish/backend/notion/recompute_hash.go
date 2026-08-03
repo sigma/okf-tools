@@ -73,6 +73,36 @@ func hashCanonBlocks(blocks []canonBlock) publish.Hash {
 	return publish.Hash(hex.EncodeToString(h.Sum(nil)))
 }
 
+// RecomputeContentHasher returns the source-side content hasher the pipeline wires
+// via graph.WithHasher so change detection compares like against like: it projects
+// each doc through the Executor's own transform (block-0 banner included) and
+// fingerprints the realized blocks — exactly what liveContentHash reconstructs from
+// live Notion blocks. The banner is captured here, so this hasher owns banner
+// handling and graph does not re-fold it into the hash.
+func (b *Backend) RecomputeContentHasher(bn *graph.Banner) func(*bundle.Doc) publish.Hash {
+	return func(d *bundle.Doc) publish.Hash { return b.sourceContentHash(d, bn) }
+}
+
+// encodeHashPair joins a node's content and property hashes into the single value
+// the `hash` derived column (and a subtree entry) stores, so the two-hash split
+// (#110 phase 2) needs no new Notion column. Both halves are hex SHA-256, so the "."
+// separator cannot occur inside either half.
+func encodeHashPair(content, prop publish.Hash) string {
+	return string(content) + "." + string(prop)
+}
+
+// decodeHashPair splits a stored hash value into its content and property halves. A
+// legacy single-hash value (no separator, written before phase 2) decodes as a
+// content hash with an empty property hash, so the first post-deploy scan re-asserts
+// once and then steady-states — the one-time re-hash retiring the markdown hash
+// already forces regardless.
+func decodeHashPair(s string) (content, prop publish.Hash) {
+	if i := strings.IndexByte(s, '.'); i >= 0 {
+		return publish.Hash(s[:i]), publish.Hash(s[i+1:])
+	}
+	return publish.Hash(s), ""
+}
+
 // sourceContentHash is the source half of the alignment: it projects a doc through
 // the very transform the Executor uses (ProjectDocument → Tokenize, so heading
 // clamp, splitRuns chunking, and block-0 banner all match the realized page) and
