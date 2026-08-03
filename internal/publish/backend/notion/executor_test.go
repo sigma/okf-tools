@@ -213,6 +213,74 @@ func TestExecuteParagraphHasNoLanguage(t *testing.T) {
 	}
 }
 
+// TestExecuteBannerRunCarriesLink: a run with an external Link (the disclaimer
+// banner's source deep-link) serializes as a Notion text object carrying
+// text.link.url — a plain hyperlink, not a page mention.
+func TestExecuteBannerRunCarriesLink(t *testing.T) {
+	f := newFakeNotion()
+	be := newServer(t, f)
+
+	const url = "https://github.com/sigma/ideas/edit/main/docs/adr/0015.md"
+	txn := &Transaction{
+		Group: "node:a.md", Node: "node:a.md", Create: true,
+		Children: []childBlock{{
+			kind: int(graph.Quote),
+			runs: []textRun{{Text: "Generated from the repo", Link: url}},
+		}},
+	}
+	if _, err := be.Execute(context.Background(), txn, stubResolver{}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	body := f.requestsTo("POST", "/pages")[0].Body
+	children, _ := body["children"].([]any)
+	block, _ := children[0].(map[string]any)
+	if block["type"] != "quote" {
+		t.Fatalf("banner block type = %v, want quote", block["type"])
+	}
+	quote := digInto(t, block, "quote")
+	rich, _ := quote["rich_text"].([]any)
+	if len(rich) != 1 {
+		t.Fatalf("want one rich_text span, got %d: %v", len(rich), rich)
+	}
+	span, _ := rich[0].(map[string]any)
+	text := digInto(t, span, "text")
+	if text["content"] != "Generated from the repo" {
+		t.Errorf("content = %v", text["content"])
+	}
+	link, ok := text["link"].(map[string]any)
+	if !ok {
+		t.Fatalf("banner run should carry a text.link object, got %v", text)
+	}
+	if link["url"] != url {
+		t.Errorf("link url = %v, want %v", link["url"], url)
+	}
+}
+
+// TestExecutePlainTextRunHasNoLink: a run without a Link keeps the bare text
+// object — no empty link key that Notion would reject.
+func TestExecutePlainTextRunHasNoLink(t *testing.T) {
+	f := newFakeNotion()
+	be := newServer(t, f)
+
+	txn := &Transaction{
+		Group: "node:a.md", Node: "node:a.md", Create: true,
+		Children: []childBlock{paraBlock("hello")},
+	}
+	if _, err := be.Execute(context.Background(), txn, stubResolver{}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	body := f.requestsTo("POST", "/pages")[0].Body
+	children, _ := body["children"].([]any)
+	block, _ := children[0].(map[string]any)
+	para := digInto(t, block, "paragraph")
+	rich, _ := para["rich_text"].([]any)
+	span, _ := rich[0].(map[string]any)
+	text := digInto(t, span, "text")
+	if _, ok := text["link"]; ok {
+		t.Errorf("plain run should carry no link key, got %v", text)
+	}
+}
+
 // TestExecuteCreateMapsAnchors: a create whose child hosts an anchor lists the
 // created children and maps the anchor to that child's block id.
 func TestExecuteCreateMapsAnchors(t *testing.T) {

@@ -85,6 +85,11 @@ func reshape(content any) (kind, level int, language string, runs []textRun, had
 				hadInlineRefs = true
 				continue
 			}
+			if in.URL != "" {
+				// A hyperlinked run: visible Text, external Link target.
+				runs = append(runs, textRun{Text: in.Text, Link: in.URL})
+				continue
+			}
 			if in.Text != "" {
 				runs = append(runs, textRun{Text: in.Text})
 			}
@@ -114,6 +119,21 @@ func (b *Backend) splitRuns(runs []textRun) [][]textRun {
 	for _, r := range runs {
 		if r.Ref != "" {
 			cur = append(cur, r)
+			continue
+		}
+		if r.Link != "" {
+			// A hyperlink run rides whole: splitting its text mid-run would fracture
+			// the link across spans (each span carries its own link object). If it
+			// would overflow the current chunk, start a fresh one first. A single
+			// link whose text exceeds the cap is left intact — the banner's text is
+			// far under it, and a fractured link is worse than one oversized span.
+			rlen := len([]rune(r.Text))
+			if curChars > 0 && curChars+rlen > limit {
+				chunks = append(chunks, cur)
+				cur, curChars = nil, 0
+			}
+			cur = append(cur, r)
+			curChars += rlen
 			continue
 		}
 		rs := []rune(r.Text)

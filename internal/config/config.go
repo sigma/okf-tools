@@ -24,6 +24,7 @@ type Config struct {
 	QMD         QMD               `toml:"qmd"`
 	Glossary    Glossary          `toml:"glossary"`
 	Schema      Schema            `toml:"schema"`
+	Banner      Banner            `toml:"banner"`
 	Gaps        Gaps              `toml:"gaps"`
 	Rules       map[string]string `toml:"rules"`
 
@@ -112,6 +113,23 @@ type Schema struct {
 	File    string `toml:"file"`    // bundle-root-relative schema.json; default "schema.json"
 }
 
+// Banner configures the generated-page disclaimer banner okfpub prepends as
+// block-0 of every published page (sigma/ideas ADR-0015). Unlike the lint
+// extensions it defaults ON: the mirror's contract is that every page is generated
+// from the repo and rolled back on edit, and the banner is what makes that
+// contract self-documenting on the page. A bundle that publishes a co-authored
+// surface can disable it. Text is the notice shown; the per-page source deep-link
+// is resolved by okfpub (internal/publish/source), not configured here.
+type Banner struct {
+	Enabled bool   `toml:"enabled"` // prepend the banner block (default true)
+	Text    string `toml:"text"`    // the disclaimer notice shown on every page
+}
+
+// DefaultBannerText is the generated-page notice used when a bundle sets no custom
+// [banner] text. It states the strict-mirror contract in one line, matching the
+// production mirror's long-standing banner copy.
+const DefaultBannerText = "🔄 Generated from the repo — edits here are rolled back on the next sync; edit the source file."
+
 // Gaps configures defaults for `okftool gaps`. CLI flags override these; the
 // config lets a bundle set its own defaults (e.g. depth = "neighborhood" when
 // indirect bridges matter more than direct ones).
@@ -170,6 +188,10 @@ func Default() *Config {
 		Schema: Schema{
 			Enabled: false,
 			File:    "schema.json",
+		},
+		Banner: Banner{
+			Enabled: true,
+			Text:    DefaultBannerText,
 		},
 		Gaps: Gaps{
 			Depth:  "direct",

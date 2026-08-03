@@ -16,7 +16,8 @@ import (
 type Option func(*options)
 
 type options struct {
-	hash func(*bundle.Doc) publish.Hash
+	hash   func(*bundle.Doc) publish.Hash
+	banner *Banner
 }
 
 // WithHasher overrides the expected-content hasher used for change detection, so
@@ -28,6 +29,17 @@ func WithHasher(fn func(*bundle.Doc) publish.Hash) Option {
 			o.hash = fn
 		}
 	}
+}
+
+// WithBanner injects a generated-page disclaimer banner as block-0 of every
+// published page and folds its rendered text and per-page source deep-link into
+// the content hash, so a banner copy or URL change re-publishes affected pages and
+// an unchanged one still hash-skips (sigma/ideas ADR-0015). A nil banner (the
+// default) injects nothing, leaving generation unchanged. The banner's source-repo
+// coordinates are resolved by the bins (internal/publish/source) and passed in as
+// data, so the planner stays environment-free.
+func WithBanner(bn *Banner) Option {
+	return func(o *options) { o.banner = bn }
 }
 
 // Generate is Stage 1 of the okfpub pipeline: it builds the backend-neutral
@@ -104,8 +116,14 @@ func diffDoc(d *bundle.Doc, cs *publish.CurrentState, o *options, src *hierarchy
 	node := nodeRef(d.Rel)
 	parent := src.parent(d.Rel)
 	hash := o.hash(d)
+	if o.banner != nil {
+		// Fold the banner into the expected hash so a banner copy or per-page
+		// source-URL change re-publishes this page; ContentHash covers only the raw
+		// source, not the injected block-0 (ADR-0015).
+		hash = o.banner.hash(hash, d.Rel)
+	}
 	title := d.Title()
-	doc, refs, anchors := buildDocument(d)
+	doc, refs, anchors := buildDocument(d, o.banner)
 	// Stamp the parent, expected hash, and title on the property/content ops (not
 	// just the create) so publish-time write-back can route and record a touched
 	// node whether it is new or a re-asserted existing one.

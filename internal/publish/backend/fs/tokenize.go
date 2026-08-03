@@ -77,6 +77,10 @@ func reshape(content any) (kind, level int, runs []textRun, hadInlineRefs bool) 
 				hadInlineRefs = true
 				continue
 			}
+			if in.URL != "" {
+				runs = append(runs, textRun{Text: in.Text, Link: in.URL})
+				continue
+			}
 			if in.Text != "" {
 				runs = append(runs, textRun{Text: in.Text})
 			}

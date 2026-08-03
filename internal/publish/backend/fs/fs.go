@@ -124,9 +124,13 @@ type contentBlock struct {
 	anchors []publish.AnchorName
 }
 
-// textRun is one inline span of a contentBlock: literal Text, or a late-bound Ref
-// (Text empty, Ref set) the Executor resolves to an on-disk link target.
+// textRun is one inline span of a contentBlock: literal Text, a late-bound Ref
+// (Text empty, Ref set) the Executor resolves to an on-disk link target, or a
+// literal Text hyperlinked to an external Link URL. Ref and Link are exclusive.
 type textRun struct {
 	Text string
 	Ref  publish.SymbolicID
+	// Link, when non-empty, renders Text as a Markdown link to an external URL
+	// (the disclaimer banner's source deep-link). Only meaningful when Ref is empty.
+	Link string
 }
