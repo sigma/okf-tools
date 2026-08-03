@@ -225,9 +225,13 @@ type childBlock struct {
 	anchors  []publish.AnchorName
 }
 
-// textRun is one inline span of a childBlock: literal Text, or a late-bound Ref
-// (Text empty, Ref set) the transport resolves to a Notion mention/link.
+// textRun is one inline span of a childBlock: literal Text, a late-bound Ref
+// (Text empty, Ref set) the transport resolves to a Notion mention, or a literal
+// Text hyperlinked to an external Link URL. Ref and Link are mutually exclusive.
 type textRun struct {
 	Text string
 	Ref  publish.SymbolicID
+	// Link, when non-empty, hyperlinks this run's Text to an external URL (the
+	// disclaimer banner's source deep-link). Only meaningful when Ref is empty.
+	Link string
 }

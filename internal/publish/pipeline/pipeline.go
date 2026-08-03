@@ -34,6 +34,18 @@ type Option func(*options)
 type options struct {
 	transportOpts []transport.Option
 	scanMode      backend.ScanMode
+	banner        *graph.Banner
+}
+
+// WithBanner threads a resolved generated-page disclaimer banner into Generation,
+// so every published page carries it as block-0 and a banner/URL change re-syncs
+// the affected pages (sigma/ideas ADR-0015). The banner's source-repo coordinates
+// are resolved by the bin (cmd/okfpub, via internal/publish/source) and passed in
+// as data; Run itself reads no environment. Unset (the default) publishes no
+// banner, so callers that don't opt in — including every existing test — are
+// unaffected.
+func WithBanner(bn *graph.Banner) Option {
+	return func(o *options) { o.banner = bn }
 }
 
 // WithTransportOptions forwards options to Stage 3 (Transport) — chiefly the
@@ -78,7 +90,11 @@ func Run(ctx context.Context, be backend.Backend, b *bundle.Bundle, opts ...Opti
 		return nil, fmt.Errorf("scan: %w", err)
 	}
 
-	g, err := graph.Generate(ctx, b, scan)
+	var genOpts []graph.Option
+	if o.banner != nil {
+		genOpts = append(genOpts, graph.WithBanner(o.banner))
+	}
+	g, err := graph.Generate(ctx, b, scan, genOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("generate: %w", err)
 	}

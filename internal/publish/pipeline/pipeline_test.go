@@ -207,3 +207,35 @@ func TestRunNearNoopSingleChange(t *testing.T) {
 		t.Errorf("a single-page change emitted %d txns, expected far fewer than a full publish", res.TxnCount)
 	}
 }
+
+// TestRunBannerThreadsIntoChangeDetection proves WithBanner reaches Stage 1: the
+// banner is folded into the expected content hash, so a scan seeded with the plain
+// (pre-banner) ContentHash — a near-noop without a banner — instead re-asserts every
+// page when a banner is passed. This exercises the pipeline→graph wiring without
+// reaching into the fake's opaque transaction internals.
+func TestRunBannerThreadsIntoChangeDetection(t *testing.T) {
+	b := loadBundle(t, smallBundle())
+	seed := scanAfterPublish(b) // steady-state scan carrying the plain ContentHash
+
+	// Baseline: without a banner, this seed is a near-noop.
+	beNoBanner := fake.New(fake.WithScan(seed))
+	res, err := Run(context.Background(), beNoBanner, b, WithTransportOptions(transport.WithInterval(0)))
+	if err != nil {
+		t.Fatalf("Run (no banner): %v", err)
+	}
+	if res.TxnCount != 0 {
+		t.Fatalf("no-banner steady-state should be a near-noop, got %d txns", res.TxnCount)
+	}
+
+	// With a banner, the expected hash is banner-folded and no longer matches the
+	// plain-hash seed, so pages re-assert — the wiring is live.
+	beBanner := fake.New(fake.WithScan(seed))
+	bn := &graph.Banner{Text: "GEN", BaseURL: "https://h/r", Ref: "main"}
+	res2, err := Run(context.Background(), beBanner, b, WithBanner(bn), WithTransportOptions(transport.WithInterval(0)))
+	if err != nil {
+		t.Fatalf("Run (banner): %v", err)
+	}
+	if res2.TxnCount == 0 {
+		t.Fatal("a banner over a plain-hash seed should re-publish, got 0 txns")
+	}
+}

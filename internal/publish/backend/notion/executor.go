@@ -286,9 +286,16 @@ func richTextJSON(runs []textRun, r backend.Resolver) ([]map[string]any, error) 
 		if run.Text == "" {
 			continue
 		}
+		txt := map[string]any{"content": run.Text}
+		if run.Link != "" {
+			// An external hyperlink: Notion carries it as the text object's link.url
+			// (the banner's source deep-link). A mention would need a page id; this is
+			// a plain web URL, so it rides as a link, not a mention.
+			txt["link"] = map[string]any{"url": run.Link}
+		}
 		out = append(out, map[string]any{
 			"type": "text",
-			"text": map[string]any{"content": run.Text},
+			"text": txt,
 		})
 	}
 	return out, nil

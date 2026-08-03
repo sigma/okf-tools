@@ -63,12 +63,18 @@ type BlockContent struct {
 	Language string
 }
 
-// Inline is one inline node of a block's content: either a text run or a
-// first-class Ref. Exactly one of Text / Ref is meaningful (Ref != nil marks a
-// reference; Text is then empty).
+// Inline is one inline node of a block's content: a text run, a first-class Ref,
+// or a text run carrying an external hyperlink (URL != ""). Ref and URL are
+// mutually exclusive: a Ref is a late-bound internal reference (Text is then
+// empty); a URL is an external link whose visible label is Text. Authored
+// Markdown never mints URL inlines — they carry the synthetic disclaimer banner's
+// source deep-link, the one external link the neutral model needs (ADR-0015).
 type Inline struct {
 	Text string
 	Ref  *Ref
+	// URL, when non-empty, makes this a plain text run hyperlinked to an external
+	// address. Only meaningful when Ref is nil.
+	URL string
 }
 
 // Ref is a first-class late-bound reference node. It holds only a symbolic id
@@ -105,16 +111,23 @@ func anchorRef(slug string) publish.SymbolicID {
 // citation, dangling) stays plain text — no Ref, no edge. Classification reuses
 // the bundle's own resolution (d.Resolved), matched to AST link nodes by their
 // shared depth-first order, so generation never re-implements link parsing.
-func buildDocument(d *bundle.Doc) (doc *publish.Document, refs []publish.SymbolicID, anchors []publish.AnchorName) {
+func buildDocument(d *bundle.Doc, banner *Banner) (doc *publish.Document, refs []publish.SymbolicID, anchors []publish.AnchorName) {
 	group := publish.GroupKey(nodeRef(d.Rel))
 	doc = &publish.Document{Group: group}
+
+	// The disclaimer banner rides as a stable block-0, ahead of all authored
+	// content, on every mirrored page — including an index or otherwise empty page
+	// (ADR-0015). It carries no refs or anchors, so edge assembly is untouched.
+	if banner != nil {
+		doc.Blocks = append(doc.Blocks, banner.block(d.Rel))
+	}
 
 	body := []byte(d.Body)
 	if len(body) > 0 {
 		root := parser.Markdown().Parser().Parse(text.NewReader(body))
 		b := &docBuilder{doc: d, src: body, lm: newLineMapper(body, d.BodyStartLine)}
 		b.walk(root, 0)
-		doc.Blocks = b.blocks
+		doc.Blocks = append(doc.Blocks, b.blocks...)
 		refs = b.refs
 	}
 

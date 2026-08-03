@@ -100,6 +100,17 @@ enabled = false
 # Bundle-root-relative path to the schema declaration.
 file = "schema.json"
 
+[banner]
+# okfpub's generated-page disclaimer banner (sigma/ideas ADR-0015). Unlike the
+# lint extensions it is ON by default: okfpub prepends a quote block to the top of
+# every mirrored page stating the page is generated from the repo and linking to
+# its source file, so the strict-mirror contract is self-documenting. The per-page
+# source deep-link (<base>/edit/<ref>/<path>) is resolved by okfpub from the
+# environment (OKF_SOURCE_URL / OKF_SOURCE_REF, the GITHUB_* Actions variables, or
+# local git) — not configured here. Disable it for a co-authored surface.
+enabled = true
+# text = "🔄 Generated from the repo — edits here are rolled back on the next sync; edit the source file."
+
 [gaps]
 # Defaults for `okftool gaps <concept>` (also qmd-backed). CLI flags override
 # these. Set depth = "neighborhood" if indirect bridges (open triangles among a

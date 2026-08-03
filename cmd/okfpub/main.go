@@ -9,11 +9,14 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	"github.com/sigma/okf-tools/internal/bundle"
 	"github.com/sigma/okf-tools/internal/publish/backend"
+	"github.com/sigma/okf-tools/internal/publish/graph"
 	"github.com/sigma/okf-tools/internal/publish/pipeline"
+	"github.com/sigma/okf-tools/internal/publish/source"
 )
 
 // version is overridable at build time via -ldflags "-X main.version=...".
@@ -108,6 +111,24 @@ func runCmd(args []string) error {
 	if *recompute {
 		runOpts = append(runOpts, pipeline.WithScanMode(backend.ScanRecompute))
 	}
+
+	// Resolve the generated-page disclaimer banner (ADR-0015). Resolution reads the
+	// environment and, as a fallback, local git — the bin's job, kept out of the
+	// pure planner — and is threaded into Generation as data. A misconfigured source
+	// URL fails loud rather than publishing a banner with a dangling deep-link.
+	if bn := b.Config.Banner; bn.Enabled {
+		src, err := source.Resolve(os.Getenv, gitIn(b.Root))
+		if err != nil {
+			return err
+		}
+		runOpts = append(runOpts, pipeline.WithBanner(&graph.Banner{
+			Text:    bn.Text,
+			BaseURL: src.BaseURL,
+			Ref:     src.Ref,
+		}))
+		fmt.Printf("okfpub: banner: source %s @ %s\n", src.BaseURL, src.Ref)
+	}
+
 	res, err := pipeline.Run(context.Background(), be, b, runOpts...)
 	if err != nil {
 		return err
@@ -116,6 +137,18 @@ func runCmd(args []string) error {
 	fmt.Printf("okfpub: published %d node(s), %d anchor(s) in %d transaction(s) via %s backend\n",
 		len(res.Nodes), len(res.Anchors), res.TxnCount, kind)
 	return nil
+}
+
+// gitIn returns a source.Git that runs git subcommands in dir — the local-git
+// fallback tier of source resolution. A failing subcommand (not a repo, no origin)
+// returns its error, which source.Resolve treats as "this tier is unavailable".
+func gitIn(dir string) source.Git {
+	return func(args ...string) (string, error) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.Output()
+		return string(out), err // untrimmed, per the source.Git contract
+	}
 }
 
 // defaultPath returns explicit when set, else <root>/name when that file exists,
@@ -152,8 +185,11 @@ Run flags:
   --recompute                       full live-block scan (true drift + self-heal)
 
 Environment:
-  NOTION_TOKEN  Notion integration token (required by the notion backend)
-  NOTION_DB_ID  Notion data-source id    (required by the notion backend)
+  NOTION_TOKEN    Notion integration token (required by the notion backend)
+  NOTION_DB_ID    Notion data-source id    (required by the notion backend)
+  OKF_SOURCE_URL  Repo web base for the generated-page banner deep-link
+                  (default: GITHUB_SERVER_URL/GITHUB_REPOSITORY, else local git)
+  OKF_SOURCE_REF  Branch the banner /edit/ link targets (default: git branch, else main)
 
 Note: under the 2025-09-03 API a database id and its data-source id differ (a
 database can host several data sources), and NOTION_DB_ID must be the *data-source*

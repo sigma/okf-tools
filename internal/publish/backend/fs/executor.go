@@ -221,6 +221,10 @@ func renderBlock(cb contentBlock, r backend.Resolver) (string, error) {
 			fmt.Fprintf(&sb, "[%s](%s)", refLabel(run.Ref), id)
 			continue
 		}
+		if run.Link != "" {
+			fmt.Fprintf(&sb, "[%s](%s)", run.Text, run.Link)
+			continue
+		}
 		sb.WriteString(run.Text)
 	}
 	sb.WriteByte('\n')

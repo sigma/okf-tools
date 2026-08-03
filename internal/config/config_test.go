@@ -26,6 +26,38 @@ func TestDefault(t *testing.T) {
 	if c.Gaps.Depth != "direct" || c.Gaps.Top != 10 || c.Gaps.MinSim != 0.4 {
 		t.Errorf("Gaps defaults = %+v, want direct/10/0.4", c.Gaps)
 	}
+	// The disclaimer banner defaults ON with the standard notice (ADR-0015).
+	if !c.Banner.Enabled {
+		t.Error("Banner.Enabled should default true")
+	}
+	if c.Banner.Text != DefaultBannerText {
+		t.Errorf("Banner.Text = %q, want the default notice", c.Banner.Text)
+	}
+}
+
+// TestBannerOverlay: a bundle can disable the banner or override its text.
+func TestBannerOverlay(t *testing.T) {
+	t.Run("disable", func(t *testing.T) {
+		c, err := Load(writeConfig(t, "[banner]\nenabled = false\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.Banner.Enabled {
+			t.Error("Banner.Enabled should be false when disabled in okf.toml")
+		}
+	})
+	t.Run("custom text", func(t *testing.T) {
+		c, err := Load(writeConfig(t, "[banner]\ntext = \"custom notice\"\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !c.Banner.Enabled {
+			t.Error("Banner.Enabled should stay true (default) when only text is set")
+		}
+		if c.Banner.Text != "custom notice" {
+			t.Errorf("Banner.Text = %q, want custom notice", c.Banner.Text)
+		}
+	})
 }
 
 func writeConfig(t *testing.T, body string) string {
