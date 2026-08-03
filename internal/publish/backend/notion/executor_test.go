@@ -138,6 +138,39 @@ func TestExecuteCreateResolvesParent(t *testing.T) {
 	}
 }
 
+// TestExecuteSubpageCreateSendsTitleOnly: a cluster subpage nests as a child_page
+// under its cluster-index page, so its parent is a page, not the data source. A
+// page-parented child_page has only a title — none of the data-source column
+// properties. The create must therefore drop the column props for a subpage, or
+// Notion 400s "Invalid property identifier" (sigma/okf-tools#104). A top-level,
+// data-source-parented create keeps the full property set.
+func TestExecuteSubpageCreateSendsTitleOnly(t *testing.T) {
+	f := newFakeNotion()
+	be := newServer(t, f)
+
+	txn := &Transaction{
+		Group: "node:child.md", Node: "node:child.md", Create: true,
+		Parent: "node:index.md",
+		Props: map[string]any{
+			"title": "Child", "type": "note", "status": "draft", "created": "2026-01-01",
+		},
+	}
+	r := stubResolver{"node:index.md": "page-index-real"}
+	if _, err := be.Execute(context.Background(), txn, r); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	props := digInto(t, f.requestsTo("POST", "/pages")[0].Body, "properties")
+	if _, ok := props["title"]; !ok {
+		t.Errorf("subpage create should carry the title property, got %v", props)
+	}
+	// The brief's contract is that a subpage carries *only* title — no
+	// data-source columns leak through, so title must be the sole key.
+	if len(props) != 1 {
+		t.Errorf("subpage create must carry only the title property, got %v", props)
+	}
+}
+
 // TestExecuteCodeBlockCarriesLanguage: a code child block serializes with the
 // Notion-required `language` field, mapped from the fence token, alongside its
 // rich text. Without this, Notion rejects the create with a 400 validation_error.
