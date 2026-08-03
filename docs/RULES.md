@@ -252,10 +252,13 @@ These rules implement the domain-modeling
 leading with bold text and a colon (`**Side-door credential**: An undeclared …`).
 Its **anchor** is the GitHub-style slug of the bold term text
 (`**Root KEK**` → `root-kek`, `**Foreign-rooted leaf**` → `foreign-rooted-leaf`).
-The slug algorithm is **fixed** (lowercase; drop all but `[a-z0-9]`, space and
-hyphen; spaces → `-`; collapse repeated hyphens; trim) — deliberately *not*
-configurable, so it can't drift from a consumer that resolves the same anchors
-(e.g. a Notion sync).
+The slug algorithm is **fixed** (trim surrounding whitespace; lowercase; drop all
+but `[a-z0-9]`, whitespace and hyphen; map each whitespace char to a single `-`
+**without** collapsing runs) — deliberately *not* configurable, so it can't drift
+from a consumer that resolves the same anchors (e.g. a Notion sync). Not
+collapsing matches GitHub's github-slugger byte-for-byte: `**TL;DR — the plan**` →
+`tldr--the-plan` (the stripped `;`/em-dash between two spaces leaves a double
+hyphen). Collapsing was the OKF203 divergence fixed in okf-tools#116.
 
 | Rule | Default | What it checks |
 |------|---------|----------------|
