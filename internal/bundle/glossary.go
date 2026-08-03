@@ -85,3 +85,21 @@ func (d *Doc) HasAnchor(s string) bool {
 	}
 	return false
 }
+
+// HasHeadingAnchor reports whether any heading in the doc GitHub-slugs to s.
+// Unlike HasAnchor — which reads d.Anchors (terms + headings) and is populated
+// only for declared glossary files — this is computed straight from the doc's
+// headings, so it is meaningful for every doc, glossary or not. It is what
+// OKF203 resolves a #heading fragment against on an ordinary page.
+//
+// Colliding heading slugs are not disambiguated (`-1`/`-2`): a bare #frag
+// resolves iff some heading slugs to it, matching okftool's collisions-are-
+// errors model (a plain GitHub-style slug, no per-render suffix).
+func (d *Doc) HasHeadingAnchor(s string) bool {
+	for _, h := range d.Headings {
+		if Slug(h.Text) == s {
+			return true
+		}
+	}
+	return false
+}

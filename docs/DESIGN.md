@@ -3,7 +3,7 @@
 Status: **implemented.** `okftool`
 (`lint`/`index`/`fmt`/`new`/`graph`/`gaps`/`skill`) is built to this spec —
 conformance `OKF001`–`OKF004`, policy `OKF101`–`OKF107`, worklist
-`OKF201`/`OKF202`/`OKF206`, the opt-in extensions `OKFEXT-QMD-*` (qmd-backed) and
+`OKF201`/`OKF202`/`OKF203`/`OKF206`, the opt-in extensions `OKFEXT-QMD-*` (qmd-backed) and
 `OKFEXT-GLOSSARY-*` (single-file glossaries), and
 seed-driven content-gap analysis (`gaps`) — with autofix, `okf.toml` config,
 human/JSON/SARIF output, a per-package test suite, CI, and flake
@@ -161,7 +161,7 @@ scanning; JSON is the pragmatic default for agent/editor/CI use.
 3. **M3 — index.** ✅ `okftool index --check/--write` (`OKF106`).
 4. **M4 — fmt + new.** ✅ Authoring ergonomics.
 5. **M5 — worklist + graph + hooks.** ✅ `okftool graph`, worklist
-   `OKF201`/`OKF202`/`OKF206`, and the opt-in `OKFEXT-QMD-*` qmd-backed extension.
+   `OKF201`/`OKF202`/`OKF203`/`OKF206`, and the opt-in `OKFEXT-QMD-*` qmd-backed extension.
    Still open: the Claude Code hook wiring (a consuming-bundle artifact).
 6. **M6 — content-gap analysis.** ✅ `okftool gaps <concept>`: seed-driven
    detection of near-but-unlinked concepts (direct gaps + neighborhood holes),
