@@ -303,6 +303,16 @@ func (b *Bundle) InPublishScope(rel string) bool {
 	if host, ok := b.Areas.GlossaryFile(); ok && rel == normScope(host) {
 		return true
 	}
+	// An area's own root README.md is that area's section-landing page. An
+	// areas.json area maps to the unified *database*, so its landing README is not
+	// a row in that database — the production mirror omits it, and publishing it
+	// inflates the top-level row set. Skip it. (A README inside a *sub*directory of
+	// an area is a cluster's entry point, not an area root: it stays in scope and
+	// becomes the nesting parent for its siblings — see the publish-graph
+	// hierarchy and areas.Registry.IsAreaRoot.)
+	if path.Base(rel) == "README.md" && b.Areas.IsAreaRoot(path.Dir(rel)) {
+		return false
+	}
 	// Otherwise a page is in scope iff it lives under a declared area directory.
 	for _, a := range b.Areas.Areas {
 		if a.Directory == "" {

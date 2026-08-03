@@ -217,3 +217,35 @@ func TestNilRegistryTypeFor(t *testing.T) {
 		t.Fatalf("nil Registry TypeFor = %q, want \"\"", got)
 	}
 }
+
+func TestIsAreaRoot(t *testing.T) {
+	p := writeAreas(t, `{
+	  "specs":   { "directory": "specs",    "type": "spec" },
+	  "adr":     { "directory": "docs/adr/", "type": "adr" },
+	  "context": { "file": "CONTEXT.md",     "type": "context", "role": "glossary" }
+	}`)
+	r, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// A declared directory area's own root matches (trailing slash tolerated).
+	for _, dir := range []string{"specs", "docs/adr"} {
+		if !r.IsAreaRoot(dir) {
+			t.Errorf("IsAreaRoot(%q) = false, want true (declared area root)", dir)
+		}
+	}
+	// A subdirectory *within* an area is a cluster dir, not an area root; so is an
+	// unrelated dir and a file-backed area's file.
+	for _, dir := range []string{"specs/startup-infrastructure", "docs", "CONTEXT.md", "other", "."} {
+		if r.IsAreaRoot(dir) {
+			t.Errorf("IsAreaRoot(%q) = true, want false", dir)
+		}
+	}
+}
+
+func TestIsAreaRootNilRegistry(t *testing.T) {
+	var r *Registry
+	if r.IsAreaRoot("specs") {
+		t.Fatal("nil Registry IsAreaRoot = true, want false")
+	}
+}

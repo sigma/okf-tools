@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/sigma/okf-tools/internal/areas"
 	"github.com/sigma/okf-tools/internal/bundle"
 	"github.com/sigma/okf-tools/internal/publish"
 )
@@ -74,7 +75,7 @@ func Generate(ctx context.Context, b *bundle.Bundle, cs *publish.CurrentState, o
 	// Concurrent per-page diff → ops. Results are slotted by index so op order is
 	// deterministic (docs preserves b.Docs' rel sort) regardless of goroutine
 	// scheduling.
-	src := srcHierarchy(docs)
+	src := srcHierarchy(docs, b.Areas)
 	results := make([][]*Op, len(docs))
 	var wg sync.WaitGroup
 	for i, d := range docs {
@@ -99,7 +100,7 @@ func Generate(ctx context.Context, b *bundle.Bundle, cs *publish.CurrentState, o
 	// Orphans: scanned nodes with no in-scope source → DeleteNode on the subtree
 	// roots. Liveness is the publish set, so a page that fell out of scope (or was
 	// leaked by the pre-scoping publisher) reconciles to a deletion.
-	g.Ops = append(g.Ops, orphanOps(docs, cs)...)
+	g.Ops = append(g.Ops, orphanOps(docs, cs, b.Areas)...)
 
 	g.Edges = assembleEdges(g.Ops)
 	return g, nil
@@ -162,36 +163,75 @@ type hierarchy struct {
 	indexByDir map[string]string // dir (rel; "." for root) -> that dir's index rel
 }
 
-// srcHierarchy indexes the bundle's index.md pages by directory.
-func srcHierarchy(docs []*bundle.Doc) *hierarchy {
+// indexRank ranks a bundle-relative path's role as its directory's nesting
+// index, higher wins: index.md is the OKF-native index (2); a cluster's
+// README.md is a fallback index (1) so a cluster whose entry point is README.md
+// (this repo has no index.md files — OKF reserves index.md for generated nav
+// indexes, OKF003) still parents its siblings; anything else is not an index (0).
+//
+// A README.md whose directory is *itself* a declared areas.json area root is not
+// a cluster index (0): that README is the area's section-landing page, which maps
+// to the database itself rather than a page within it — it is not published as a
+// row at all (bundle.InPublishScope) and never parents siblings. ar may be nil
+// (an okf.toml-only bundle), in which case no directory is an area root, so a
+// README.md is always a cluster index.
+func indexRank(rel string, ar *areas.Registry) int {
+	switch path.Base(rel) {
+	case "index.md":
+		return 2
+	case "README.md":
+		if ar.IsAreaRoot(path.Dir(rel)) {
+			return 0
+		}
+		return 1
+	default:
+		return 0
+	}
+}
+
+// buildHierarchy indexes each directory's nesting index from a set of rels,
+// resolving index.md > cluster README.md when a directory has both (indexRank).
+func buildHierarchy(rels []string, ar *areas.Registry) *hierarchy {
 	m := map[string]string{}
-	for _, d := range docs {
-		if d.Kind == bundle.KindIndex {
-			m[path.Dir(d.Rel)] = d.Rel
+	rank := map[string]int{}
+	for _, rel := range rels {
+		r := indexRank(rel, ar)
+		if r == 0 {
+			continue
+		}
+		dir := path.Dir(rel)
+		if r > rank[dir] {
+			m[dir], rank[dir] = rel, r
 		}
 	}
 	return &hierarchy{indexByDir: m}
 }
 
-// pathHierarchy indexes bare rel paths (scanned nodes) by directory, taking any
-// file named index.md as its directory's index.
-func pathHierarchy(rels []string) *hierarchy {
-	m := map[string]string{}
-	for _, rel := range rels {
-		if path.Base(rel) == "index.md" {
-			m[path.Dir(rel)] = rel
-		}
+// srcHierarchy indexes the bundle's per-directory index pages (index.md, or a
+// cluster's README.md) by directory.
+func srcHierarchy(docs []*bundle.Doc, ar *areas.Registry) *hierarchy {
+	rels := make([]string, len(docs))
+	for i, d := range docs {
+		rels[i] = d.Rel
 	}
-	return &hierarchy{indexByDir: m}
+	return buildHierarchy(rels, ar)
+}
+
+// pathHierarchy indexes bare rel paths (scanned nodes) by directory, applying the
+// same index recognition as srcHierarchy so a scanned tree and a source tree
+// agree on each directory's index.
+func pathHierarchy(rels []string, ar *areas.Registry) *hierarchy {
+	return buildHierarchy(rels, ar)
 }
 
 // parent returns the symbolic id of rel's parent node — the nearest ancestor
 // directory's index — or "" for a node at the top of its area database (no
-// covering index above it). An index parents to the next index up, never itself.
+// covering index above it). A directory's own index parents to the next index
+// up, never itself.
 func (h *hierarchy) parent(rel string) publish.SymbolicID {
 	start := path.Dir(rel)
-	if path.Base(rel) == "index.md" {
-		start = path.Dir(start) // an index looks strictly above its own directory
+	if h.indexByDir[start] == rel {
+		start = path.Dir(start) // a dir index looks strictly above its own directory
 	}
 	for dir := start; ; dir = path.Dir(dir) {
 		if idx, ok := h.indexByDir[dir]; ok && idx != rel {
@@ -206,7 +246,7 @@ func (h *hierarchy) parent(rel string) publish.SymbolicID {
 // orphanOps emits a DeleteNode for each vanished subtree root: a scanned node
 // with no source, whose parent has not also vanished (an ancestor's single
 // DeleteNode archives the whole subtree, so no per-child ops).
-func orphanOps(docs []*bundle.Doc, cs *publish.CurrentState) []*Op {
+func orphanOps(docs []*bundle.Doc, cs *publish.CurrentState, ar *areas.Registry) []*Op {
 	live := map[publish.SymbolicID]bool{}
 	for _, d := range docs {
 		live[nodeRef(d.Rel)] = true
@@ -219,7 +259,7 @@ func orphanOps(docs []*bundle.Doc, cs *publish.CurrentState) []*Op {
 			vanished[id] = true
 		}
 	}
-	h := pathHierarchy(scanned)
+	h := pathHierarchy(scanned, ar)
 
 	var ops []*Op
 	for id := range vanished {
