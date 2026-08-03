@@ -72,7 +72,7 @@ func (b *Backend) create(ctx context.Context, t *Transaction, r backend.Resolver
 	}
 
 	var page object
-	req := createPageReq{Parent: parent, Properties: b.propsJSON(t.Props), Children: children}
+	req := createPageReq{Parent: parent, Properties: b.createProps(parent, t.Props), Children: children}
 	if err := b.do(ctx, http.MethodPost, "/pages", req, &page); err != nil {
 		return err
 	}
@@ -351,6 +351,29 @@ func (b *Backend) propsJSON(props map[string]any) map[string]any {
 		out[k] = b.propertyValue(k, v)
 	}
 	return out
+}
+
+// createProps builds the POST /pages property set for the parent kind. A
+// data-source row (top-level node) carries the full pipeline-derived property set.
+// A page-parented create is a cluster subpage — a child_page under its cluster
+// index — which has only a title and none of the data-source's column properties
+// (`created`, `status`, `type`, …); sending them 400s as "Invalid property
+// identifier" (sigma/okf-tools#104). This mirrors the scan model: a subpage has no
+// row of its own (its {id, hash} folds into the parent row's hashes subtree), so it
+// is not a row and must not carry column properties.
+//
+// A subpage is assumed to carry a pipeline-derived title (every real cluster
+// subpage does); with none, the create sends empty properties rather than
+// fabricating a title — Notion rejects a titleless child_page either way.
+func (b *Backend) createProps(parent pageParent, props map[string]any) map[string]any {
+	full := b.propsJSON(props)
+	if parent.Type != "page_id" {
+		return full
+	}
+	if title, ok := full["title"]; ok {
+		return map[string]any{"title": title}
+	}
+	return map[string]any{}
 }
 
 // writableColumn reports whether a neutral property key may be written as a page
