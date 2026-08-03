@@ -122,6 +122,11 @@ type contentBlock struct {
 	level   int
 	runs    []textRun
 	anchors []publish.AnchorName
+	// rows and hasColumnHeader carry a table section's content: rows → cells → the
+	// cell's inline runs, header row first. Set only when kind is graph.Table; runs
+	// is then empty, since a table's inline content lives per-cell here.
+	rows            [][][]textRun
+	hasColumnHeader bool
 }
 
 // textRun is one inline span of a contentBlock: literal Text, a late-bound Ref

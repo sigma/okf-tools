@@ -198,6 +198,9 @@ func resolveParent(refs []publish.SymbolicID, r backend.Resolver) (string, error
 // counterpart of the Notion executor turning a Ref into a page mention. An
 // unresolved Ref is an error, since the transport must gate on it before Execute.
 func renderBlock(cb contentBlock, r backend.Resolver) (string, error) {
+	if graph.BlockKind(cb.kind) == graph.Table {
+		return renderTable(cb, r)
+	}
 	var sb strings.Builder
 	switch graph.BlockKind(cb.kind) {
 	case graph.Heading:
@@ -212,7 +215,22 @@ func renderBlock(cb contentBlock, r backend.Resolver) (string, error) {
 	case graph.Quote:
 		sb.WriteString("> ")
 	}
-	for _, run := range cb.runs {
+	body, err := renderRuns(cb.runs, r)
+	if err != nil {
+		return "", err
+	}
+	sb.WriteString(body)
+	sb.WriteByte('\n')
+	return sb.String(), nil
+}
+
+// renderRuns serializes one inline run to Markdown-ish text, resolving every Ref
+// through the Resolver — the Ref→on-disk-id swap. Shared by the flat-block renderer
+// and renderTable's per-cell rendering. An unresolved Ref is an error, since the
+// transport must gate on it before Execute.
+func renderRuns(runs []textRun, r backend.Resolver) (string, error) {
+	var sb strings.Builder
+	for _, run := range runs {
 		if run.Ref != "" {
 			id, ok := r.Resolve(run.Ref)
 			if !ok {
@@ -227,7 +245,49 @@ func renderBlock(cb contentBlock, r backend.Resolver) (string, error) {
 		}
 		sb.WriteString(run.Text)
 	}
-	sb.WriteByte('\n')
+	return sb.String(), nil
+}
+
+// renderTable serializes a table section back to a GFM pipe table: the header row,
+// a delimiter row (when the first row is a header), then the body rows, each cell
+// rendered through renderRuns with its Refs resolved. Cells are padded to the header
+// width, and a literal pipe in cell text is escaped so it does not split the cell.
+func renderTable(cb contentBlock, r backend.Resolver) (string, error) {
+	width := 0
+	if len(cb.rows) > 0 {
+		width = len(cb.rows[0])
+	}
+	var sb strings.Builder
+	writeRow := func(cells [][]textRun) error {
+		sb.WriteByte('|')
+		for i := 0; i < width; i++ {
+			var runs []textRun
+			if i < len(cells) {
+				runs = cells[i]
+			}
+			s, err := renderRuns(runs, r)
+			if err != nil {
+				return err
+			}
+			sb.WriteByte(' ')
+			sb.WriteString(strings.ReplaceAll(s, "|", "\\|"))
+			sb.WriteString(" |")
+		}
+		sb.WriteByte('\n')
+		return nil
+	}
+	for ri, row := range cb.rows {
+		if err := writeRow(row); err != nil {
+			return "", err
+		}
+		if ri == 0 && cb.hasColumnHeader {
+			sb.WriteByte('|')
+			for i := 0; i < width; i++ {
+				sb.WriteString(" --- |")
+			}
+			sb.WriteByte('\n')
+		}
+	}
 	return sb.String(), nil
 }
 

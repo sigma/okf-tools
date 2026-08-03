@@ -20,13 +20,19 @@ import (
 
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/text"
 	"go.abhg.dev/goldmark/wikilink"
 	"gopkg.in/yaml.v3"
 )
 
-// md is the shared CommonMark parser, with wikilink recognition enabled.
-var md = goldmark.New(goldmark.WithExtensions(&wikilink.Extender{}))
+// md is the shared CommonMark parser, with wikilink recognition and GFM table
+// parsing enabled. The table extension is what turns a `|…|` block into a real
+// extension/ast Table node (header + rows + cells) rather than a bare paragraph of
+// pipe text, so every consumer of the shared parser — lint, scan, and the okfpub
+// publish graph — sees tables as structured nodes. Only the table extension is
+// enabled, not the whole GFM umbrella, to keep the surface minimal.
+var md = goldmark.New(goldmark.WithExtensions(&wikilink.Extender{}, extension.Table))
 
 // Markdown returns the shared CommonMark parser (wikilink-aware) so other
 // packages parse bodies into the identical AST rather than configuring their own

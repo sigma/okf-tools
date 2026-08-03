@@ -25,6 +25,21 @@ import (
 func (b *Backend) Tokenize(doc publish.Document) []publish.AtomicUnit {
 	units := make([]publish.AtomicUnit, 0, len(doc.Blocks))
 	for _, blk := range doc.Blocks {
+		if bc, ok := blk.Content.(graph.BlockContent); ok && bc.Kind == graph.Table {
+			rows, refs := tableRows(bc)
+			u := publish.AtomicUnit{
+				Payload: contentBlock{kind: int(graph.Table), rows: rows, hasColumnHeader: bc.HasColumnHeader, anchors: blk.Anchors},
+				Cost:    1,
+				Group:   doc.Group,
+				Refs:    refs,
+				Anchors: blk.Anchors,
+			}
+			if len(refs) == 0 && len(blk.Refs) > 0 {
+				u.Refs = append(u.Refs, blk.Refs...)
+			}
+			units = append(units, u)
+			continue
+		}
 		kind, level, runs, hadInlineRefs := reshape(blk.Content)
 		u := publish.AtomicUnit{
 			Payload: contentBlock{kind: kind, level: level, runs: runs, anchors: blk.Anchors},
@@ -71,18 +86,11 @@ func reshape(content any) (kind, level int, runs []textRun, hadInlineRefs bool) 
 	switch c := content.(type) {
 	case graph.BlockContent:
 		kind, level = int(c.Kind), c.Level
-		for _, in := range c.Inlines {
-			if in.Ref != nil {
-				runs = append(runs, textRun{Ref: in.Ref.ID})
+		runs = inlinesToRuns(c.Inlines)
+		for _, r := range runs {
+			if r.Ref != "" {
 				hadInlineRefs = true
-				continue
-			}
-			if in.URL != "" {
-				runs = append(runs, textRun{Text: in.Text, Link: in.URL})
-				continue
-			}
-			if in.Text != "" {
-				runs = append(runs, textRun{Text: in.Text})
+				break
 			}
 		}
 	case string:
@@ -95,6 +103,47 @@ func reshape(content any) (kind, level int, runs []textRun, hadInlineRefs bool) 
 		runs = append(runs, textRun{Text: fmt.Sprint(c)})
 	}
 	return kind, level, runs, hadInlineRefs
+}
+
+// inlinesToRuns maps a neutral inline run to filesystem textRuns: a Ref inline
+// becomes a late-bound Ref placeholder, a URL inline a hyperlinked span, and a plain
+// text inline a literal span. Empty spans are dropped. Shared by reshape (block-level
+// runs) and tableRows (per-cell runs) so both project inlines identically.
+func inlinesToRuns(inlines []graph.Inline) []textRun {
+	var runs []textRun
+	for _, in := range inlines {
+		switch {
+		case in.Ref != nil:
+			runs = append(runs, textRun{Ref: in.Ref.ID})
+		case in.URL != "":
+			runs = append(runs, textRun{Text: in.Text, Link: in.URL})
+		case in.Text != "":
+			runs = append(runs, textRun{Text: in.Text})
+		}
+	}
+	return runs
+}
+
+// tableRows reshapes a neutral Table block into its rows-of-cells-of-runs and the
+// symbolic ids of every Ref cited in any cell, in row-major order, so the section's
+// unit exposes them for the transport to gate and resolve.
+func tableRows(bc graph.BlockContent) ([][][]textRun, []publish.SymbolicID) {
+	var refs []publish.SymbolicID
+	rows := make([][][]textRun, 0, len(bc.Rows))
+	for _, r := range bc.Rows {
+		cells := make([][]textRun, 0, len(r.Cells))
+		for _, cell := range r.Cells {
+			runs := inlinesToRuns(cell.Inlines)
+			for _, run := range runs {
+				if run.Ref != "" {
+					refs = append(refs, run.Ref)
+				}
+			}
+			cells = append(cells, runs)
+		}
+		rows = append(rows, cells)
+	}
+	return rows, refs
 }
 
 // refsOf collects the symbolic ids of the Ref runs in a block, in order.

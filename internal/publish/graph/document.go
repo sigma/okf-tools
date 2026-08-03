@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/yuin/goldmark/ast"
+	east "github.com/yuin/goldmark/extension/ast"
 	"github.com/yuin/goldmark/text"
 
 	"github.com/sigma/okf-tools/internal/areas"
@@ -29,6 +30,9 @@ const (
 	Quote
 	// Generic is any other block-level node, kept so its inline refs survive.
 	Generic
+	// Table is a GFM table: its cells live in Rows (header row first), each cell
+	// carrying its own inline run so cell links stay first-class Refs.
+	Table
 )
 
 func (k BlockKind) String() string {
@@ -43,6 +47,8 @@ func (k BlockKind) String() string {
 		return "code"
 	case Quote:
 		return "quote"
+	case Table:
+		return "table"
 	default:
 		return "generic"
 	}
@@ -61,6 +67,24 @@ type BlockContent struct {
 	// empty for indented code or a bare fence. Only meaningful when Kind is
 	// CodeBlock; a backend maps it to its own code-language vocabulary.
 	Language string
+	// Rows holds a table's rows, header row first, when Kind is Table; nil for
+	// every other kind. A table's own inline content lives per-cell in Rows rather
+	// than in Inlines, so cell links survive as first-class Refs.
+	Rows []TableRow
+	// HasColumnHeader reports whether the table's first row is a header row. A GFM
+	// table always has one; only meaningful when Kind is Table.
+	HasColumnHeader bool
+}
+
+// TableRow is one row of a Table block: its cells left-to-right.
+type TableRow struct {
+	Cells []TableCell
+}
+
+// TableCell is one cell of a table row: its own inline run, in which cross-
+// references survive as first-class Ref inlines exactly as a paragraph's do.
+type TableCell struct {
+	Inlines []Inline
 }
 
 // Inline is one inline node of a block's content: a text run, a first-class Ref,
@@ -172,6 +196,11 @@ func (b *docBuilder) walk(n ast.Node, depth int) {
 			b.emit(ListItem, max(depth, 1), c)
 		case *ast.Blockquote:
 			b.emit(Quote, 0, c)
+		case *east.Table:
+			// A GFM table: emit one Table block whose cells carry their own inline
+			// runs. emitTable visits cells in the parser's own depth-first order, so
+			// the link ordinal stays in lockstep with d.Resolved just as emit does.
+			b.emitTable(v)
 		case *ast.FencedCodeBlock:
 			// Code carries no inline links, so it contributes nothing to linkIdx.
 			// Its body lives in Lines() (not child inlines) and its fence names a
@@ -218,6 +247,86 @@ func (b *docBuilder) emit(kind BlockKind, level int, n ast.Node) {
 			}
 		}
 	}
+}
+
+// emitTable projects a GFM table node into one neutral Table block: the header
+// row (from the TableHeader child) followed by the body rows (each TableRow child),
+// every cell carrying its own inline run. It reuses inlinesOf per cell, so a cell's
+// links become first-class Refs and — crucially — the link ordinal advances in the
+// parser's own depth-first order (header cells, then each row left-to-right), keeping
+// linkIdx in lockstep with d.Resolved exactly as the flat blocks do. Rows are
+// normalized to the header's column count, since Notion requires a rectangular
+// table; a short row is padded with empty cells and any overflow cell is dropped
+// (its already-consumed ordinal is preserved, only its rendered content and edge
+// go). A table hosts no glossary anchor, so none of emit's anchor bookkeeping applies.
+func (b *docBuilder) emitTable(n *east.Table) {
+	var rows []TableRow
+	var cellRefs [][]publish.SymbolicID
+	appendRow := func(host ast.Node) {
+		var row TableRow
+		for c := host.FirstChild(); c != nil; c = c.NextSibling() {
+			cell, ok := c.(*east.TableCell)
+			if !ok {
+				continue
+			}
+			inlines, refs := b.inlinesOf(cell)
+			row.Cells = append(row.Cells, TableCell{Inlines: inlines})
+			cellRefs = append(cellRefs, refs)
+		}
+		rows = append(rows, row)
+	}
+	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
+		switch c.(type) {
+		case *east.TableHeader, *east.TableRow:
+			appendRow(c)
+		}
+	}
+
+	width := 0
+	if len(rows) > 0 {
+		width = len(rows[0].Cells)
+	}
+	// Flatten the refs of the cells that survive normalization, in row-major order,
+	// so a dropped overflow cell contributes no edge (its ordinal was already
+	// consumed above and must not be rewound).
+	var blockRefs []publish.SymbolicID
+	ci := 0
+	for i := range rows {
+		kept := len(rows[i].Cells)
+		if kept > width {
+			kept = width
+		}
+		for j := 0; j < len(rows[i].Cells); j++ {
+			if j < kept {
+				blockRefs = append(blockRefs, cellRefs[ci]...)
+			}
+			ci++
+		}
+		rows[i].Cells = normalizeCells(rows[i].Cells, width)
+	}
+
+	blk := publish.Block{
+		Content: BlockContent{Kind: Table, Rows: rows, HasColumnHeader: len(rows) > 0},
+		Refs:    blockRefs,
+	}
+	b.blocks = append(b.blocks, blk)
+	b.refs = append(b.refs, blockRefs...)
+}
+
+// normalizeCells pads cells with empty trailing cells (or truncates overflow) so a
+// row is exactly width cells wide — the rectangular shape Notion's table_row
+// requires. width 0 (a header-less, empty table) leaves the row untouched.
+func normalizeCells(cells []TableCell, width int) []TableCell {
+	if width == 0 {
+		return cells
+	}
+	if len(cells) > width {
+		return cells[:width]
+	}
+	for len(cells) < width {
+		cells = append(cells, TableCell{})
+	}
+	return cells
 }
 
 // emitCode appends one CodeBlock whose content is the block's literal body and,
