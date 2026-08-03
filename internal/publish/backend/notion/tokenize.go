@@ -26,6 +26,17 @@ import (
 func (b *Backend) Tokenize(doc publish.Document) []publish.AtomicUnit {
 	var units []publish.AtomicUnit
 	for _, blk := range doc.Blocks {
+		// A table is a single, unsplittable unit: its rows are the block's children,
+		// so it never chunks against the per-block char cap the way a flat run does.
+		if bc, ok := blk.Content.(graph.BlockContent); ok && bc.Kind == graph.Table {
+			cb, refs := tableChildBlock(bc)
+			u := publish.AtomicUnit{Payload: cb, Cost: 1, Group: doc.Group, Refs: refs}
+			if len(blk.Anchors) > 0 {
+				u.Anchors = blk.Anchors
+			}
+			units = append(units, u)
+			continue
+		}
 		kind, level, language, runs, hadInlineRefs := reshape(blk.Content)
 		chunks := b.splitRuns(runs)
 
@@ -79,19 +90,11 @@ func reshape(content any) (kind, level int, language string, runs []textRun, had
 	switch c := content.(type) {
 	case graph.BlockContent:
 		kind, level, language = int(c.Kind), c.Level, c.Language
-		for _, in := range c.Inlines {
-			if in.Ref != nil {
-				runs = append(runs, textRun{Ref: in.Ref.ID})
+		runs = inlinesToRuns(c.Inlines)
+		for _, r := range runs {
+			if r.Ref != "" {
 				hadInlineRefs = true
-				continue
-			}
-			if in.URL != "" {
-				// A hyperlinked run: visible Text, external Link target.
-				runs = append(runs, textRun{Text: in.Text, Link: in.URL})
-				continue
-			}
-			if in.Text != "" {
-				runs = append(runs, textRun{Text: in.Text})
+				break
 			}
 		}
 	case string:
@@ -104,6 +107,50 @@ func reshape(content any) (kind, level int, language string, runs []textRun, had
 		runs = append(runs, textRun{Text: fmt.Sprint(c)})
 	}
 	return kind, level, language, runs, hadInlineRefs
+}
+
+// inlinesToRuns maps a neutral inline run to Notion textRuns: a Ref inline becomes
+// a late-bound Ref placeholder, a URL inline a hyperlinked span, and a plain text
+// inline a literal span. Empty spans are dropped. Shared by reshape (block-level
+// runs) and tableChildBlock (per-cell runs) so both project inlines identically.
+func inlinesToRuns(inlines []graph.Inline) []textRun {
+	var runs []textRun
+	for _, in := range inlines {
+		switch {
+		case in.Ref != nil:
+			runs = append(runs, textRun{Ref: in.Ref.ID})
+		case in.URL != "":
+			runs = append(runs, textRun{Text: in.Text, Link: in.URL})
+		case in.Text != "":
+			runs = append(runs, textRun{Text: in.Text})
+		}
+	}
+	return runs
+}
+
+// tableChildBlock reshapes a neutral Table block into its single Notion childBlock —
+// rows of cells of inline runs — and returns the symbolic ids of every Ref cited in
+// any cell, in row-major order, so the AtomicUnit exposes them for the transport to
+// gate and resolve. A table is never split against the char cap, so unlike reshape's
+// output it maps one-to-one to one unit; a cell whose text exceeds Notion's per-span
+// cap is left intact (these mirror tables are far under it).
+func tableChildBlock(bc graph.BlockContent) (childBlock, []publish.SymbolicID) {
+	var refs []publish.SymbolicID
+	rows := make([]tableRow, 0, len(bc.Rows))
+	for _, r := range bc.Rows {
+		cells := make([][]textRun, 0, len(r.Cells))
+		for _, cell := range r.Cells {
+			runs := inlinesToRuns(cell.Inlines)
+			for _, run := range runs {
+				if run.Ref != "" {
+					refs = append(refs, run.Ref)
+				}
+			}
+			cells = append(cells, runs)
+		}
+		rows = append(rows, tableRow{cells: cells})
+	}
+	return childBlock{kind: int(graph.Table), rows: rows, hasColumnHeader: bc.HasColumnHeader}, refs
 }
 
 // splitRuns packs a block's inline runs into chunks whose literal text stays

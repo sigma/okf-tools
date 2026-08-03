@@ -273,6 +273,9 @@ func blockJSON(cb childBlock, r backend.Resolver) (map[string]any, error) {
 // envelope; the self-hosted-anchor patch (#89) sends the bare {type: payload} to
 // PATCH /blocks/{id} to re-materialize a deferred citation in place.
 func blockContentJSON(cb childBlock, r backend.Resolver) (string, map[string]any, error) {
+	if cb.kind == int(graph.Table) {
+		return tableBlockJSON(cb, r)
+	}
 	rich, err := richTextJSON(cb.runs, r)
 	if err != nil {
 		return "", nil, err
@@ -287,6 +290,42 @@ func blockContentJSON(cb childBlock, r backend.Resolver) (string, map[string]any
 		payload["language"] = notionCodeLanguage(cb.language)
 	}
 	return typ, payload, nil
+}
+
+// tableBlockJSON serializes a table childBlock into Notion's nested `table` payload:
+// a table_width / has_column_header / has_row_header header plus the rows as child
+// `table_row` blocks, each carrying its cells as arrays of resolved rich text. The
+// width is the header row's cell count (rows were normalized rectangular upstream),
+// and has_row_header is always false — GFM has no row-header notion. Every cell's
+// inline Refs resolve through the Resolver exactly as a paragraph's runs do.
+func tableBlockJSON(cb childBlock, r backend.Resolver) (string, map[string]any, error) {
+	width := 0
+	if len(cb.rows) > 0 {
+		width = len(cb.rows[0].cells)
+	}
+	children := make([]map[string]any, 0, len(cb.rows))
+	for _, row := range cb.rows {
+		cells := make([]any, 0, len(row.cells))
+		for _, cellRuns := range row.cells {
+			rich, err := richTextJSON(cellRuns, r)
+			if err != nil {
+				return "", nil, err
+			}
+			cells = append(cells, rich)
+		}
+		children = append(children, map[string]any{
+			"object":    "block",
+			"type":      "table_row",
+			"table_row": map[string]any{"cells": cells},
+		})
+	}
+	payload := map[string]any{
+		"table_width":       width,
+		"has_column_header": cb.hasColumnHeader,
+		"has_row_header":    false,
+		"children":          children,
+	}
+	return "table", payload, nil
 }
 
 // richTextJSON turns a block's inline runs into Notion rich-text objects: a literal
@@ -571,6 +610,8 @@ func notionBlockType(kind, level int) string {
 		return "code"
 	case graph.Quote:
 		return "quote"
+	case graph.Table:
+		return "table"
 	default:
 		return "paragraph"
 	}

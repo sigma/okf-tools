@@ -223,6 +223,18 @@ type childBlock struct {
 	language string // fence language for a code block; empty otherwise
 	runs     []textRun
 	anchors  []publish.AnchorName
+	// rows and hasColumnHeader carry a table block's content: rows → cells → the
+	// cell's inline runs, header row first. Set only when kind is graph.Table; runs
+	// is then empty, since a table's inline content lives per-cell here.
+	rows            []tableRow
+	hasColumnHeader bool
+}
+
+// tableRow is one row of a table childBlock: its cells left-to-right, each cell an
+// ordered run of inline spans (literal text, Ref placeholders, or hyperlinks) the
+// Executor serializes into a Notion table_row cell with Refs resolved.
+type tableRow struct {
+	cells [][]textRun
 }
 
 // textRun is one inline span of a childBlock: literal Text, a late-bound Ref

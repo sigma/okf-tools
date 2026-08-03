@@ -31,7 +31,7 @@
           inherit version;
           src = lib.cleanSource ./.;
           # Recomputed with `nix build .#okftool` (copy the hash from the mismatch).
-          vendorHash = "sha256-tGQvZsSidf04fciYXI/5OpvG9BKYlnFmdoJmLh+af7Q=";
+          vendorHash = "sha256-A5fl7XTNNcQciOj1M5U+ZUuB4doXSinHv2vkcbeFgO0=";
           # Only cmd/okftool is a main package, so `go install ./...` yields just
           # the okftool binary; leaving subPackages unset lets checkPhase run the
           # full `go test ./...` (parser, rules, and golden fixture bundles).
