@@ -42,8 +42,11 @@ jobs:
       - uses: dorny/paths-filter@v3
         id: filter
         with:
-          # Inputs that can actually change what `nix flake check` builds/tests:
-          # the flake, its lock, and the Go module (built by the package's doCheck).
+          # Inputs that can actually change what `nix flake check` builds/tests in a
+          # way the regular gofmt/vet/test job wouldn't already catch: the flake, its
+          # lock, and the Go module dependencies (go.mod/go.sum). Plain '**/*.go'
+          # changes are deliberately excluded — the package's doCheck re-runs the same
+          # go test/vet the Go job runs, so a .go regression is already reported there.
           # The workflow itself is included so changes to this job stay self-checking.
           filters: |
             nix:
@@ -51,7 +54,6 @@ jobs:
               - 'flake.lock'
               - 'go.mod'
               - 'go.sum'
-              - '**/*.go'
               - '.github/workflows/ci.yml'
       - uses: DeterminateSystems/nix-installer-action@main
         if: steps.filter.outputs.nix == 'true'
