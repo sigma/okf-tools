@@ -47,7 +47,14 @@ func PropertyHash(d *bundle.Doc) publish.Hash {
 	props := propsOf(d)
 	h := sha256.New()
 	for _, k := range slices.Sorted(maps.Keys(props)) {
-		v, _ := json.Marshal(props[k])
+		// Frontmatter values are YAML-decoded scalars/lists/maps, so json.Marshal
+		// encodes them deterministically (nested map keys sorted too). Fall back to a
+		// Go-syntax rendering for any value it cannot encode, so two distinct such
+		// values never collide into the same (empty) encoding and hide a drift.
+		v, err := json.Marshal(props[k])
+		if err != nil {
+			v = []byte(fmt.Sprintf("%#v", props[k]))
+		}
 		fmt.Fprintf(h, "%s=%s\n", k, v)
 	}
 	return publish.Hash(hex.EncodeToString(h.Sum(nil)))
