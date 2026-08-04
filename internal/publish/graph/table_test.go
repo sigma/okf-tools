@@ -68,9 +68,9 @@ func TestTableShortRowPaddedToWidth(t *testing.T) {
 }
 
 // A concept link inside a table cell survives as a first-class Ref, and a link in a
-// following paragraph still resolves — proving the cell link consumed exactly one
-// link ordinal, keeping linkIdx in lockstep with the bundle's resolution just as the
-// flat blocks do. If the cell's ordinal were miscounted, node:b.md would misresolve.
+// following paragraph still resolves — proving the cell link and the paragraph link
+// each map to the correct entry in the bundle's resolution. If the node-keyed
+// resolution map were misaligned, node:b.md would misresolve.
 func TestTableCellLinkBecomesRefAndKeepsOrdinalAligned(t *testing.T) {
 	files := map[string]string{
 		"okf.toml": "",

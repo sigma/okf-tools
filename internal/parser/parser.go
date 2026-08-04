@@ -215,44 +215,74 @@ func (d *Document) parseBody() {
 					d.MalformedTerms = append(d.MalformedTerms, Term{Text: term, Line: lm.LineOf(n)})
 				}
 			}
-		case *ast.Link:
-			d.Links = append(d.Links, Link{
-				Text:   collectText(v, src),
-				Target: string(v.Destination),
-				Line:   lm.LineOf(v),
-			})
-		case *ast.Image:
-			d.Links = append(d.Links, Link{
-				Text:   collectText(v, src),
-				Target: string(v.Destination),
-				Line:   lm.LineOf(v),
-				Image:  true,
-			})
-		case *ast.AutoLink:
-			d.Links = append(d.Links, Link{
-				Text:   string(v.URL(src)),
-				Target: string(v.URL(src)),
-				Line:   lm.LineOf(v),
-			})
-		case *wikilink.Node:
-			target := string(v.Target)
-			if len(v.Fragment) > 0 {
-				target += "#" + string(v.Fragment)
+		default:
+			// Every link-like inline node (see IsLinkLike) becomes a Link, gated
+			// by the single shared predicate so the publish graph — which re-walks
+			// the same AST to attach resolution — sees the identical set.
+			if IsLinkLike(n) {
+				d.Links = append(d.Links, linkOf(n, src, lm))
 			}
-			text := collectText(v, src)
-			if text == "" {
-				text = target
-			}
-			d.Links = append(d.Links, Link{
-				Text:     text,
-				Target:   target,
-				Line:     lm.LineOf(v),
-				Wikilink: true,
-				Image:    v.Embed,
-			})
 		}
 		return ast.WalkContinue, nil
 	})
+}
+
+// IsLinkLike reports whether n is one of the link-like inline nodes the parser
+// records as a Link: a markdown link, an image, an autolink, or an Obsidian
+// [[wikilink]]. It is the single predicate defining that domain, exported so the
+// publish graph shares it — producer (d.Links) and consumer (graph resolution)
+// key off the same set and cannot drift.
+func IsLinkLike(n ast.Node) bool {
+	switch n.(type) {
+	case *ast.Link, *ast.Image, *ast.AutoLink, *wikilink.Node:
+		return true
+	default:
+		return false
+	}
+}
+
+// linkOf extracts the Link for a link-like node. It is only called for nodes
+// IsLinkLike accepts; any other node is an invariant violation.
+func linkOf(n ast.Node, src []byte, lm *LineMapper) Link {
+	switch v := n.(type) {
+	case *ast.Link:
+		return Link{
+			Text:   collectText(v, src),
+			Target: string(v.Destination),
+			Line:   lm.LineOf(v),
+		}
+	case *ast.Image:
+		return Link{
+			Text:   collectText(v, src),
+			Target: string(v.Destination),
+			Line:   lm.LineOf(v),
+			Image:  true,
+		}
+	case *ast.AutoLink:
+		return Link{
+			Text:   string(v.URL(src)),
+			Target: string(v.URL(src)),
+			Line:   lm.LineOf(v),
+		}
+	case *wikilink.Node:
+		target := string(v.Target)
+		if len(v.Fragment) > 0 {
+			target += "#" + string(v.Fragment)
+		}
+		text := collectText(v, src)
+		if text == "" {
+			text = target
+		}
+		return Link{
+			Text:     text,
+			Target:   target,
+			Line:     lm.LineOf(v),
+			Wikilink: true,
+			Image:    v.Embed,
+		}
+	default:
+		panic("parser: linkOf called on non-link-like node")
+	}
 }
 
 // MarkCitations sets InCitations on every link that sits under a heading for

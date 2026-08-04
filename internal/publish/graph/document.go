@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/yuin/goldmark/ast"
@@ -125,8 +126,8 @@ func anchorName(slug string) publish.AnchorName {
 // Concept cross-links become Ref{node:target}; links into a glossary host with a
 // #fragment become Ref{anchor:glossary/slug}. Every other link (external, image,
 // citation, dangling) stays plain text — no Ref, no edge. Classification reuses
-// the bundle's own resolution (d.Resolved), matched to AST link nodes by their
-// shared depth-first order, so generation never re-implements link parsing.
+// the bundle's own resolution (d.Resolved), matched to AST link nodes by identity
+// via resolveByNode, so generation never re-implements link parsing.
 func buildDocument(d *bundle.Doc, banner *Banner) (doc *publish.Document, refs []publish.SymbolicID, anchors []publish.AnchorName) {
 	group := publish.GroupKey(publish.NodeRef(d.Rel))
 	doc = &publish.Document{Group: group}
@@ -141,7 +142,12 @@ func buildDocument(d *bundle.Doc, banner *Banner) (doc *publish.Document, refs [
 	body := []byte(d.Body)
 	if len(body) > 0 {
 		root := parser.Markdown().Parser().Parse(text.NewReader(body))
-		b := &docBuilder{doc: d, src: body, lm: parser.NewLineMapper(body, d.BodyStartLine)}
+		b := &docBuilder{
+			doc:      d,
+			src:      body,
+			lm:       parser.NewLineMapper(body, d.BodyStartLine),
+			resolved: resolveByNode(root, d),
+		}
 		b.walk(root, 0)
 		doc.Blocks = append(doc.Blocks, b.blocks...)
 		refs = b.refs
@@ -167,23 +173,50 @@ func ProjectDocument(d *bundle.Doc, bn *Banner) publish.Document {
 }
 
 // docBuilder accumulates the neutral blocks of one document during an AST walk.
-// linkIdx is the running ordinal into doc.Resolved: the k-th link-like inline
-// node encountered (in the same depth-first order the parser used) resolves to
-// doc.Resolved[k]. That shared order is what lets generation reuse the bundle's
-// classification without re-parsing links itself.
+// resolved maps each link-like AST node to its bundle classification, so the
+// block walk looks up a node's resolution by identity instead of re-counting a
+// fragile ordinal in lockstep with the parser (see resolveByNode).
 type docBuilder struct {
-	doc     *bundle.Doc
-	src     []byte
-	lm      *parser.LineMapper
-	blocks  []publish.Block
-	refs    []publish.SymbolicID
-	linkIdx int
+	doc      *bundle.Doc
+	src      []byte
+	lm       *parser.LineMapper
+	blocks   []publish.Block
+	refs     []publish.SymbolicID
+	resolved map[ast.Node]*bundle.ResolvedLink
+}
+
+// resolveByNode zips the link-like nodes of root, in depth-first order, against
+// the bundle's own resolution (d.Resolved) — which the parser produced by
+// walking the identical AST in the identical order, gated by the same
+// parser.IsLinkLike predicate. The result keys resolution by node identity, so
+// the block walk never re-derives link positions.
+//
+// A length mismatch means the two walks over the same bytes disagreed on the
+// link-like set — impossible while both share parser.IsLinkLike over the shared
+// parser, so it is an invariant violation, not a runtime condition: panic loudly
+// rather than silently misresolve (the failure mode this replaced).
+func resolveByNode(root ast.Node, d *bundle.Doc) map[ast.Node]*bundle.ResolvedLink {
+	var nodes []ast.Node
+	_ = ast.Walk(root, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if entering && parser.IsLinkLike(n) {
+			nodes = append(nodes, n)
+		}
+		return ast.WalkContinue, nil
+	})
+	if len(nodes) != len(d.Resolved) {
+		panic(fmt.Sprintf("graph: %s has %d link-like nodes but %d resolved links — parser/graph link walks desynced", d.Rel, len(nodes), len(d.Resolved)))
+	}
+	m := make(map[ast.Node]*bundle.ResolvedLink, len(nodes))
+	for i, n := range nodes {
+		m[n] = &d.Resolved[i]
+	}
+	return m
 }
 
 // walk recurses over n's children, emitting one neutral block per block-level
 // node and descending into containers (lists, list items, block quotes) so every
-// inline — and thus every link ordinal — is visited in parser order. depth is
-// the list-item nesting level.
+// inline is visited and emitted in document order. depth is the list-item nesting
+// level.
 func (b *docBuilder) walk(n ast.Node, depth int) {
 	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
 		switch v := c.(type) {
@@ -255,13 +288,12 @@ func (b *docBuilder) emit(kind BlockKind, level int, n ast.Node) {
 // emitTable projects a GFM table node into one neutral Table block: the header
 // row (from the TableHeader child) followed by the body rows (each TableRow child),
 // every cell carrying its own inline run. It reuses inlinesOf per cell, so a cell's
-// links become first-class Refs and — crucially — the link ordinal advances in the
-// parser's own depth-first order (header cells, then each row left-to-right), keeping
-// linkIdx in lockstep with d.Resolved exactly as the flat blocks do. Rows are
-// normalized to the header's column count, since Notion requires a rectangular
-// table; a short row is padded with empty cells and any overflow cell is dropped
-// (its already-consumed ordinal is preserved, only its rendered content and edge
-// go). A table hosts no glossary anchor, so none of emit's anchor bookkeeping applies.
+// links become first-class Refs, each looked up by node identity in the resolution
+// map. Rows are normalized to the header's column count, since Notion requires a
+// rectangular table; a short row is padded with empty cells and any overflow cell
+// is dropped (only its rendered content and edge go — every other cell's resolution
+// is unaffected, since it is keyed by node, not position). A table hosts no glossary
+// anchor, so none of emit's anchor bookkeeping applies.
 func (b *docBuilder) emitTable(n *east.Table) {
 	var rows []TableRow
 	var cellRefs [][]publish.SymbolicID
@@ -379,8 +411,10 @@ func (b *docBuilder) inlinesOf(n ast.Node) (inlines []Inline, refs []publish.Sym
 					inlines = append(inlines, Inline{Text: s})
 				}
 			case *ast.Link, *ast.Image, *ast.AutoLink, *wikilink.Node:
-				// A link-like node advances the ordinal in lockstep with the parser.
-				rl := b.nextResolved()
+				// A link-like node's resolution is keyed by node identity, so we
+				// don't render its children: any nested link-like node (e.g. the
+				// image inside a linked image) simply sits unread in the map.
+				rl := b.resolved[c]
 				if id, ok := refOf(rl); ok {
 					inlines = append(inlines, Inline{Ref: &Ref{ID: id}})
 					refs = append(refs, id)
@@ -390,11 +424,6 @@ func (b *docBuilder) inlinesOf(n ast.Node) (inlines []Inline, refs []publish.Sym
 						inlines = append(inlines, Inline{Text: txt})
 					}
 				}
-				// The link's text/ref is captured above, so we don't render its
-				// children — but the parser's walk counts every nested link-like
-				// node too (e.g. the image inside a linked image), so consume those
-				// ordinals to keep linkIdx in lockstep with d.Resolved.
-				b.consumeNested(c)
 			case *ast.Emphasis, *ast.CodeSpan:
 				visit(c) // formatting wrappers: keep their inner text/links inline
 			default:
@@ -414,32 +443,6 @@ func (b *docBuilder) inlinesOf(n ast.Node) (inlines []Inline, refs []publish.Sym
 	}
 	visit(n)
 	return inlines, refs
-}
-
-// nextResolved returns the resolved link for the current link ordinal and
-// advances it. It returns nil if the ordinal outruns doc.Resolved (defensive:
-// the shared parser keeps them in lockstep).
-func (b *docBuilder) nextResolved() *bundle.ResolvedLink {
-	i := b.linkIdx
-	b.linkIdx++
-	if i < 0 || i >= len(b.doc.Resolved) {
-		return nil
-	}
-	return &b.doc.Resolved[i]
-}
-
-// consumeNested advances the ordinal past every link-like node inside n, matching
-// the parser's full depth-first walk (which records an entry for a nested image
-// or link even though the visible content is the enclosing link's). It emits
-// nothing; it only keeps linkIdx aligned with d.Resolved.
-func (b *docBuilder) consumeNested(n ast.Node) {
-	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
-		switch c.(type) {
-		case *ast.Link, *ast.Image, *ast.AutoLink, *wikilink.Node:
-			b.linkIdx++
-		}
-		b.consumeNested(c)
-	}
 }
 
 // refOf decides whether a resolved link becomes a first-class Ref, and which
