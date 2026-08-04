@@ -2,10 +2,12 @@ package command
 
 import (
 	"fmt"
-	"github.com/spf13/pflag"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/spf13/pflag"
 
 	"github.com/sigma/okf-tools/internal/bundle"
 	"github.com/sigma/okf-tools/internal/config"
@@ -13,7 +15,7 @@ import (
 
 // New scaffolds a conformant concept page (frontmatter + a Citations stub),
 // preventing drift at creation.
-func New(args []string) (int, error) {
+func New(w io.Writer, args []string) (int, error) {
 	fs := pflag.NewFlagSet("new", pflag.ContinueOnError)
 	var g globals
 	registerGlobals(fs, &g)
@@ -65,7 +67,7 @@ func New(args []string) (int, error) {
 	if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
 		return 1, err
 	}
-	fmt.Fprintf(os.Stdout, "created %s\n", target)
+	fmt.Fprintf(w, "created %s\n", target)
 	hintIndexSync(root, cfgPath, target)
 	return 0, nil
 }
