@@ -81,18 +81,14 @@ func checkGlossaryStructure(ctx *Context) []Finding {
 func checkGlossaryAnchor(ctx *Context) []Finding {
 	var fs []Finding
 	for _, d := range ctx.Bundle.Docs {
-		for _, rl := range d.Resolved {
-			switch rl.Class {
-			case bundle.ClassConcept:
-				if rl.TargetDoc != nil && rl.TargetDoc.Glossary && rl.Fragment != "" && !rl.TargetDoc.HasAnchor(rl.Fragment) {
-					fs = append(fs, Finding{Path: d.Rel, Line: rl.Line,
-						Message: undefinedAnchorMsg(rl.TargetDoc, rl.Fragment)})
-				}
-			case bundle.ClassAnchor:
-				if d.Glossary && rl.Fragment != "" && !d.HasAnchor(rl.Fragment) {
-					fs = append(fs, Finding{Path: d.Rel, Line: rl.Line,
-						Message: undefinedAnchorMsg(d, rl.Fragment)})
-				}
+		for i := range d.Resolved {
+			rl := &d.Resolved[i]
+			// A glossary anchor is a #fragment into a glossary host — cross-file
+			// (ClassConcept → TargetDoc) or same-file (ClassAnchor → this doc). The
+			// heading-anchor rule owns the non-glossary case (see checkOKF203).
+			if host, kind := rl.AnchorTarget(d); kind == bundle.GlossaryAnchor && !host.HasAnchor(rl.Fragment) {
+				fs = append(fs, Finding{Path: d.Rel, Line: rl.Line,
+					Message: undefinedAnchorMsg(host, rl.Fragment)})
 			}
 		}
 	}

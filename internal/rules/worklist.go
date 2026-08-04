@@ -82,27 +82,15 @@ func checkOKF202(ctx *Context) []Finding {
 func checkOKF203(ctx *Context) []Finding {
 	var fs []Finding
 	for _, d := range ctx.Bundle.Docs {
-		for _, rl := range d.Resolved {
-			switch rl.Class {
-			case bundle.ClassConcept:
-				// Cross-file `other.md#frag` into an existing non-glossary page.
-				t := rl.TargetDoc
-				if rl.Fragment == "" || t == nil || !rl.Exists || t.Glossary {
-					continue
-				}
-				if !t.HasHeadingAnchor(rl.Fragment) {
-					fs = append(fs, Finding{Path: d.Rel, Line: rl.Line,
-						Message: undefinedHeadingMsg(t, rl.Fragment)})
-				}
-			case bundle.ClassAnchor:
-				// Same-file `#frag`; glossary self-refs are OKFEXT-GLOSSARY-02's.
-				if rl.Fragment == "" || d.Glossary {
-					continue
-				}
-				if !d.HasHeadingAnchor(rl.Fragment) {
-					fs = append(fs, Finding{Path: d.Rel, Line: rl.Line,
-						Message: undefinedHeadingMsg(d, rl.Fragment)})
-				}
+		for i := range d.Resolved {
+			rl := &d.Resolved[i]
+			// A heading anchor is a #fragment into a non-glossary host — cross-file
+			// `other.md#frag` into an existing page (a missing file is OKF202's, and
+			// yields NotAnchor here), or same-file `#frag`. Glossary hosts are
+			// OKFEXT-GLOSSARY-02's (checkGlossaryAnchor), excluded by kind.
+			if host, kind := rl.AnchorTarget(d); kind == bundle.HeadingAnchor && !host.HasHeadingAnchor(rl.Fragment) {
+				fs = append(fs, Finding{Path: d.Rel, Line: rl.Line,
+					Message: undefinedHeadingMsg(host, rl.Fragment)})
 			}
 		}
 	}
