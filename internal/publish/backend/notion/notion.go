@@ -221,7 +221,7 @@ type childBlock struct {
 	kind     int // mirrors graph.BlockKind
 	level    int
 	language string // fence language for a code block; empty otherwise
-	runs     []textRun
+	runs     []publish.Run
 	anchors  []publish.AnchorName
 	// rows and hasColumnHeader carry a table block's content: rows → cells → the
 	// cell's inline runs, header row first. Set only when kind is graph.Table; runs
@@ -234,16 +234,5 @@ type childBlock struct {
 // ordered run of inline spans (literal text, Ref placeholders, or hyperlinks) the
 // Executor serializes into a Notion table_row cell with Refs resolved.
 type tableRow struct {
-	cells [][]textRun
-}
-
-// textRun is one inline span of a childBlock: literal Text, a late-bound Ref
-// (Text empty, Ref set) the transport resolves to a Notion mention, or a literal
-// Text hyperlinked to an external Link URL. Ref and Link are mutually exclusive.
-type textRun struct {
-	Text string
-	Ref  publish.SymbolicID
-	// Link, when non-empty, hyperlinks this run's Text to an external URL (the
-	// disclaimer banner's source deep-link). Only meaningful when Ref is empty.
-	Link string
+	cells [][]publish.Run
 }

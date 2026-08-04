@@ -332,7 +332,7 @@ func tableBlockJSON(cb childBlock, r backend.Resolver) (string, map[string]any, 
 // span becomes a text object; a late-bound Ref is resolved through the Resolver —
 // the physical Ref→BackendID swap — into a page mention carrying the real id. An
 // unresolved Ref is an error, since the transport must gate on it before Execute.
-func richTextJSON(runs []textRun, r backend.Resolver) ([]map[string]any, error) {
+func richTextJSON(runs []publish.Run, r backend.Resolver) ([]map[string]any, error) {
 	out := make([]map[string]any, 0, len(runs))
 	for _, run := range runs {
 		if run.Ref != "" {
@@ -685,7 +685,7 @@ func hostedAnchorNames(children []childBlock) map[publish.AnchorName]bool {
 // anchor block ids exist.
 func dropCites(cb childBlock, hosted map[publish.AnchorName]bool) (childBlock, bool) {
 	changed := false
-	runs := make([]textRun, 0, len(cb.runs))
+	runs := make([]publish.Run, 0, len(cb.runs))
 	for _, run := range cb.runs {
 		if name, ok := run.Ref.AnchorName(); ok && hosted[name] {
 			changed = true

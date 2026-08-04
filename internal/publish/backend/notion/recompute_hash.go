@@ -138,7 +138,7 @@ func canonBlocksOfPayload(p publish.BackendBlock) []canonBlock {
 // canonRunsText extracts a source run slice's canonical text: literal text (plus
 // its external link URL, so a banner deep-link change is caught), with each Ref
 // folded to the fixed placeholder.
-func canonRunsText(runs []textRun) string {
+func canonRunsText(runs []publish.Run) string {
 	var s strings.Builder
 	for _, r := range runs {
 		if r.Ref != "" {

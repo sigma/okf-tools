@@ -196,7 +196,7 @@ func TestCanonRunsTextSourceLiveAgreement(t *testing.T) {
 	]`), &live); err != nil {
 		t.Fatal(err)
 	}
-	source := []textRun{
+	source := []publish.Run{
 		{Text: "see "},
 		{Ref: "node:target.md"},
 		{Text: " and edit", Link: "https://example.com/edit"},
