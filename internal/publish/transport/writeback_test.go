@@ -26,19 +26,17 @@ func TestTransportWritesBackProvenance(t *testing.T) {
 	// parent. Each is its own transaction; the fake mints ids at Execute.
 	dag := &optimize.TxnDAG{Txns: []publish.PackedTxn{
 		{
-			Txn:      fakeTxn(be, "node:CONTEXT.md", "glossary/root-kek"),
-			Group:    "node:CONTEXT.md",
-			Produces: []publish.SymbolicID{"node:CONTEXT.md"},
-			Anchors:  []publish.AnchorName{"glossary/root-kek"},
-			Hash:     "hG",
+			Txn:       fakeTxn(be, "node:CONTEXT.md", "glossary/root-kek"),
+			Group:     "node:CONTEXT.md",
+			Produces:  []publish.SymbolicID{"node:CONTEXT.md"},
+			Anchors:   []publish.AnchorName{"glossary/root-kek"},
+			NodeStamp: publish.NodeStamp{Hash: "hG"},
 		},
 		{
-			Txn:      fakeTxn(be, "node:docs/adr/sub.md"),
-			Group:    "node:docs/adr/sub.md",
-			Produces: []publish.SymbolicID{"node:docs/adr/sub.md"},
-			Hash:     "hS",
-			Parent:   "node:index.md",
-			Title:    "Sub Page",
+			Txn:       fakeTxn(be, "node:docs/adr/sub.md"),
+			Group:     "node:docs/adr/sub.md",
+			Produces:  []publish.SymbolicID{"node:docs/adr/sub.md"},
+			NodeStamp: publish.NodeStamp{Hash: "hS", Parent: "node:index.md", Title: "Sub Page"},
 		},
 	}}
 

@@ -153,11 +153,11 @@ func diffDoc(d *bundle.Doc, cs *publish.CurrentState, o *options, src *hierarchy
 	// Stamp the parent, both expected hashes, and title on every op (not just the
 	// create) so publish-time write-back can route and record a touched node — new
 	// or re-asserted — and stamp both hash columns from whichever arm survives.
-	setProps := &Op{Kind: SetProperties, Node: node, Props: propsOf(d), Parent: parent, Hash: hash, PropHash: propHash, Title: title}
-	setContent := &Op{Kind: SetContent, Node: node, Doc: doc, Refs: refs, Anchors: anchors, Parent: parent, Hash: hash, PropHash: propHash, Title: title}
+	setProps := &Op{Kind: SetProperties, Node: node, Props: propsOf(d), NodeStamp: publish.NodeStamp{Parent: parent, Hash: hash, PropHash: propHash, Title: title}}
+	setContent := &Op{Kind: SetContent, Node: node, Doc: doc, Refs: refs, Anchors: anchors, NodeStamp: publish.NodeStamp{Parent: parent, Hash: hash, PropHash: propHash, Title: title}}
 
 	if _, exists := cs.NodeID(node); !exists {
-		return []*Op{{Kind: CreateNode, Node: node, Parent: parent, Hash: hash, PropHash: propHash, Title: title}, setProps, setContent}
+		return []*Op{{Kind: CreateNode, Node: node, NodeStamp: publish.NodeStamp{Parent: parent, Hash: hash, PropHash: propHash, Title: title}}, setProps, setContent}
 	}
 	// Existing: gate the two arms independently, each by its own scanned hash. An arm
 	// hash-skips iff its scanned hash is present and equals the expected one; a

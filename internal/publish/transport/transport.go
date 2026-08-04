@@ -178,7 +178,7 @@ func buildProvenance(dag *optimize.TxnDAG, tbl *table) publish.Provenance {
 
 		np, seen := prov.Nodes[node]
 		if !seen {
-			np = publish.NodeProvenance{ID: id, Hash: txn.Hash, PropHash: txn.PropHash, Parent: txn.Parent, Title: txn.Title}
+			np = publish.NodeProvenance{ID: id, NodeStamp: txn.NodeStamp}
 			if txn.Parent != "" {
 				if pid, ok := tbl.Resolve(txn.Parent); ok {
 					np.ParentID = pid

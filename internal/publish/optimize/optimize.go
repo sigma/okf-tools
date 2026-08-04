@@ -71,15 +71,11 @@ type taggedUnit struct {
 	target   publish.SymbolicID
 	phase    int
 	seq      int
-	// hash, propHash, parent, and title are the write-back provenance carried down
-	// from the op: the node's expected content and property hashes, its parent
-	// symbolic id, and its display title. They ride every unit of a touched node so
-	// the sealed PackedTxn can expose them regardless of which unit (create / props
-	// / content chunk) landed in the bin.
-	hash     publish.Hash
-	propHash publish.Hash
-	parent   publish.SymbolicID
-	title    string
+	// NodeStamp is the write-back provenance carried down from the op — the node's
+	// expected content and property hashes, its parent symbolic id, and its title. It
+	// rides every unit of a touched node so the sealed PackedTxn can expose it
+	// regardless of which unit (create / props / content chunk) landed in the bin.
+	publish.NodeStamp
 }
 
 // Optimize turns the op-DAG into a transaction-DAG. It is a pure function of the
@@ -153,15 +149,12 @@ func tokenize(g *graph.Graph, tk backend.Tokenizer) []taggedUnit {
 				u.Refs = []publish.SymbolicID{op.Parent}
 			}
 			out = append(out, taggedUnit{
-				unit:     u,
-				produces: []publish.SymbolicID{op.Node},
-				target:   op.Node,
-				phase:    phaseCreate,
-				seq:      next(),
-				hash:     op.Hash,
-				propHash: op.PropHash,
-				parent:   op.Parent,
-				title:    op.Title,
+				unit:      u,
+				produces:  []publish.SymbolicID{op.Node},
+				target:    op.Node,
+				phase:     phaseCreate,
+				seq:       next(),
+				NodeStamp: op.NodeStamp,
 			})
 		case graph.SetProperties:
 			// SetProperties(A) carries Ref{node:A} — its write target (#164 §5). The
@@ -170,14 +163,11 @@ func tokenize(g *graph.Graph, tk backend.Tokenizer) []taggedUnit {
 			u.Group = publish.GroupKey(op.Node)
 			u.Refs = []publish.SymbolicID{op.Node}
 			out = append(out, taggedUnit{
-				unit:     u,
-				target:   op.Node,
-				phase:    phaseProps,
-				seq:      next(),
-				hash:     op.Hash,
-				propHash: op.PropHash,
-				parent:   op.Parent,
-				title:    op.Title,
+				unit:      u,
+				target:    op.Node,
+				phase:     phaseProps,
+				seq:       next(),
+				NodeStamp: op.NodeStamp,
 			})
 		case graph.SetContent:
 			if op.Doc == nil {
@@ -192,14 +182,11 @@ func tokenize(g *graph.Graph, tk backend.Tokenizer) []taggedUnit {
 				refs = append(refs, target)
 				ru.Refs = refs
 				out = append(out, taggedUnit{
-					unit:     ru,
-					target:   target,
-					phase:    phaseContent,
-					seq:      next(),
-					hash:     op.Hash,
-					propHash: op.PropHash,
-					parent:   op.Parent,
-					title:    op.Title,
+					unit:      ru,
+					target:    target,
+					phase:     phaseContent,
+					seq:       next(),
+					NodeStamp: op.NodeStamp,
 				})
 			}
 		case graph.DeleteNode:
@@ -323,14 +310,11 @@ type accumulator struct {
 	refs     []publish.SymbolicID
 	produces []publish.SymbolicID
 	anchors  []publish.AnchorName
-	// hash, propHash, parent, and title are the write-back provenance of the bin's
-	// node. Every unit of one node carries the same values; the accumulator keeps the
-	// first non-empty it sees (a content-less node still carries them via its
-	// props/create unit).
-	hash     publish.Hash
-	propHash publish.Hash
-	parent   publish.SymbolicID
-	title    string
+	// NodeStamp is the write-back provenance of the bin's node. Every unit of one node
+	// carries the same stamp; the accumulator keeps the first non-empty field it sees
+	// via FillMissing (a content-less node still supplies it through its props/create
+	// unit).
+	publish.NodeStamp
 }
 
 func newAccumulator(g publish.GroupKey) *accumulator {
@@ -341,18 +325,7 @@ func (a *accumulator) add(tu taggedUnit) {
 	a.refs = append(a.refs, tu.unit.Refs...)
 	a.anchors = append(a.anchors, tu.unit.Anchors...)
 	a.produces = append(a.produces, tu.produces...)
-	if a.hash == "" {
-		a.hash = tu.hash
-	}
-	if a.propHash == "" {
-		a.propHash = tu.propHash
-	}
-	if a.parent == "" {
-		a.parent = tu.parent
-	}
-	if a.title == "" {
-		a.title = tu.title
-	}
+	a.NodeStamp.FillMissing(tu.NodeStamp)
 }
 
 // seal wraps the built Transaction with its aggregated metadata, applying
@@ -382,15 +355,12 @@ func (a *accumulator) seal(txn publish.Transaction) publish.PackedTxn {
 	}
 
 	return publish.PackedTxn{
-		Txn:      txn,
-		Group:    a.group,
-		Refs:     dedupSorted(exposed),
-		Anchors:  dedupSorted(a.anchors),
-		Produces: dedupSorted(a.produces),
-		Hash:     a.hash,
-		PropHash: a.propHash,
-		Parent:   a.parent,
-		Title:    a.title,
+		Txn:       txn,
+		Group:     a.group,
+		Refs:      dedupSorted(exposed),
+		Anchors:   dedupSorted(a.anchors),
+		Produces:  dedupSorted(a.produces),
+		NodeStamp: a.NodeStamp,
 	}
 }
 

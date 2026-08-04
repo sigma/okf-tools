@@ -42,12 +42,12 @@ func TestNotionEndToEnd(t *testing.T) {
 		}),
 
 		// b.md — child of index, a plain page (the cross-link target).
-		{Kind: graph.CreateNode, Node: "node:b.md", Parent: "node:index.md"},
+		{Kind: graph.CreateNode, Node: "node:b.md", NodeStamp: publish.NodeStamp{Parent: "node:index.md"}},
 		propsOp("node:b.md"),
 		contentOpBlocks("node:b.md", publish.Block{Content: para(txt("Bee"))}),
 
 		// a.md — child of index; links b.md and cites the glossary anchor.
-		{Kind: graph.CreateNode, Node: "node:a.md", Parent: "node:index.md"},
+		{Kind: graph.CreateNode, Node: "node:a.md", NodeStamp: publish.NodeStamp{Parent: "node:index.md"}},
 		propsOp("node:a.md"),
 		contentOpBlocks("node:a.md", publish.Block{
 			Content: para(txt("see "), ref("node:b.md"), txt(" and "), ref("anchor:glossary/root-kek")),
@@ -180,7 +180,7 @@ func TestNotionEndToEndSelfHostedAnchorUnderNesting(t *testing.T) {
 			},
 		),
 		// specs/x.md — nests under CONTEXT.md and cites the glossary anchor.
-		{Kind: graph.CreateNode, Node: "node:specs/x.md", Parent: "node:CONTEXT.md"},
+		{Kind: graph.CreateNode, Node: "node:specs/x.md", NodeStamp: publish.NodeStamp{Parent: "node:CONTEXT.md"}},
 		propsOp("node:specs/x.md"),
 		contentOpBlocks("node:specs/x.md",
 			publish.Block{Content: para(txt("cites "), ref("anchor:glossary/emergency-block"))},
