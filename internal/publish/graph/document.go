@@ -141,7 +141,7 @@ func buildDocument(d *bundle.Doc, banner *Banner) (doc *publish.Document, refs [
 	body := []byte(d.Body)
 	if len(body) > 0 {
 		root := parser.Markdown().Parser().Parse(text.NewReader(body))
-		b := &docBuilder{doc: d, src: body, lm: newLineMapper(body, d.BodyStartLine)}
+		b := &docBuilder{doc: d, src: body, lm: parser.NewLineMapper(body, d.BodyStartLine)}
 		b.walk(root, 0)
 		doc.Blocks = append(doc.Blocks, b.blocks...)
 		refs = b.refs
@@ -174,7 +174,7 @@ func ProjectDocument(d *bundle.Doc, bn *Banner) publish.Document {
 type docBuilder struct {
 	doc     *bundle.Doc
 	src     []byte
-	lm      *lineMapper
+	lm      *parser.LineMapper
 	blocks  []publish.Block
 	refs    []publish.SymbolicID
 	linkIdx int
@@ -466,7 +466,7 @@ func refOf(rl *bundle.ResolvedLink) (publish.SymbolicID, bool) {
 // The anchor set on the op is authoritative for edges; this per-block placement
 // feeds the backend's anchor map.
 func (b *docBuilder) anchorAt(n ast.Node) (string, bool) {
-	line := b.lm.lineOf(n)
+	line := b.lm.LineOf(n)
 	for _, a := range b.doc.Anchors {
 		if a.Line == line {
 			return a.Slug, true

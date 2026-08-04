@@ -16,7 +16,7 @@ func blocksFromBody(t *testing.T, body string) []BlockContent {
 	t.Helper()
 	src := []byte(body)
 	root := parser.Markdown().Parser().Parse(text.NewReader(src))
-	b := &docBuilder{doc: &bundle.Doc{}, src: src, lm: newLineMapper(src, 1)}
+	b := &docBuilder{doc: &bundle.Doc{}, src: src, lm: parser.NewLineMapper(src, 1)}
 	b.walk(root, 0)
 	out := make([]BlockContent, 0, len(b.blocks))
 	for _, blk := range b.blocks {
