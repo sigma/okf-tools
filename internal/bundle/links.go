@@ -35,6 +35,55 @@ type ResolvedLink struct {
 	TargetDoc *Doc   // the bundle doc this concept cross-link points at, if any
 }
 
+// AnchorTargetKind classifies what a link's #fragment addresses. It is the single
+// home of the glossary-anchor-vs-heading-anchor decision that the glossary rule,
+// the heading-anchor rule, and the publisher all consume — so the split lives in
+// one place instead of as three literal .Glossary tests that must stay mutually
+// consistent. (Distinct from AnchorKind, which classifies a glossary anchor entry
+// as a term or a heading.)
+type AnchorTargetKind int
+
+const (
+	// NotAnchor: the link carries no fragment, is not a fragment-bearing class, or
+	// its host doc does not resolve (a dangling cross-file target).
+	NotAnchor AnchorTargetKind = iota
+	// GlossaryAnchor: the fragment addresses a bold-term anchor inside a glossary
+	// host — check it with host.HasAnchor.
+	GlossaryAnchor
+	// HeadingAnchor: the fragment addresses a heading in a non-glossary page —
+	// check it with host.HasHeadingAnchor.
+	HeadingAnchor
+)
+
+// AnchorTarget reports whether this link addresses an in-page anchor and, if so,
+// which doc hosts it and whether it is a glossary-term anchor or a heading anchor.
+// src is the doc the link appears in — the host for a same-file "#frag"
+// (ClassAnchor); a cross-file "other.md#frag" (ClassConcept) hosts its anchor in
+// TargetDoc, so callers that only ever pass ClassConcept links (the publisher) may
+// pass nil. A ClassConcept target that does not resolve inside the bundle
+// (TargetDoc == nil, equivalently !Exists) yields NotAnchor: a missing file is the
+// broken-link rule's concern, not an anchor's.
+func (rl *ResolvedLink) AnchorTarget(src *Doc) (host *Doc, kind AnchorTargetKind) {
+	if rl.Fragment == "" {
+		return nil, NotAnchor
+	}
+	switch rl.Class {
+	case ClassConcept:
+		host = rl.TargetDoc
+	case ClassAnchor:
+		host = src
+	default:
+		return nil, NotAnchor
+	}
+	if host == nil {
+		return nil, NotAnchor
+	}
+	if host.Glossary {
+		return host, GlossaryAnchor
+	}
+	return host, HeadingAnchor
+}
+
 var schemeRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.-]*:`)
 
 // isURL reports whether target is an external reference rather than a path.

@@ -452,7 +452,10 @@ func refOf(rl *bundle.ResolvedLink) (publish.SymbolicID, bool) {
 	if rl == nil || rl.Class != bundle.ClassConcept || rl.TargetDoc == nil {
 		return "", false
 	}
-	if rl.TargetDoc.Glossary && rl.Fragment != "" {
+	// A concept link into a glossary host carrying a #fragment is an anchor ref; any
+	// other resolved concept link is a node ref (fragment dropped). The glossary-vs-
+	// heading split is bundle.ResolvedLink.AnchorTarget's, shared with the lint rules.
+	if _, kind := rl.AnchorTarget(nil); kind == bundle.GlossaryAnchor {
 		return publish.AnchorRef(anchorName(rl.Fragment)), true
 	}
 	return publish.NodeRef(rl.TargetDoc.Rel), true
