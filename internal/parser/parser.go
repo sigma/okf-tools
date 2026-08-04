@@ -181,7 +181,7 @@ func (d *Document) parseBody() {
 	if len(src) == 0 {
 		return
 	}
-	lm := newLineMapper(src, d.BodyStartLine)
+	lm := NewLineMapper(src, d.BodyStartLine)
 	root := md.Parser().Parse(text.NewReader(src))
 
 	_ = ast.Walk(root, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
@@ -193,11 +193,11 @@ func (d *Document) parseBody() {
 			d.Headings = append(d.Headings, Heading{
 				Level: v.Level,
 				Text:  strings.TrimSpace(collectText(v, src)),
-				Line:  lm.lineOf(v),
+				Line:  lm.LineOf(v),
 			})
 		case *ast.ListItem:
 			d.ListItems = append(d.ListItems, ListItem{
-				Line:    lm.lineOf(v),
+				Line:    lm.LineOf(v),
 				HasLink: hasLinkDescendant(v),
 			})
 		case *ast.Paragraph, *ast.TextBlock:
@@ -206,33 +206,33 @@ func (d *Document) parseBody() {
 			term, boldLead, ok := leadTerm(n, src)
 			switch {
 			case ok:
-				d.Terms = append(d.Terms, Term{Text: term, Line: lm.lineOf(n)})
+				d.Terms = append(d.Terms, Term{Text: term, Line: lm.LineOf(n)})
 			case boldLead:
 				// A bold lead with no colon is a malformed term. List items are
 				// left to the caller's Terms-by-line check; only flag standalone
 				// paragraphs here, so nothing is reported twice.
 				if _, inListItem := n.Parent().(*ast.ListItem); !inListItem {
-					d.MalformedTerms = append(d.MalformedTerms, Term{Text: term, Line: lm.lineOf(n)})
+					d.MalformedTerms = append(d.MalformedTerms, Term{Text: term, Line: lm.LineOf(n)})
 				}
 			}
 		case *ast.Link:
 			d.Links = append(d.Links, Link{
 				Text:   collectText(v, src),
 				Target: string(v.Destination),
-				Line:   lm.lineOf(v),
+				Line:   lm.LineOf(v),
 			})
 		case *ast.Image:
 			d.Links = append(d.Links, Link{
 				Text:   collectText(v, src),
 				Target: string(v.Destination),
-				Line:   lm.lineOf(v),
+				Line:   lm.LineOf(v),
 				Image:  true,
 			})
 		case *ast.AutoLink:
 			d.Links = append(d.Links, Link{
 				Text:   string(v.URL(src)),
 				Target: string(v.URL(src)),
-				Line:   lm.lineOf(v),
+				Line:   lm.LineOf(v),
 			})
 		case *wikilink.Node:
 			target := string(v.Target)
@@ -246,7 +246,7 @@ func (d *Document) parseBody() {
 			d.Links = append(d.Links, Link{
 				Text:     text,
 				Target:   target,
-				Line:     lm.lineOf(v),
+				Line:     lm.LineOf(v),
 				Wikilink: true,
 				Image:    v.Embed,
 			})
@@ -342,25 +342,29 @@ func collectText(n ast.Node, src []byte) string {
 	return sb.String()
 }
 
-// lineMapper maps byte offsets in the body source to 1-based file line numbers.
-type lineMapper struct {
+// LineMapper maps byte offsets in a document body to 1-based file line numbers.
+// It is the single home for body-offset→line mapping; the publisher's graph
+// builder shares it rather than keeping a private clone.
+type LineMapper struct {
 	starts    []int // byte offset of the start of each body line
 	fileStart int   // file line number of body line 1
 }
 
-func newLineMapper(src []byte, fileStart int) *lineMapper {
+// NewLineMapper builds a LineMapper over src, whose body line 1 is file line
+// fileStart.
+func NewLineMapper(src []byte, fileStart int) *LineMapper {
 	starts := []int{0}
 	for i, b := range src {
 		if b == '\n' {
 			starts = append(starts, i+1)
 		}
 	}
-	return &lineMapper{starts: starts, fileStart: fileStart}
+	return &LineMapper{starts: starts, fileStart: fileStart}
 }
 
-// lineOf returns the file line number of node n, preferring the node's own
+// LineOf returns the file line number of node n, preferring the node's own
 // first text segment and falling back to its enclosing block's first line.
-func (m *lineMapper) lineOf(n ast.Node) int {
+func (m *LineMapper) LineOf(n ast.Node) int {
 	if seg, ok := firstSegment(n); ok {
 		return m.at(seg.Start)
 	}
@@ -370,7 +374,7 @@ func (m *lineMapper) lineOf(n ast.Node) int {
 	return m.fileStart
 }
 
-func (m *lineMapper) at(offset int) int {
+func (m *LineMapper) at(offset int) int {
 	lo, hi := 0, len(m.starts)-1
 	for lo < hi {
 		mid := (lo + hi + 1) / 2
