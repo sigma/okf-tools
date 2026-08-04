@@ -102,7 +102,11 @@ func (b *Backend) patchSelfHostedCites(ctx context.Context, children []childBloc
 	if len(deferred) == 0 {
 		return nil
 	}
-	r := hostedAnchorResolver{hosted: anchors, base: base}
+	local := make(map[publish.SymbolicID]publish.BackendID, len(anchors))
+	for name, bid := range anchors {
+		local[publish.AnchorRef(name)] = bid
+	}
+	r := backend.WithOverlay(base, local)
 	for _, i := range deferred {
 		typ, payload, err := blockContentJSON(children[i], r)
 		if err != nil {
@@ -698,26 +702,6 @@ func dropCites(cb childBlock, hosted map[publish.AnchorName]bool) (childBlock, b
 	}
 	cb.runs = runs
 	return cb, true
-}
-
-// hostedAnchorResolver layers a transaction's own just-hosted anchors over the
-// transport Resolver: an "anchor:<name>" ref for an anchor the create hosts
-// resolves to the block id the POST minted for it (learned post-create), every
-// other id falling through to the base. It is the notion echo of the fs backend's
-// txnResolver — the local resolution the optimizer's self-anchor suppression
-// assumes — deferred until the server-minted ids are known. See sigma/okf-tools#89.
-type hostedAnchorResolver struct {
-	hosted map[publish.AnchorName]publish.BackendID
-	base   backend.Resolver
-}
-
-func (h hostedAnchorResolver) Resolve(id publish.SymbolicID) (publish.BackendID, bool) {
-	if name, ok := id.AnchorName(); ok {
-		if bid, ok := h.hosted[name]; ok {
-			return bid, true
-		}
-	}
-	return h.base.Resolve(id)
 }
 
 // mapAnchors matches sent child blocks to their created block ids positionally
