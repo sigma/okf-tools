@@ -61,7 +61,7 @@ func (b *Backend) scanRecompute(ctx context.Context) (*publish.CurrentState, err
 		if err := claim(path, row.ID); err != nil {
 			return nil, err
 		}
-		node := nodeSym(path)
+		node := publish.NodeRef(path)
 		nodeIDs[node] = publish.BackendID(row.ID)
 
 		blocks, err := b.listLiveBlocks(ctx, row.ID)
@@ -103,7 +103,7 @@ func (b *Backend) scanRecompute(ctx context.Context) (*publish.CurrentState, err
 			if err := claim(subpath, "subtree of "+row.ID); err != nil {
 				return nil, err
 			}
-			sub := nodeSym(subpath)
+			sub := publish.NodeRef(subpath)
 			nodeIDs[sub] = publish.BackendID(blk.id) // live id, healing a stale stored one
 			subBlocks, err := b.listLiveBlocks(ctx, blk.id)
 			if err != nil {
@@ -121,7 +121,7 @@ func (b *Backend) scanRecompute(ctx context.Context) (*publish.CurrentState, err
 			if err := claim(subpath, "subtree of "+row.ID); err != nil {
 				return nil, err
 			}
-			sub := nodeSym(subpath)
+			sub := publish.NodeRef(subpath)
 			if e.ID != "" {
 				nodeIDs[sub] = publish.BackendID(e.ID)
 			}

@@ -12,6 +12,10 @@ import (
 
 // --- fixtures ---------------------------------------------------------------
 
+// nodeRef is a test shorthand for the node-ref constructor; the "node:"/"anchor:"
+// scheme itself lives only in package publish (ref.go).
+func nodeRef(rel string) publish.SymbolicID { return publish.NodeRef(rel) }
+
 func loadBundle(t *testing.T, files map[string]string) *bundle.Bundle {
 	t.Helper()
 	dir := t.TempDir()

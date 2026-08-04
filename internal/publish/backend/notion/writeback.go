@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
-	"strings"
 
 	"github.com/sigma/okf-tools/internal/publish"
 )
@@ -44,7 +43,7 @@ func (b *Backend) WriteBack(ctx context.Context, prov publish.Provenance) error 
 			m = map[string]subtreeEntry{}
 			subByParent[np.ParentID] = m
 		}
-		m[relOfNode(node)] = subtreeEntry{ID: string(np.ID), Hash: string(np.Hash), PropHash: string(np.PropHash), Title: np.Title}
+		m[node.Rel()] = subtreeEntry{ID: string(np.ID), Hash: string(np.Hash), PropHash: string(np.PropHash), Title: np.Title}
 	}
 
 	// Own-row writes for top-level nodes, in sorted order for deterministic request
@@ -53,7 +52,7 @@ func (b *Backend) WriteBack(ctx context.Context, prov publish.Provenance) error 
 	for _, node := range topLevel {
 		np := prov.Nodes[node]
 		props := map[string]any{
-			"path": b.richTextProp(relOfNode(node)),
+			"path": b.richTextProp(node.Rel()),
 			// The `hash` column stores content and property hashes as one compound
 			// value, so the two-hash split needs no new Notion column (#110 phase 2).
 			"hash": b.richTextProp(encodeHashPair(np.Hash, np.PropHash)),
@@ -142,10 +141,4 @@ func anchorMap(anchors map[publish.AnchorName]publish.BackendID) map[string]stri
 		out[string(name)] = string(id)
 	}
 	return out
-}
-
-// relOfNode strips the "node:" scheme from a node symbolic id, recovering the repo
-// path that is the row's stable `path` key (and a subpage's subtree-map key).
-func relOfNode(id publish.SymbolicID) string {
-	return strings.TrimPrefix(string(id), "node:")
 }

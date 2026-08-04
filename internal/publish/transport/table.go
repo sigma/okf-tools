@@ -43,7 +43,7 @@ func (r *table) Resolve(id publish.SymbolicID) (publish.BackendID, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if name, ok := publish.AnchorRefName(id); ok {
+	if name, ok := id.AnchorName(); ok {
 		if b, ok := r.anchors[name]; ok {
 			return b, true
 		}

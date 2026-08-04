@@ -109,19 +109,11 @@ type Ref struct {
 	ID publish.SymbolicID
 }
 
-// nodeRef mints the symbolic id of a node reference.
-func nodeRef(rel string) publish.SymbolicID { return publish.SymbolicID("node:" + rel) }
-
 // anchorName mints the neutral anchor name of a glossary slug, namespaced by the
 // glossary role rather than the (retired) hardwired host filename — the
 // "glossary/<slug>" of #162's worked example.
 func anchorName(slug string) publish.AnchorName {
 	return publish.AnchorName(areas.RoleGlossary + "/" + slug)
-}
-
-// anchorRef mints the symbolic id of an anchor reference for a glossary slug.
-func anchorRef(slug string) publish.SymbolicID {
-	return publish.SymbolicID("anchor:" + string(anchorName(slug)))
 }
 
 // buildDocument parses d's body once with the shared mdast parser (never regex)
@@ -136,7 +128,7 @@ func anchorRef(slug string) publish.SymbolicID {
 // the bundle's own resolution (d.Resolved), matched to AST link nodes by their
 // shared depth-first order, so generation never re-implements link parsing.
 func buildDocument(d *bundle.Doc, banner *Banner) (doc *publish.Document, refs []publish.SymbolicID, anchors []publish.AnchorName) {
-	group := publish.GroupKey(nodeRef(d.Rel))
+	group := publish.GroupKey(publish.NodeRef(d.Rel))
 	doc = &publish.Document{Group: group}
 
 	// The disclaimer banner rides as a stable block-0, ahead of all authored
@@ -461,9 +453,9 @@ func refOf(rl *bundle.ResolvedLink) (publish.SymbolicID, bool) {
 		return "", false
 	}
 	if rl.TargetDoc.Glossary && rl.Fragment != "" {
-		return anchorRef(rl.Fragment), true
+		return publish.AnchorRef(anchorName(rl.Fragment)), true
 	}
-	return nodeRef(rl.TargetDoc.Rel), true
+	return publish.NodeRef(rl.TargetDoc.Rel), true
 }
 
 // anchorAt reports the glossary slug this block hosts, if any, by matching the

@@ -687,7 +687,7 @@ func dropCites(cb childBlock, hosted map[publish.AnchorName]bool) (childBlock, b
 	changed := false
 	runs := make([]textRun, 0, len(cb.runs))
 	for _, run := range cb.runs {
-		if name, ok := publish.AnchorRefName(run.Ref); ok && hosted[name] {
+		if name, ok := run.Ref.AnchorName(); ok && hosted[name] {
 			changed = true
 			continue
 		}
@@ -712,7 +712,7 @@ type hostedAnchorResolver struct {
 }
 
 func (h hostedAnchorResolver) Resolve(id publish.SymbolicID) (publish.BackendID, bool) {
-	if name, ok := publish.AnchorRefName(id); ok {
+	if name, ok := id.AnchorName(); ok {
 		if bid, ok := h.hosted[name]; ok {
 			return bid, true
 		}
