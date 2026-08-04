@@ -37,7 +37,7 @@ func (b *Backend) Execute(_ context.Context, txn publish.Transaction, r backend.
 		Anchors: map[publish.AnchorName]publish.BackendID{},
 	}
 
-	rel := relOfNode(publish.SymbolicID(t.group))
+	rel := publish.SymbolicID(t.group).Rel()
 	dir := filepath.Join(b.root, filepath.FromSlash(rel))
 
 	// The optimizer suppresses a transaction's self-hosted anchor refs from its
@@ -152,7 +152,7 @@ func withHostedAnchors(rel string, units []unit, base backend.Resolver) backend.
 			if local == nil {
 				local = map[publish.SymbolicID]publish.BackendID{}
 			}
-			local[publish.SymbolicID("anchor:"+string(a))] = publish.BackendID(rel + "#" + string(a))
+			local[publish.AnchorRef(a)] = publish.BackendID(rel + "#" + string(a))
 		}
 	}
 	if local == nil {
@@ -314,17 +314,4 @@ func writeJSON(path string, v any) error {
 		return fmt.Errorf("fs: write %s: %w", path, err)
 	}
 	return nil
-}
-
-// relOfNode strips the "node:" scheme from a node symbolic id, yielding the repo
-// path that names its export directory. nodeSym is its inverse; the two keep the
-// scheme in one place, as Notion's scanner does with its own nodeSym.
-func relOfNode(id publish.SymbolicID) string {
-	return strings.TrimPrefix(string(id), "node:")
-}
-
-// nodeSym mints the node SymbolicID for a repo path — the "node:<path>" scheme
-// Generation embeds, so a Ref resolves against a scan seeded through it.
-func nodeSym(rel string) publish.SymbolicID {
-	return publish.SymbolicID("node:" + rel)
 }

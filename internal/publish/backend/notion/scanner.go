@@ -55,7 +55,7 @@ func (b *Backend) scanStored(ctx context.Context) (*publish.CurrentState, error)
 		if err := claim(path, row.ID); err != nil {
 			return nil, err
 		}
-		sym := nodeSym(path)
+		sym := publish.NodeRef(path)
 		nodeIDs[sym] = publish.BackendID(row.ID)
 		if h := plainText(row.Properties["hash"]); h != "" {
 			// The `hash` column stores content and property hashes as one compound
@@ -123,7 +123,7 @@ func readSubtree(raw, rowID string, claim func(path, by string) error, nodeIDs m
 		if err := claim(subpath, "subtree of "+rowID); err != nil {
 			return err
 		}
-		sym := nodeSym(subpath)
+		sym := publish.NodeRef(subpath)
 		if e.ID != "" {
 			nodeIDs[sym] = publish.BackendID(e.ID)
 		}
@@ -152,12 +152,6 @@ func readAnchors(raw string, anchorIDs map[publish.AnchorName]publish.BackendID)
 		anchorIDs[publish.AnchorName(name)] = publish.BackendID(id)
 	}
 	return nil
-}
-
-// nodeSym mints the node SymbolicID for a repo path — the same "node:<path>" scheme
-// Generation embeds, so a Ref resolves against this seed.
-func nodeSym(path string) publish.SymbolicID {
-	return publish.SymbolicID("node:" + path)
 }
 
 // newPathClaimer returns a claim closure guarding the mirror's 1:1 path invariant:

@@ -5,7 +5,6 @@ import (
 	"maps"
 	"path"
 	"sort"
-	"strings"
 	"sync"
 
 	"github.com/sigma/okf-tools/internal/areas"
@@ -131,7 +130,7 @@ func Generate(ctx context.Context, b *bundle.Bundle, cs *publish.CurrentState, o
 //
 // (Vanished nodes have no source and are handled by orphanOps.)
 func diffDoc(d *bundle.Doc, cs *publish.CurrentState, o *options, src *hierarchy) []*Op {
-	node := nodeRef(d.Rel)
+	node := publish.NodeRef(d.Rel)
 	parent := src.parent(d.Rel)
 	hash := o.hash(d)
 	propHash := PropertyHash(d)
@@ -256,7 +255,7 @@ func (h *hierarchy) parent(rel string) publish.SymbolicID {
 	}
 	for dir := start; ; dir = path.Dir(dir) {
 		if idx, ok := h.indexByDir[dir]; ok && idx != rel {
-			return nodeRef(idx)
+			return publish.NodeRef(idx)
 		}
 		if dir == "." || dir == "/" || dir == "" {
 			return ""
@@ -270,12 +269,12 @@ func (h *hierarchy) parent(rel string) publish.SymbolicID {
 func orphanOps(docs []*bundle.Doc, cs *publish.CurrentState, ar *areas.Registry) []*Op {
 	live := map[publish.SymbolicID]bool{}
 	for _, d := range docs {
-		live[nodeRef(d.Rel)] = true
+		live[publish.NodeRef(d.Rel)] = true
 	}
 	var scanned []string
 	vanished := map[publish.SymbolicID]bool{}
 	for id := range cs.Nodes() {
-		scanned = append(scanned, relOfNode(id))
+		scanned = append(scanned, id.Rel())
 		if !live[id] {
 			vanished[id] = true
 		}
@@ -284,7 +283,7 @@ func orphanOps(docs []*bundle.Doc, cs *publish.CurrentState, ar *areas.Registry)
 
 	var ops []*Op
 	for id := range vanished {
-		if p := h.parent(relOfNode(id)); p != "" && vanished[p] {
+		if p := h.parent(id.Rel()); p != "" && vanished[p] {
 			continue // covered by the ancestor's subtree deletion
 		}
 		ops = append(ops, &Op{Kind: DeleteNode, Node: id})
@@ -325,7 +324,7 @@ func assembleEdges(ops []*Op) []Edge {
 			}
 		case SetContent:
 			for _, ref := range op.Refs {
-				if name, ok := anchorRefName(ref); ok {
+				if name, ok := ref.AnchorName(); ok {
 					// #3 content-refs-anchor. An anchor produced within this very op
 					// (a glossary term citing another) resolves in-op — no self-edge.
 					if producer, ok := anchorProducer[name]; ok && producer != op {
@@ -362,17 +361,4 @@ func sortEdges(edges []Edge) {
 			return a.To.Kind < b.To.Kind
 		}
 	})
-}
-
-// relOfNode strips the "node:" scheme from a node symbolic id.
-func relOfNode(id publish.SymbolicID) string {
-	return strings.TrimPrefix(string(id), "node:")
-}
-
-// anchorRefName extracts the anchor name from an "anchor:<name>" symbolic id.
-func anchorRefName(id publish.SymbolicID) (publish.AnchorName, bool) {
-	if rest, ok := strings.CutPrefix(string(id), "anchor:"); ok {
-		return publish.AnchorName(rest), true
-	}
-	return "", false
 }

@@ -66,7 +66,7 @@ func (b *Backend) Scan(_ context.Context, _ backend.ScanMode) (*publish.CurrentS
 			}
 			rel = filepath.ToSlash(r)
 		}
-		nodeIDs[nodeSym(rel)] = publish.BackendID(rel)
+		nodeIDs[publish.NodeRef(rel)] = publish.BackendID(rel)
 
 		if err := readAnchors(filepath.Join(dir, "anchors.json"), anchorIDs); err != nil {
 			return err

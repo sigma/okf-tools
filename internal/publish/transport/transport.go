@@ -186,7 +186,7 @@ func buildProvenance(dag *optimize.TxnDAG, tbl *table) publish.Provenance {
 			}
 		}
 		for _, name := range txn.Anchors {
-			aid, ok := tbl.Resolve(publish.SymbolicID("anchor:" + name))
+			aid, ok := tbl.Resolve(publish.AnchorRef(name))
 			if !ok {
 				continue
 			}

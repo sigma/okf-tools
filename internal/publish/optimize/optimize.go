@@ -375,7 +375,7 @@ func (a *accumulator) seal(txn publish.Transaction) publish.PackedTxn {
 		if produced[ref] {
 			continue // self-satisfied node ref (e.g. fusion)
 		}
-		if name, ok := publish.AnchorRefName(ref); ok && hosted[name] {
+		if name, ok := ref.AnchorName(); ok && hosted[name] {
 			continue // self-satisfied anchor ref
 		}
 		exposed = append(exposed, ref)
@@ -415,7 +415,7 @@ func deriveEdges(txns []publish.PackedTxn) []Edge {
 	for to := range txns {
 		for _, ref := range txns[to].Refs {
 			from := -1
-			if name, ok := publish.AnchorRefName(ref); ok {
+			if name, ok := ref.AnchorName(); ok {
 				if p, has := anchorProducer[name]; has {
 					from = p
 				}

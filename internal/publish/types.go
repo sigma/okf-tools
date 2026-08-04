@@ -1,43 +1,19 @@
 package publish
 
-import "strings"
-
 // This file defines the backend-neutral currency that flows between the three
 // okfpub pipeline stages. The pipeline speaks only this vocabulary; every
 // backend specific (Notion's block model, its two coupled API limits, its HTTP
 // transport) stays behind the role interfaces in the backend subpackage.
 //
+// The symbolic-id scheme (SymbolicID, AnchorName, and their constructors and
+// readers) lives in ref.go.
+//
 // See sigma/ideas#172 for the ratified spec (decisions #162 and #163).
-
-// --- Symbolic identity (the generation-time handles of #162) ---------------
-
-// SymbolicID is a generation-time handle keyed by stable identity, never a
-// backend id: "node:docs/adr/0002.md", "anchor:glossary/root-kek". Ops that
-// produce something mint one; ops that consume embed it as a Ref. The transport
-// resolves it against a scan-seeded resolution table.
-type SymbolicID string
 
 // BackendID is an opaque real backend identifier (a Notion page/block id, a
 // filesystem path, …). It is neutral data to the pipeline: produced by the
 // backend, threaded by the transport, never interpreted.
 type BackendID string
-
-// AnchorName is a declared named anchor — a bold-lead term hosted inside a node
-// (today's anchor-ref target). The backend reports, per AtomicUnit, which
-// anchors that unit hosts so the anchor map can be built.
-type AnchorName string
-
-// AnchorRefName reports whether a symbolic id is an anchor reference
-// ("anchor:<name>") and, if so, the AnchorName it targets. It is the reader
-// counterpart to how anchor Refs are minted, kept here in the neutral vocabulary
-// so every stage matches an anchor Ref to a producer's Anchors the same way
-// (Stage 1 wiring op-DAG edges, Stage 2 wiring transaction-DAG edges).
-func AnchorRefName(id SymbolicID) (AnchorName, bool) {
-	if rest, ok := strings.CutPrefix(string(id), "anchor:"); ok {
-		return AnchorName(rest), true
-	}
-	return "", false
-}
 
 // Hash is a content hash used by change detection: a node whose scanned hash
 // matches its expected hash is hash-skipped (no SetContent). Its concrete
