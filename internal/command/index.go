@@ -29,7 +29,7 @@ func Index(args []string) (int, error) {
 	}
 
 	if *write {
-		n, err := applyFixes(b, fixOptions{Index: true})
+		n, err := applyFixes(b, fixSet{rules.FixIndex: true})
 		if err != nil {
 			return 1, err
 		}

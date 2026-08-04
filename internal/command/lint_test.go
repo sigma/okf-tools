@@ -108,8 +108,8 @@ func TestAutofixResolves(t *testing.T) {
 				t.Fatalf("copy fixture: %v", err)
 			}
 			b := loadFixture(t, tmp)
-			opts := lintFixOptions(b, nil, nil)
-			if _, err := applyFixes(b, opts); err != nil {
+			fixes := enabledFixes(b, nil, nil)
+			if _, err := applyFixes(b, fixes); err != nil {
 				t.Fatalf("applyFixes: %v", err)
 			}
 			b, err := bundle.Load(b.Root, b.Config.Path)

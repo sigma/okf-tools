@@ -3,8 +3,11 @@ package command
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/spf13/pflag"
 	"os"
+
+	"github.com/spf13/pflag"
+
+	"github.com/sigma/okf-tools/internal/rules"
 )
 
 // Fmt normalizes frontmatter key order, timestamps, citation numbering and link
@@ -29,13 +32,13 @@ func Fmt(args []string) (int, error) {
 		return 1, err
 	}
 
-	opts := fixOptions{Frontmatter: true, Timestamp: true, Citations: true}
+	fixes := fixSet{rules.FixFrontmatter: true, rules.FixTimestamp: true, rules.FixCitations: true}
 	if b.Config.Links.Style == "relative" || b.Config.Links.Style == "absolute" {
-		opts.LinkStyle = true
+		fixes[rules.FixLinkStyle] = true
 	}
 
 	if *write {
-		n, err := applyFixes(b, opts)
+		n, err := applyFixes(b, fixes)
 		if err != nil {
 			return 1, err
 		}
@@ -45,7 +48,7 @@ func Fmt(args []string) (int, error) {
 
 	var changed []string
 	for _, d := range b.Concepts {
-		if fixDoc(b, d, opts) != d.Content {
+		if fixDoc(b, d, fixes) != d.Content {
 			changed = append(changed, d.Rel)
 		}
 	}
