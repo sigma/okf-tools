@@ -155,26 +155,7 @@ func withHostedAnchors(rel string, units []unit, base backend.Resolver) backend.
 			local[publish.AnchorRef(a)] = publish.BackendID(rel + "#" + string(a))
 		}
 	}
-	if local == nil {
-		return base
-	}
-	return txnResolver{local: local, base: base}
-}
-
-// txnResolver resolves a symbolic id against a transaction-local overlay first,
-// falling back to the transport Resolver. The overlay only ever holds the txn's
-// self-hosted anchors, which the transport table cannot yet resolve mid-Execute;
-// every other id (parents, cross-document links) falls straight through to base.
-type txnResolver struct {
-	local map[publish.SymbolicID]publish.BackendID
-	base  backend.Resolver
-}
-
-func (t txnResolver) Resolve(id publish.SymbolicID) (publish.BackendID, bool) {
-	if b, ok := t.local[id]; ok {
-		return b, true
-	}
-	return t.base.Resolve(id)
+	return backend.WithOverlay(base, local)
 }
 
 // resolveParent resolves a create unit's parent Ref (its single Ref, stamped by
