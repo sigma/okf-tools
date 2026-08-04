@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/sigma/okf-tools/internal/publish"
 	"github.com/sigma/okf-tools/internal/publish/graph"
 )
 
@@ -21,8 +22,8 @@ func TestExecuteTableEmitsTableBlock(t *testing.T) {
 			kind:            int(graph.Table),
 			hasColumnHeader: true,
 			rows: []tableRow{
-				{cells: [][]textRun{{{Text: "Name"}}, {{Text: "Role"}}}},
-				{cells: [][]textRun{{{Text: "Ada"}}, {{Text: "author"}}}},
+				{cells: [][]publish.Run{{{Text: "Name"}}, {{Text: "Role"}}}},
+				{cells: [][]publish.Run{{{Text: "Ada"}}, {{Text: "author"}}}},
 			},
 		}},
 	}
@@ -81,8 +82,8 @@ func TestExecuteTableCellRefResolvesToMention(t *testing.T) {
 			kind:            int(graph.Table),
 			hasColumnHeader: true,
 			rows: []tableRow{
-				{cells: [][]textRun{{{Text: "See"}}}},
-				{cells: [][]textRun{{{Ref: "node:b.md"}}}},
+				{cells: [][]publish.Run{{{Text: "See"}}}},
+				{cells: [][]publish.Run{{{Ref: "node:b.md"}}}},
 			},
 		}},
 	}

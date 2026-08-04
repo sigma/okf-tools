@@ -228,7 +228,7 @@ func renderBlock(cb contentBlock, r backend.Resolver) (string, error) {
 // through the Resolver — the Ref→on-disk-id swap. Shared by the flat-block renderer
 // and renderTable's per-cell rendering. An unresolved Ref is an error, since the
 // transport must gate on it before Execute.
-func renderRuns(runs []textRun, r backend.Resolver) (string, error) {
+func renderRuns(runs []publish.Run, r backend.Resolver) (string, error) {
 	var sb strings.Builder
 	for _, run := range runs {
 		if run.Ref != "" {
@@ -258,10 +258,10 @@ func renderTable(cb contentBlock, r backend.Resolver) (string, error) {
 		width = len(cb.rows[0])
 	}
 	var sb strings.Builder
-	writeRow := func(cells [][]textRun) error {
+	writeRow := func(cells [][]publish.Run) error {
 		sb.WriteByte('|')
 		for i := 0; i < width; i++ {
-			var runs []textRun
+			var runs []publish.Run
 			if i < len(cells) {
 				runs = cells[i]
 			}

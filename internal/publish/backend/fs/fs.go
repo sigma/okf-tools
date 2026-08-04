@@ -120,22 +120,11 @@ type deleteBlock struct {
 type contentBlock struct {
 	kind    int // mirrors graph.BlockKind
 	level   int
-	runs    []textRun
+	runs    []publish.Run
 	anchors []publish.AnchorName
 	// rows and hasColumnHeader carry a table section's content: rows → cells → the
 	// cell's inline runs, header row first. Set only when kind is graph.Table; runs
 	// is then empty, since a table's inline content lives per-cell here.
-	rows            [][][]textRun
+	rows            [][][]publish.Run
 	hasColumnHeader bool
-}
-
-// textRun is one inline span of a contentBlock: literal Text, a late-bound Ref
-// (Text empty, Ref set) the Executor resolves to an on-disk link target, or a
-// literal Text hyperlinked to an external Link URL. Ref and Link are exclusive.
-type textRun struct {
-	Text string
-	Ref  publish.SymbolicID
-	// Link, when non-empty, renders Text as a Markdown link to an external URL
-	// (the disclaimer banner's source deep-link). Only meaningful when Ref is empty.
-	Link string
 }

@@ -30,7 +30,7 @@ func newServer(t *testing.T, f *fakeNotion, opts ...Option) *Backend {
 
 // paraBlock is a paragraph child block with literal text.
 func paraBlock(text string) childBlock {
-	return childBlock{kind: int(graph.Paragraph), runs: []textRun{{Text: text}}}
+	return childBlock{kind: int(graph.Paragraph), runs: []publish.Run{{Text: text}}}
 }
 
 // digInto walks a nested map[string]any by keys, failing on a missing/typed step.
@@ -97,7 +97,7 @@ func TestExecuteResolvesContentRef(t *testing.T) {
 		Group: "node:a.md", Node: "node:a.md", Create: true,
 		Children: []childBlock{{
 			kind: int(graph.Paragraph),
-			runs: []textRun{{Text: "see "}, {Ref: "node:b.md"}},
+			runs: []publish.Run{{Text: "see "}, {Ref: "node:b.md"}},
 		}},
 	}
 	r := stubResolver{"node:b.md": "page-b-real"}
@@ -183,7 +183,7 @@ func TestExecuteCodeBlockCarriesLanguage(t *testing.T) {
 		Children: []childBlock{{
 			kind:     int(graph.CodeBlock),
 			language: "yml", // alias for yaml
-			runs:     []textRun{{Text: "foo: bar"}},
+			runs:     []publish.Run{{Text: "foo: bar"}},
 		}},
 	}
 	if _, err := be.Execute(context.Background(), txn, stubResolver{}); err != nil {
@@ -210,7 +210,7 @@ func TestExecuteCodeBlockDefaultsLanguage(t *testing.T) {
 
 	txn := &Transaction{
 		Group: "node:a.md", Node: "node:a.md", Create: true,
-		Children: []childBlock{{kind: int(graph.CodeBlock), runs: []textRun{{Text: "x"}}}},
+		Children: []childBlock{{kind: int(graph.CodeBlock), runs: []publish.Run{{Text: "x"}}}},
 	}
 	if _, err := be.Execute(context.Background(), txn, stubResolver{}); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -258,7 +258,7 @@ func TestExecuteBannerRunCarriesLink(t *testing.T) {
 		Group: "node:a.md", Node: "node:a.md", Create: true,
 		Children: []childBlock{{
 			kind: int(graph.Quote),
-			runs: []textRun{{Text: "Generated from the repo", Link: url}},
+			runs: []publish.Run{{Text: "Generated from the repo", Link: url}},
 		}},
 	}
 	if _, err := be.Execute(context.Background(), txn, stubResolver{}); err != nil {
@@ -352,7 +352,7 @@ func TestExecuteCreateResolvesSelfHostedAnchorOnFreshCreate(t *testing.T) {
 	hosting.anchors = []publish.AnchorName{"glossary/emergency-block"}
 	citing := childBlock{
 		kind: int(graph.Paragraph),
-		runs: []textRun{{Text: "held while an "}, {Ref: "anchor:glossary/emergency-block"}},
+		runs: []publish.Run{{Text: "held while an "}, {Ref: "anchor:glossary/emergency-block"}},
 	}
 	txn := &Transaction{
 		Group: "node:CONTEXT.md", Node: "node:CONTEXT.md", Create: true,
@@ -425,7 +425,7 @@ func TestExecuteScanSeededAnchorCiteNeedsNoDeferral(t *testing.T) {
 		Group: "node:CONTEXT.md", Node: "node:CONTEXT.md",
 		Children: []childBlock{{
 			kind: int(graph.Paragraph),
-			runs: []textRun{{Text: "held while an "}, {Ref: "anchor:glossary/emergency-block"}},
+			runs: []publish.Run{{Text: "held while an "}, {Ref: "anchor:glossary/emergency-block"}},
 		}},
 	}
 	r := stubResolver{
@@ -480,7 +480,7 @@ func TestExecuteAppendResolvesSelfHostedAnchor(t *testing.T) {
 	hosting.anchors = []publish.AnchorName{"glossary/emergency-block"}
 	citing := childBlock{
 		kind: int(graph.Paragraph),
-		runs: []textRun{{Text: "held while an "}, {Ref: "anchor:glossary/emergency-block"}},
+		runs: []publish.Run{{Text: "held while an "}, {Ref: "anchor:glossary/emergency-block"}},
 	}
 	// A non-create (append) transaction: the page already exists (its create ran in an
 	// earlier txn from the force-split), but the anchor is hosted in this append, not
@@ -607,7 +607,7 @@ func TestExecuteUnresolvedRefErrors(t *testing.T) {
 
 	txn := &Transaction{
 		Group: "node:a.md", Node: "node:a.md", Create: true,
-		Children: []childBlock{{kind: int(graph.Paragraph), runs: []textRun{{Ref: "node:missing.md"}}}},
+		Children: []childBlock{{kind: int(graph.Paragraph), runs: []publish.Run{{Ref: "node:missing.md"}}}},
 	}
 	if _, err := be.Execute(context.Background(), txn, stubResolver{}); err == nil {
 		t.Fatal("expected an error for an unresolved content Ref")
