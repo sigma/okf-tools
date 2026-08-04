@@ -25,6 +25,20 @@ type options struct {
 	customHasher bool
 }
 
+// Recomputer is an OPTIONAL backend role: a backend whose live scan can
+// reconstruct a content hash implements it, so the pipeline can install a
+// source-side hasher (via WithHasher) that hashes the same realized block stream
+// the scanner rebuilds — keeping --recompute change detection comparing like
+// against like instead of re-clobbering every node (#110). It is deliberately NOT
+// part of the backend.Backend umbrella: a backend with no live-reconstruction
+// capability (the fake, the filesystem export) simply omits it and the pipeline
+// skips the step via a type assertion, exactly as it does for backend.Provisioner.
+// The role lives here, beside WithHasher, because its currency — a *Banner and a
+// *bundle.Doc — is graph's, not the backend package's neutral publish currency.
+type Recomputer interface {
+	RecomputeContentHasher(*Banner) func(*bundle.Doc) publish.Hash
+}
+
 // WithHasher overrides the expected-content hasher used for change detection, so
 // a backend whose scanner reconstructs a matching hash can keep both sides in
 // lockstep. Such a hasher owns banner handling itself (it hashes the realized

@@ -100,9 +100,7 @@ func Run(ctx context.Context, be backend.Backend, b *bundle.Bundle, opts ...Opti
 	// run (#110). The hasher owns banner handling (it hashes the realized block-0), so
 	// it is threaded whether or not a banner is set, and for both scan modes so the
 	// stored hash stays consistent across them.
-	if ch, ok := be.(interface {
-		RecomputeContentHasher(*graph.Banner) func(*bundle.Doc) publish.Hash
-	}); ok {
+	if ch, ok := be.(graph.Recomputer); ok {
 		genOpts = append(genOpts, graph.WithHasher(ch.RecomputeContentHasher(o.banner)))
 	}
 	g, err := graph.Generate(ctx, b, scan, genOpts...)
