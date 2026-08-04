@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/pflag"
 
+	"github.com/sigma/okf-tools/internal/fix"
 	"github.com/sigma/okf-tools/internal/rules"
 )
 
@@ -32,13 +33,13 @@ func Fmt(args []string) (int, error) {
 		return 1, err
 	}
 
-	fixes := fixSet{rules.FixFrontmatter: true, rules.FixTimestamp: true, rules.FixCitations: true}
+	fixes := fix.Set{rules.FixFrontmatter: true, rules.FixTimestamp: true, rules.FixCitations: true}
 	if b.Config.Links.Style == "relative" || b.Config.Links.Style == "absolute" {
 		fixes[rules.FixLinkStyle] = true
 	}
 
 	if *write {
-		n, err := applyFixes(b, fixes)
+		n, err := fix.Apply(b, fixes)
 		if err != nil {
 			return 1, err
 		}
@@ -46,12 +47,7 @@ func Fmt(args []string) (int, error) {
 		return 0, nil
 	}
 
-	var changed []string
-	for _, d := range b.Concepts {
-		if fixDoc(b, d, fixes) != d.Content {
-			changed = append(changed, d.Rel)
-		}
-	}
+	changed := fix.Changed(b, fixes)
 	if err := renderChanged(g.format, changed); err != nil {
 		return 1, err
 	}
