@@ -337,18 +337,19 @@ func tableBlockJSON(cb childBlock, r backend.Resolver) (string, map[string]any, 
 // the physical Ref→BackendID swap — into a page mention carrying the real id. An
 // unresolved Ref is an error, since the transport must gate on it before Execute.
 func richTextJSON(runs []publish.Run, r backend.Resolver) ([]map[string]any, error) {
-	out := make([]map[string]any, 0, len(runs))
-	for _, run := range runs {
+	resolved, err := backend.ResolveRuns(runs, r)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]map[string]any, 0, len(resolved))
+	for _, rr := range resolved {
+		run := rr.Run
 		if run.Ref != "" {
-			id, ok := r.Resolve(run.Ref)
-			if !ok {
-				return nil, fmt.Errorf("notion: content ref %s did not resolve", run.Ref)
-			}
 			out = append(out, map[string]any{
 				"type": "mention",
 				"mention": map[string]any{
 					"type": "page",
-					"page": map[string]any{"id": string(id)},
+					"page": map[string]any{"id": string(rr.RefID)},
 				},
 			})
 			continue
