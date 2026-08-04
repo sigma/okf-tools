@@ -210,14 +210,15 @@ func renderBlock(cb contentBlock, r backend.Resolver) (string, error) {
 // and renderTable's per-cell rendering. An unresolved Ref is an error, since the
 // transport must gate on it before Execute.
 func renderRuns(runs []publish.Run, r backend.Resolver) (string, error) {
+	resolved, err := backend.ResolveRuns(runs, r)
+	if err != nil {
+		return "", err
+	}
 	var sb strings.Builder
-	for _, run := range runs {
+	for _, rr := range resolved {
+		run := rr.Run
 		if run.Ref != "" {
-			id, ok := r.Resolve(run.Ref)
-			if !ok {
-				return "", fmt.Errorf("content ref %s did not resolve", run.Ref)
-			}
-			fmt.Fprintf(&sb, "[%s](%s)", refLabel(run.Ref), id)
+			fmt.Fprintf(&sb, "[%s](%s)", refLabel(run.Ref), rr.RefID)
 			continue
 		}
 		if run.Link != "" {
