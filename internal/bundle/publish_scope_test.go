@@ -26,6 +26,34 @@ func scopedFiles() map[string]string {
 	}
 }
 
+// A role:glossary marker designates a publish host only when the glossary
+// extension is enabled — the same [glossary].enabled gate the load-time d.Glossary
+// union applies. With the extension off, the marked file is not published on the
+// glossary-host basis (and, being a bare file area, on no other basis either), so
+// InPublishScope and PublishDocs must both exclude it.
+func TestInPublishScopeGlossaryHostGatedOnEnabled(t *testing.T) {
+	files := map[string]string{
+		"okf.toml": "[glossary]\nenabled = false\nfiles = [\"CONTEXT.md\"]\n",
+		"areas.json": `{
+			"ideas":   {"directory": "ideas", "type": "idea"},
+			"context": {"file": "CONTEXT.md", "type": "context", "role": "glossary"}
+		}`,
+		"index.md":   "---\nokf_version: \"0.1\"\n---\nRoot.\n",
+		"ideas/a.md": concept,
+		"CONTEXT.md": "# Glossary\n",
+	}
+	b := loadBundle(t, files)
+
+	if b.InPublishScope("CONTEXT.md") {
+		t.Errorf("InPublishScope(CONTEXT.md) = true with glossary.enabled=false; the host must not publish on the glossary-host basis")
+	}
+	for _, d := range b.PublishDocs() {
+		if d.Rel == "CONTEXT.md" {
+			t.Errorf("PublishDocs included the glossary host CONTEXT.md with glossary.enabled=false")
+		}
+	}
+}
+
 func TestInPublishScope(t *testing.T) {
 	b := loadBundle(t, scopedFiles())
 

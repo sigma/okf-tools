@@ -299,9 +299,13 @@ func (b *Bundle) InPublishScope(rel string) bool {
 	rel = normScope(rel)
 	// The glossary/anchor host is published even though it is a single file, not a
 	// directory area. It is resolved from the areas.json role marker, never a
-	// filename literal.
-	if host, ok := b.Areas.GlossaryFile(); ok && rel == normScope(host) {
-		return true
+	// filename literal — and, like the load-time d.Glossary union, only when the
+	// glossary extension is enabled: a role:glossary marker under [glossary].enabled
+	// = false designates no host, so the file is not published on that basis.
+	if b.Config.Glossary.Enabled {
+		if host, ok := b.Areas.GlossaryFile(); ok && rel == normScope(host) {
+			return true
+		}
 	}
 	// An area's own root README.md is that area's section-landing page. An
 	// areas.json area maps to the unified *database*, so its landing README is not
