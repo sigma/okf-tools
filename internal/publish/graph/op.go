@@ -48,36 +48,16 @@ type Op struct {
 	// Node is the symbolic id of the node this op acts on or produces:
 	// "node:<bundle-rel-path>" (e.g. "node:docs/adr/0002.md").
 	Node publish.SymbolicID
-	// Parent is the symbolic id of the node this node is created / lives under, or
-	// "" for a node at the top of its area database (today's null-parent / area-DB
-	// row). On a CreateNode it is the parent-before-child ref: a parent already in
-	// the scan seeds without an edge; a parent created this run gets an edge. It is
-	// also stamped on a touched node's SetProperties / SetContent ops so publish-
-	// time write-back can route a subpage's provenance into its parent row's
-	// subtree map even when the node already exists (no CreateNode this run).
-	Parent publish.SymbolicID
-	// Hash is the node's expected content hash — the value change detection
-	// computed for this run. It is stamped on a touched node's ops so it can be
-	// threaded to the transport and written back into the node's `hash` derived
-	// column, making the next ScanStored hash-skip it. Zero for a DeleteNode.
-	//
-	// Every op a touched node emits carries the node's FULL expected hash state
-	// (both Hash and PropHash), not just the arm it represents, so write-back can
-	// stamp both columns to their expected values from whichever arm survived the
-	// gate — a content-only re-publish still re-asserts the (unchanged) property
-	// hash, and vice-versa, without a partial-column read-modify-write.
-	Hash publish.Hash
-	// PropHash is the node's expected property hash — a fingerprint over its
-	// semantic properties (title, type, frontmatter; graph.PropertyHash). It gates
-	// SetProperties independently of Hash gating SetContent, so a title-only edit
-	// re-asserts properties without rewriting the body and a body-only edit rewrites
-	// content without touching properties. Zero for a DeleteNode.
-	PropHash publish.Hash
-	// Title is the node's display title, stamped on a touched node's ops so
-	// publish-time write-back can record it in a subpage's subtree-map entry — the
-	// key ScanRecompute matches a live page back to its subpath by. Empty for a
-	// DeleteNode.
-	Title string
+	// NodeStamp is this op's write-back provenance: the node's expected content and
+	// property hashes, its parent symbolic id, and its display title. Every op a
+	// touched node emits carries the node's FULL stamp (both hashes), not just the
+	// arm it represents, so write-back can stamp both derived columns to their
+	// expected values from whichever arm survived the gate — a content-only
+	// re-publish still re-asserts the (unchanged) property hash, and vice-versa,
+	// without a partial-column read-modify-write. Zero for a DeleteNode. Parent
+	// additionally wires parent-before-child ordering on a CreateNode (a parent
+	// already in the scan seeds without an edge; a parent created this run gets one).
+	publish.NodeStamp
 	// Props are the semantic properties SetProperties asserts. Set only for
 	// SetProperties.
 	Props map[string]any

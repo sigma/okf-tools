@@ -17,10 +17,9 @@ func TestWriteBackTopLevelRow(t *testing.T) {
 
 	prov := publish.Provenance{Nodes: map[publish.SymbolicID]publish.NodeProvenance{
 		"node:CONTEXT.md": {
-			ID:       "page-g",
-			Hash:     "hG",
-			PropHash: "pG",
-			Anchors:  map[publish.AnchorName]publish.BackendID{"glossary/root-kek": "block-kek"},
+			ID:        "page-g",
+			NodeStamp: publish.NodeStamp{Hash: "hG", PropHash: "pG"},
+			Anchors:   map[publish.AnchorName]publish.BackendID{"glossary/root-kek": "block-kek"},
 		},
 	}}
 	if err := be.WriteBack(context.Background(), prov); err != nil {
@@ -64,11 +63,9 @@ func TestWriteBackSubpageFoldsIntoParentSubtree(t *testing.T) {
 
 	prov := publish.Provenance{Nodes: map[publish.SymbolicID]publish.NodeProvenance{
 		"node:docs/adr/new.md": {
-			ID:       "page-new",
-			Hash:     "hNew",
-			Parent:   "node:index.md",
-			ParentID: "page-root",
-			Title:    "New Page",
+			ID:        "page-new",
+			ParentID:  "page-root",
+			NodeStamp: publish.NodeStamp{Hash: "hNew", Parent: "node:index.md", Title: "New Page"},
 		},
 	}}
 	if err := be.WriteBack(context.Background(), prov); err != nil {
@@ -109,10 +106,9 @@ func TestWriteBackChunksOversizedColumn(t *testing.T) {
 
 	prov := publish.Provenance{Nodes: map[publish.SymbolicID]publish.NodeProvenance{
 		"node:CONTEXT.md": {
-			ID:       "page-g",
-			Hash:     "hG",
-			PropHash: "pG",
-			Anchors:  map[publish.AnchorName]publish.BackendID{"glossary/root-kek": "block-kek"},
+			ID:        "page-g",
+			NodeStamp: publish.NodeStamp{Hash: "hG", PropHash: "pG"},
+			Anchors:   map[publish.AnchorName]publish.BackendID{"glossary/root-kek": "block-kek"},
 		},
 	}}
 	if err := be.WriteBack(context.Background(), prov); err != nil {

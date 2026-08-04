@@ -46,7 +46,7 @@ func representativeGraph() *graph.Graph {
 
 	// index.md — new top-level index.
 	add(
-		&graph.Op{Kind: graph.CreateNode, Node: node("index.md"), Parent: ""},
+		&graph.Op{Kind: graph.CreateNode, Node: node("index.md")},
 		&graph.Op{Kind: graph.SetProperties, Node: node("index.md")},
 		&graph.Op{Kind: graph.SetContent, Node: node("index.md"), Doc: &publish.Document{
 			Group:  group("index.md"),
@@ -57,7 +57,7 @@ func representativeGraph() *graph.Graph {
 	// a.md — new, parented under index; three content blocks so it overflows a
 	// maxCount=2 bin. block1 links b.md, block2 cites the glossary anchor.
 	add(
-		&graph.Op{Kind: graph.CreateNode, Node: node("a.md"), Parent: node("index.md")},
+		&graph.Op{Kind: graph.CreateNode, Node: node("a.md"), NodeStamp: publish.NodeStamp{Parent: node("index.md")}},
 		&graph.Op{Kind: graph.SetProperties, Node: node("a.md")},
 		&graph.Op{Kind: graph.SetContent, Node: node("a.md"), Doc: &publish.Document{
 			Group: group("a.md"),
@@ -71,7 +71,7 @@ func representativeGraph() *graph.Graph {
 
 	// b.md — new, parented under index; a plain content block.
 	add(
-		&graph.Op{Kind: graph.CreateNode, Node: node("b.md"), Parent: node("index.md")},
+		&graph.Op{Kind: graph.CreateNode, Node: node("b.md"), NodeStamp: publish.NodeStamp{Parent: node("index.md")}},
 		&graph.Op{Kind: graph.SetProperties, Node: node("b.md")},
 		&graph.Op{Kind: graph.SetContent, Node: node("b.md"), Doc: &publish.Document{
 			Group:  group("b.md"),
@@ -81,7 +81,7 @@ func representativeGraph() *graph.Graph {
 
 	// glossary.md — new top-level host; its single content block hosts the anchor.
 	add(
-		&graph.Op{Kind: graph.CreateNode, Node: node("glossary.md"), Parent: ""},
+		&graph.Op{Kind: graph.CreateNode, Node: node("glossary.md")},
 		&graph.Op{Kind: graph.SetProperties, Node: node("glossary.md")},
 		&graph.Op{Kind: graph.SetContent, Node: node("glossary.md"), Doc: &publish.Document{
 			Group:  group("glossary.md"),
@@ -453,8 +453,8 @@ func TestDeleteExposesTarget(t *testing.T) {
 // wires a parent-before-child edge.
 func TestParentBeforeChildEdge(t *testing.T) {
 	g := &graph.Graph{Ops: []*graph.Op{
-		{Kind: graph.CreateNode, Node: node("index.md"), Parent: ""},
-		{Kind: graph.CreateNode, Node: node("child.md"), Parent: node("index.md")},
+		{Kind: graph.CreateNode, Node: node("index.md")},
+		{Kind: graph.CreateNode, Node: node("child.md"), NodeStamp: publish.NodeStamp{Parent: node("index.md")}},
 	}}
 	be := fake.New()
 
