@@ -1,9 +1,8 @@
 package command
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
+	"io"
 
 	"github.com/spf13/pflag"
 
@@ -14,7 +13,7 @@ import (
 // Fmt normalizes frontmatter key order, timestamps, citation numbering and link
 // style. --check reports which files would change (non-zero exit if any);
 // --write applies them.
-func Fmt(args []string) (int, error) {
+func Fmt(w io.Writer, args []string) (int, error) {
 	fs := pflag.NewFlagSet("fmt", pflag.ContinueOnError)
 	var g globals
 	registerGlobals(fs, &g)
@@ -43,12 +42,12 @@ func Fmt(args []string) (int, error) {
 		if err != nil {
 			return 1, err
 		}
-		fmt.Fprintf(os.Stdout, "formatted %d file(s)\n", n)
+		fmt.Fprintf(w, "formatted %d file(s)\n", n)
 		return 0, nil
 	}
 
 	changed := fix.Changed(b, fixes)
-	if err := renderChanged(g.format, changed); err != nil {
+	if err := renderChanged(w, g.format, changed); err != nil {
 		return 1, err
 	}
 	if len(changed) > 0 {
@@ -57,18 +56,16 @@ func Fmt(args []string) (int, error) {
 	return 0, nil
 }
 
-func renderChanged(format string, changed []string) error {
+func renderChanged(w io.Writer, format string, changed []string) error {
 	if format == "json" {
 		if changed == nil {
 			changed = []string{}
 		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(map[string]any{"would_reformat": changed})
+		return emitJSON(w, map[string]any{"would_reformat": changed})
 	}
 	for _, p := range changed {
-		fmt.Fprintf(os.Stdout, "would reformat %s\n", p)
+		fmt.Fprintf(w, "would reformat %s\n", p)
 	}
-	fmt.Fprintf(os.Stdout, "%d file(s) need formatting\n", len(changed))
+	fmt.Fprintf(w, "%d file(s) need formatting\n", len(changed))
 	return nil
 }

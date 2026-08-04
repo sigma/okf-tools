@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/sigma/okf-tools/internal/command"
@@ -19,7 +20,7 @@ func main() {
 	}
 
 	cmd, args := os.Args[1], os.Args[2:]
-	var run func([]string) (int, error)
+	var run func(io.Writer, []string) (int, error)
 	switch cmd {
 	case "lint":
 		run = command.Lint
@@ -47,7 +48,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	code, err := run(args)
+	code, err := run(os.Stdout, args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "okftool: "+err.Error())
 		if code == 0 {

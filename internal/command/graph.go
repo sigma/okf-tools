@@ -1,17 +1,17 @@
 package command
 
 import (
-	"encoding/json"
 	"fmt"
-	"github.com/spf13/pflag"
-	"os"
+	"io"
 	"strings"
+
+	"github.com/spf13/pflag"
 
 	"github.com/sigma/okf-tools/internal/bundle"
 )
 
 // Graph emits the concept link graph as JSON (--format json) or Graphviz dot.
-func Graph(args []string) (int, error) {
+func Graph(w io.Writer, args []string) (int, error) {
 	fs := pflag.NewFlagSet("graph", pflag.ContinueOnError)
 	var g globals
 	registerGlobals(fs, &g)
@@ -46,9 +46,7 @@ func Graph(args []string) (int, error) {
 		for _, d := range nodes {
 			out.Nodes = append(out.Nodes, node{ID: d.Rel, Title: d.Title(), Type: d.Type(), Orphan: d.Inbound == 0})
 		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return 0, enc.Encode(out)
+		return 0, emitJSON(w, out)
 	}
 
 	// Graphviz dot.
@@ -67,6 +65,6 @@ func Graph(args []string) (int, error) {
 		sb.WriteString(fmt.Sprintf("  %q -> %q;\n", e.From, e.To))
 	}
 	sb.WriteString("}\n")
-	fmt.Fprint(os.Stdout, sb.String())
+	fmt.Fprint(w, sb.String())
 	return 0, nil
 }

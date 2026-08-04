@@ -1,7 +1,7 @@
 package command
 
 import (
-	"os"
+	"io"
 
 	"github.com/sigma/okf-tools/internal/bundle"
 	"github.com/sigma/okf-tools/internal/fix"
@@ -20,7 +20,7 @@ func qmdConcepts(b *bundle.Bundle) []qmd.Concept {
 }
 
 // Lint runs the rule catalog over the bundle. It is the anchor command.
-func Lint(args []string) (int, error) {
+func Lint(w io.Writer, args []string) (int, error) {
 	fs := pflag.NewFlagSet("lint", pflag.ContinueOnError)
 	var g globals
 	registerGlobals(fs, &g)
@@ -64,7 +64,7 @@ func Lint(args []string) (int, error) {
 	}
 	findings := rules.Run(ctx, selected, ignored)
 	findings = filterByPaths(findings, b, paths)
-	if err := renderFindings(os.Stdout, g.format, b, findings); err != nil {
+	if err := renderFindings(w, g.format, b, findings); err != nil {
 		return 1, err
 	}
 
@@ -75,10 +75,5 @@ func Lint(args []string) (int, error) {
 	if *failOn == "warning" {
 		threshold = rules.Warning
 	}
-	for _, f := range findings {
-		if f.Severity >= threshold {
-			return 1, nil
-		}
-	}
-	return 0, nil
+	return findingsExit(findings, threshold), nil
 }

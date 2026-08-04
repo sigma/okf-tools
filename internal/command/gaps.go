@@ -1,10 +1,8 @@
 package command
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
 	"github.com/sigma/okf-tools/internal/gaps"
@@ -15,7 +13,7 @@ import (
 // candidate cross-links / bridges to refine a topic. Detection is deterministic;
 // composing the bridge is the agent's job. The algorithm lives in internal/gaps;
 // this command only parses flags, merges config, and renders the result.
-func Gaps(args []string) (int, error) {
+func Gaps(w io.Writer, args []string) (int, error) {
 	fs := pflag.NewFlagSet("gaps", pflag.ContinueOnError)
 	var g globals
 	registerGlobals(fs, &g)
@@ -71,11 +69,9 @@ func Gaps(args []string) (int, error) {
 		return 1, err
 	}
 	if g.format == "json" {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return 0, enc.Encode(res)
+		return 0, emitJSON(w, res)
 	}
-	renderGapsHuman(os.Stdout, res)
+	renderGapsHuman(w, res)
 	return 0, nil
 }
 

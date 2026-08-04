@@ -3,7 +3,7 @@ package command
 import (
 	_ "embed"
 	"fmt"
-	"os"
+	"io"
 
 	"github.com/spf13/pflag"
 )
@@ -16,11 +16,11 @@ func SkillMarkdown() string { return skillMarkdown }
 
 // Skill prints the bundled agent skill to stdout, so a project can install it,
 // e.g. `okftool skill > .claude/skills/okftool/SKILL.md`.
-func Skill(args []string) (int, error) {
+func Skill(w io.Writer, args []string) (int, error) {
 	fs := pflag.NewFlagSet("skill", pflag.ContinueOnError)
 	if _, code, ok := parseFlags(fs, args); !ok {
 		return code, nil
 	}
-	fmt.Fprint(os.Stdout, skillMarkdown)
+	fmt.Fprint(w, skillMarkdown)
 	return 0, nil
 }

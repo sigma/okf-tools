@@ -93,6 +93,28 @@ func parseRuleSet(csv string) map[string]bool {
 	return set
 }
 
+// emitJSON writes v as indented JSON to w — the single indent policy for every
+// machine-readable command output, so all commands emit byte-for-byte the same
+// shape and nobody re-derives the encoder settings.
+func emitJSON(w io.Writer, v any) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
+}
+
+// findingsExit is the shared "did anything fail" verdict for the findings-emitting
+// commands: exit 1 if any finding is at or above threshold, else 0. lint passes
+// Error or Warning (its --fail-on); index passes Info, so any finding trips it —
+// preserving its "any finding → exit 1" behavior without a bespoke count check.
+func findingsExit(findings []rules.Finding, threshold rules.Severity) int {
+	for _, f := range findings {
+		if f.Severity >= threshold {
+			return 1
+		}
+	}
+	return 0
+}
+
 // jsonEnvelope is the stable machine-readable output (docs/DESIGN.md §Output).
 type jsonEnvelope struct {
 	Bundle     string          `json:"bundle"`
@@ -115,9 +137,7 @@ func renderFindings(w io.Writer, format string, b *bundle.Bundle, fs []rules.Fin
 		if env.Findings == nil {
 			env.Findings = []rules.Finding{}
 		}
-		enc := json.NewEncoder(w)
-		enc.SetIndent("", "  ")
-		return enc.Encode(env)
+		return emitJSON(w, env)
 	default:
 		for _, f := range fs {
 			loc := f.Path
