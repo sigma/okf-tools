@@ -73,6 +73,13 @@ func hashCanonBlocks(blocks []canonBlock) publish.Hash {
 	return publish.Hash(hex.EncodeToString(h.Sum(nil)))
 }
 
+// The Notion backend is the one Recomputer: it can reconstruct a content hash
+// from its live scan, so it supplies the source-side hasher. This static assertion
+// guarantees a method-signature drift becomes a compile error rather than silently
+// dropping the pipeline into its no-hasher fail branch (which re-clobbers every
+// node — the #110 regression the named role guards against).
+var _ graph.Recomputer = (*Backend)(nil)
+
 // RecomputeContentHasher returns the source-side content hasher the pipeline wires
 // via graph.WithHasher so change detection compares like against like: it projects
 // each doc through the Executor's own transform (block-0 banner included) and
