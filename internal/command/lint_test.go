@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/sigma/okf-tools/internal/bundle"
+	"github.com/sigma/okf-tools/internal/fix"
 	"github.com/sigma/okf-tools/internal/rules"
 )
 
@@ -108,9 +109,9 @@ func TestAutofixResolves(t *testing.T) {
 				t.Fatalf("copy fixture: %v", err)
 			}
 			b := loadFixture(t, tmp)
-			fixes := enabledFixes(b, nil, nil)
-			if _, err := applyFixes(b, fixes); err != nil {
-				t.Fatalf("applyFixes: %v", err)
+			fixes := fix.Enabled(b, nil, nil)
+			if _, err := fix.Apply(b, fixes); err != nil {
+				t.Fatalf("fix.Apply: %v", err)
 			}
 			b, err := bundle.Load(b.Root, b.Config.Path)
 			if err != nil {

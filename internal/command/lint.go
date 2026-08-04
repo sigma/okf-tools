@@ -4,6 +4,7 @@ import (
 	"os"
 
 	"github.com/sigma/okf-tools/internal/bundle"
+	"github.com/sigma/okf-tools/internal/fix"
 	"github.com/sigma/okf-tools/internal/qmd"
 	"github.com/sigma/okf-tools/internal/rules"
 	"github.com/spf13/pflag"
@@ -23,7 +24,7 @@ func Lint(args []string) (int, error) {
 	fs := pflag.NewFlagSet("lint", pflag.ContinueOnError)
 	var g globals
 	registerGlobals(fs, &g)
-	fix := fs.Bool("fix", false, "apply autofixable rules in place")
+	fixFlag := fs.Bool("fix", false, "apply autofixable rules in place")
 	failOn := fs.String("fail-on", "error", "exit non-zero at this severity or above: error|warning")
 	exitZero := fs.Bool("exit-zero", false, "always exit 0 (report only)")
 	sel := fs.String("select", "", "only run these rules (comma-separated OKF IDs)")
@@ -42,10 +43,10 @@ func Lint(args []string) (int, error) {
 		return 1, err
 	}
 
-	if *fix {
-		fixes := enabledFixes(b, selected, ignored)
-		if fixes.any() {
-			if _, err := applyFixes(b, fixes); err != nil {
+	if *fixFlag {
+		fixes := fix.Enabled(b, selected, ignored)
+		if fixes.Any() {
+			if _, err := fix.Apply(b, fixes); err != nil {
 				return 1, err
 			}
 			if b, err = bundle.Load(b.Root, b.Config.Path); err != nil {
@@ -80,24 +81,4 @@ func Lint(args []string) (int, error) {
 		}
 	}
 	return 0, nil
-}
-
-// enabledFixes collects the fix transforms of every rule that is enabled and
-// selected — the single-sourced replacement for the old hardcoded rule→transform
-// map. Each rule contributes its declared Fix (when != FixNone); the transform
-// engine keys off the same rules.FixKind vocabulary, so a fixable rule can never be
-// silently dropped by forgetting to wire it here.
-func enabledFixes(b *bundle.Bundle, selected, ignored map[string]bool) fixSet {
-	fixes := fixSet{}
-	for _, r := range rules.All() {
-		switch {
-		case r.Fix == rules.FixNone:
-		case len(selected) > 0 && !selected[r.ID]:
-		case ignored[r.ID]:
-		case rules.Effective(r, b.Config) == rules.Off:
-		default:
-			fixes[r.Fix] = true
-		}
-	}
-	return fixes
 }

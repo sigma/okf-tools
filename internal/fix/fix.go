@@ -1,4 +1,10 @@
-package command
+// Package fix is the mechanical autofix engine: the transforms that rewrite a
+// bundle's pages to satisfy the fixable rules (link style, citation numbering,
+// wikilink expansion, frontmatter order, timestamps) and regenerate index pages.
+// It keys every transform off the single rules.FixKind vocabulary a rule declares,
+// so a fixable rule can never be silently dropped. The command layer only decides
+// which kinds to enable and where to render; the how lives here.
+package fix
 
 import (
 	"os"
@@ -16,44 +22,91 @@ import (
 
 const maxInt = int(^uint(0) >> 1)
 
-// fixSet is the set of mechanical transforms to apply, keyed by the single
+// Set is the set of mechanical transforms to apply, keyed by the single
 // rules.FixKind vocabulary a rule declares. It only ever holds enabled kinds, so
-// membership is has() and any() is len > 0.
-type fixSet map[rules.FixKind]bool
+// membership is has() and Any() is len > 0.
+type Set map[rules.FixKind]bool
 
-func (s fixSet) has(k rules.FixKind) bool { return s[k] }
-func (s fixSet) any() bool                { return len(s) > 0 }
+func (s Set) has(k rules.FixKind) bool { return s[k] }
 
-// applyFixes rewrites every changed file in the bundle and returns the count.
-func applyFixes(b *bundle.Bundle, fixes fixSet) (int, error) {
-	changed := 0
+// Any reports whether the set enables any transform.
+func (s Set) Any() bool { return len(s) > 0 }
+
+// Enabled collects the transforms of every rule that is enabled and selected —
+// the single-sourced rule→transform map. Each rule contributes its declared Fix
+// (when != FixNone); the engine keys off the same rules.FixKind vocabulary, so a
+// fixable rule can never be silently dropped by forgetting to wire it here.
+func Enabled(b *bundle.Bundle, selected, ignored map[string]bool) Set {
+	set := Set{}
+	for _, r := range rules.All() {
+		switch {
+		case r.Fix == rules.FixNone:
+		case len(selected) > 0 && !selected[r.ID]:
+		case ignored[r.ID]:
+		case rules.Effective(r, b.Config) == rules.Off:
+		default:
+			set[r.Fix] = true
+		}
+	}
+	return set
+}
+
+// pendingWrite is one file the set would rewrite: its rel (for reporting), path
+// (for writing), and new content.
+type pendingWrite struct {
+	rel, path, content string
+}
+
+// pending returns every file the set would rewrite: concept docs whose fixDoc
+// output differs from disk, plus regenerated indexes when FixIndex is set. Apply
+// and Changed both derive from this, so "what Changed reports" and "what Apply
+// writes" are the same list by construction.
+func pending(b *bundle.Bundle, set Set) []pendingWrite {
+	var out []pendingWrite
 	for _, d := range b.Concepts {
-		nc := fixDoc(b, d, fixes)
-		if nc != d.Content {
-			if err := os.WriteFile(d.Path, []byte(nc), 0o644); err != nil {
-				return changed, err
-			}
-			changed++
+		if nc := fixDoc(b, d, set); nc != d.Content {
+			out = append(out, pendingWrite{d.Rel, d.Path, nc})
 		}
 	}
-	if fixes.has(rules.FixIndex) {
+	if set.has(rules.FixIndex) {
 		for _, idx := range b.Indexes {
-			nc := b.RenderIndex(idx)
-			if nc != idx.Content {
-				if err := os.WriteFile(idx.Path, []byte(nc), 0o644); err != nil {
-					return changed, err
-				}
-				changed++
+			if nc := b.RenderIndex(idx); nc != idx.Content {
+				out = append(out, pendingWrite{idx.Rel, idx.Path, nc})
 			}
 		}
 	}
-	return changed, nil
+	return out
+}
+
+// Apply rewrites every file the set would change and returns the count written
+// (the count so far if a write fails).
+func Apply(b *bundle.Bundle, set Set) (int, error) {
+	n := 0
+	for _, w := range pending(b, set) {
+		if err := os.WriteFile(w.path, []byte(w.content), 0o644); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
+// Changed reports the bundle-relative paths the set would rewrite, without
+// touching disk — the dry-run behind `fmt --check`. By the pending() invariant it
+// is exactly the set of files Apply would write.
+func Changed(b *bundle.Bundle, set Set) []string {
+	writes := pending(b, set)
+	rels := make([]string, len(writes))
+	for i, w := range writes {
+		rels[i] = w.rel
+	}
+	return rels
 }
 
 // fixDoc returns d's content with the selected transforms applied. Body edits
 // preserve line count, so parser line numbers stay valid; the frontmatter block
 // is rebuilt last.
-func fixDoc(b *bundle.Bundle, d *bundle.Doc, fixes fixSet) string {
+func fixDoc(b *bundle.Bundle, d *bundle.Doc, set Set) string {
 	lines := strings.Split(d.Content, "\n")
 	bodyStart := d.BodyStartLine
 	hasFM := d.HasOpening && d.Terminated
@@ -66,7 +119,7 @@ func fixDoc(b *bundle.Bundle, d *bundle.Doc, fixes fixSet) string {
 		body = append([]string(nil), lines...)
 	}
 
-	if fixes.has(rules.FixLinkStyle) {
+	if set.has(rules.FixLinkStyle) {
 		for _, rl := range d.Resolved {
 			if rl.Class != bundle.ClassConcept {
 				continue
@@ -80,14 +133,14 @@ func fixDoc(b *bundle.Bundle, d *bundle.Doc, fixes fixSet) string {
 			}
 		}
 	}
-	if fixes.has(rules.FixCitations) {
+	if set.has(rules.FixCitations) {
 		renumberCitations(b, d, body, bodyStart)
 	}
-	if fixes.has(rules.FixWikilinks) {
+	if set.has(rules.FixWikilinks) {
 		body = rewriteWikilinks(b, d, body)
 	}
-	if hasFM && (fixes.has(rules.FixFrontmatter) || fixes.has(rules.FixTimestamp)) {
-		if nh, ok := fixFrontmatterHead(b, d, fixes); ok {
+	if hasFM && (set.has(rules.FixFrontmatter) || set.has(rules.FixTimestamp)) {
+		if nh, ok := fixFrontmatterHead(b, d, set); ok {
 			head = nh
 		}
 	}
@@ -190,13 +243,13 @@ func citationRange(d *bundle.Doc, cfg *config.Config) (start, end int) {
 
 // fixFrontmatterHead rebuilds the frontmatter block (including delimiters) with
 // canonical key order and/or a normalized timestamp.
-func fixFrontmatterHead(b *bundle.Bundle, d *bundle.Doc, fixes fixSet) ([]string, bool) {
+func fixFrontmatterHead(b *bundle.Bundle, d *bundle.Doc, set Set) ([]string, bool) {
 	format := b.Config.Frontmatter.TimestampFormat
 	var raw string
 	var ok bool
-	if fixes.has(rules.FixFrontmatter) {
-		raw, ok = reorderFrontmatter(d.FrontmatterKey, fixes.has(rules.FixTimestamp), format)
-	} else if fixes.has(rules.FixTimestamp) {
+	if set.has(rules.FixFrontmatter) {
+		raw, ok = reorderFrontmatter(d.FrontmatterKey, set.has(rules.FixTimestamp), format)
+	} else if set.has(rules.FixTimestamp) {
 		raw, ok = normalizeTimestampOnly(d.FrontmatterRaw, format)
 	}
 	if !ok {

@@ -5,6 +5,7 @@ import (
 	"github.com/spf13/pflag"
 	"os"
 
+	"github.com/sigma/okf-tools/internal/fix"
 	"github.com/sigma/okf-tools/internal/rules"
 )
 
@@ -29,7 +30,7 @@ func Index(args []string) (int, error) {
 	}
 
 	if *write {
-		n, err := applyFixes(b, fixSet{rules.FixIndex: true})
+		n, err := fix.Apply(b, fix.Set{rules.FixIndex: true})
 		if err != nil {
 			return 1, err
 		}
