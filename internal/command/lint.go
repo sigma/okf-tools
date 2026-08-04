@@ -43,9 +43,9 @@ func Lint(args []string) (int, error) {
 	}
 
 	if *fix {
-		opts := lintFixOptions(b, selected, ignored)
-		if opts.any() {
-			if _, err := applyFixes(b, opts); err != nil {
+		fixes := enabledFixes(b, selected, ignored)
+		if fixes.any() {
+			if _, err := applyFixes(b, fixes); err != nil {
 				return 1, err
 			}
 			if b, err = bundle.Load(b.Root, b.Config.Path); err != nil {
@@ -82,26 +82,22 @@ func Lint(args []string) (int, error) {
 	return 0, nil
 }
 
-// lintFixOptions maps the enabled+selected fixable rules to fix transforms.
-func lintFixOptions(b *bundle.Bundle, selected, ignored map[string]bool) fixOptions {
-	on := func(id string) bool {
-		r := rules.Get(id)
-		if r == nil {
-			return false
+// enabledFixes collects the fix transforms of every rule that is enabled and
+// selected — the single-sourced replacement for the old hardcoded rule→transform
+// map. Each rule contributes its declared Fix (when != FixNone); the transform
+// engine keys off the same rules.FixKind vocabulary, so a fixable rule can never be
+// silently dropped by forgetting to wire it here.
+func enabledFixes(b *bundle.Bundle, selected, ignored map[string]bool) fixSet {
+	fixes := fixSet{}
+	for _, r := range rules.All() {
+		switch {
+		case r.Fix == rules.FixNone:
+		case len(selected) > 0 && !selected[r.ID]:
+		case ignored[r.ID]:
+		case rules.Effective(r, b.Config) == rules.Off:
+		default:
+			fixes[r.Fix] = true
 		}
-		if len(selected) > 0 && !selected[id] {
-			return false
-		}
-		if ignored[id] {
-			return false
-		}
-		return rules.Effective(r, b.Config) != rules.Off
 	}
-	return fixOptions{
-		Wikilinks: on("OKF101"),
-		LinkStyle: on("OKF102"),
-		Timestamp: on("OKF104"),
-		Citations: on("OKF105"),
-		Index:     on("OKF106"),
-	}
+	return fixes
 }

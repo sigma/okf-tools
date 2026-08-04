@@ -88,7 +88,11 @@ type Rule struct {
 	Name     string
 	Category Category
 	Default  Severity
-	Fixable  bool
+	// Fix names the mechanical transform that repairs this rule's findings, or
+	// FixNone (the zero value) when the rule has no autofix. It is the single home
+	// of the rule→fix association the lint --fix path and the transform engine both
+	// read; "is this rule fixable" is Fix != FixNone.
+	Fix FixKind
 
 	// Enabled reports whether config turns this rule on. Nil means always on.
 	Enabled func(*config.Config) bool

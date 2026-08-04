@@ -14,13 +14,13 @@ import (
 func init() {
 	register(&Rule{
 		ID: "OKF101", Name: "no-wikilinks", Category: Policy,
-		Default: Warning, Fixable: true,
+		Default: Warning, Fix: FixWikilinks,
 		Enabled: func(c *config.Config) bool { return !c.Links.AllowWikilinks },
 		Check:   checkOKF101,
 	})
 	register(&Rule{
 		ID: "OKF102", Name: "link-style", Category: Policy,
-		Default: Warning, Fixable: true,
+		Default: Warning, Fix: FixLinkStyle,
 		Enabled: func(c *config.Config) bool {
 			return c.Links.Style == "relative" || c.Links.Style == "absolute"
 		},
@@ -34,15 +34,15 @@ func init() {
 	})
 	register(&Rule{
 		ID: "OKF104", Name: "timestamp-format", Category: Policy,
-		Default: Warning, Fixable: true, Check: checkOKF104,
+		Default: Warning, Fix: FixTimestamp, Check: checkOKF104,
 	})
 	register(&Rule{
 		ID: "OKF105", Name: "citations-format", Category: Policy,
-		Default: Warning, Fixable: true, Check: checkOKF105,
+		Default: Warning, Fix: FixCitations, Check: checkOKF105,
 	})
 	register(&Rule{
 		ID: "OKF106", Name: "index-sync", Category: Policy,
-		Default: Warning, Fixable: true,
+		Default: Warning, Fix: FixIndex,
 		Enabled: func(c *config.Config) bool { return c.Index.CheckSync },
 		Check:   checkOKF106,
 	})

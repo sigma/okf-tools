@@ -10,30 +10,25 @@ import (
 
 	"github.com/sigma/okf-tools/internal/bundle"
 	"github.com/sigma/okf-tools/internal/config"
+	"github.com/sigma/okf-tools/internal/rules"
 	"gopkg.in/yaml.v3"
 )
 
 const maxInt = int(^uint(0) >> 1)
 
-// fixOptions selects which mechanical transforms to apply.
-type fixOptions struct {
-	Wikilinks   bool // OKF101: [[x]] -> [x](x.md) when unambiguous
-	LinkStyle   bool // OKF102: restyle concept cross-links
-	Timestamp   bool // OKF104: normalize frontmatter timestamp
-	Citations   bool // OKF105: renumber citation entries
-	Frontmatter bool // fmt: canonical frontmatter key order
-	Index       bool // OKF106: regenerate index.md files
-}
+// fixSet is the set of mechanical transforms to apply, keyed by the single
+// rules.FixKind vocabulary a rule declares. It only ever holds enabled kinds, so
+// membership is has() and any() is len > 0.
+type fixSet map[rules.FixKind]bool
 
-func (o fixOptions) any() bool {
-	return o.Wikilinks || o.LinkStyle || o.Timestamp || o.Citations || o.Frontmatter || o.Index
-}
+func (s fixSet) has(k rules.FixKind) bool { return s[k] }
+func (s fixSet) any() bool                { return len(s) > 0 }
 
 // applyFixes rewrites every changed file in the bundle and returns the count.
-func applyFixes(b *bundle.Bundle, opts fixOptions) (int, error) {
+func applyFixes(b *bundle.Bundle, fixes fixSet) (int, error) {
 	changed := 0
 	for _, d := range b.Concepts {
-		nc := fixDoc(b, d, opts)
+		nc := fixDoc(b, d, fixes)
 		if nc != d.Content {
 			if err := os.WriteFile(d.Path, []byte(nc), 0o644); err != nil {
 				return changed, err
@@ -41,7 +36,7 @@ func applyFixes(b *bundle.Bundle, opts fixOptions) (int, error) {
 			changed++
 		}
 	}
-	if opts.Index {
+	if fixes.has(rules.FixIndex) {
 		for _, idx := range b.Indexes {
 			nc := b.RenderIndex(idx)
 			if nc != idx.Content {
@@ -58,7 +53,7 @@ func applyFixes(b *bundle.Bundle, opts fixOptions) (int, error) {
 // fixDoc returns d's content with the selected transforms applied. Body edits
 // preserve line count, so parser line numbers stay valid; the frontmatter block
 // is rebuilt last.
-func fixDoc(b *bundle.Bundle, d *bundle.Doc, opts fixOptions) string {
+func fixDoc(b *bundle.Bundle, d *bundle.Doc, fixes fixSet) string {
 	lines := strings.Split(d.Content, "\n")
 	bodyStart := d.BodyStartLine
 	hasFM := d.HasOpening && d.Terminated
@@ -71,7 +66,7 @@ func fixDoc(b *bundle.Bundle, d *bundle.Doc, opts fixOptions) string {
 		body = append([]string(nil), lines...)
 	}
 
-	if opts.LinkStyle {
+	if fixes.has(rules.FixLinkStyle) {
 		for _, rl := range d.Resolved {
 			if rl.Class != bundle.ClassConcept {
 				continue
@@ -85,14 +80,14 @@ func fixDoc(b *bundle.Bundle, d *bundle.Doc, opts fixOptions) string {
 			}
 		}
 	}
-	if opts.Citations {
+	if fixes.has(rules.FixCitations) {
 		renumberCitations(b, d, body, bodyStart)
 	}
-	if opts.Wikilinks {
+	if fixes.has(rules.FixWikilinks) {
 		body = rewriteWikilinks(b, d, body)
 	}
-	if hasFM && (opts.Frontmatter || opts.Timestamp) {
-		if nh, ok := fixFrontmatterHead(b, d, opts); ok {
+	if hasFM && (fixes.has(rules.FixFrontmatter) || fixes.has(rules.FixTimestamp)) {
+		if nh, ok := fixFrontmatterHead(b, d, fixes); ok {
 			head = nh
 		}
 	}
@@ -195,13 +190,13 @@ func citationRange(d *bundle.Doc, cfg *config.Config) (start, end int) {
 
 // fixFrontmatterHead rebuilds the frontmatter block (including delimiters) with
 // canonical key order and/or a normalized timestamp.
-func fixFrontmatterHead(b *bundle.Bundle, d *bundle.Doc, opts fixOptions) ([]string, bool) {
+func fixFrontmatterHead(b *bundle.Bundle, d *bundle.Doc, fixes fixSet) ([]string, bool) {
 	format := b.Config.Frontmatter.TimestampFormat
 	var raw string
 	var ok bool
-	if opts.Frontmatter {
-		raw, ok = reorderFrontmatter(d.FrontmatterKey, opts.Timestamp, format)
-	} else if opts.Timestamp {
+	if fixes.has(rules.FixFrontmatter) {
+		raw, ok = reorderFrontmatter(d.FrontmatterKey, fixes.has(rules.FixTimestamp), format)
+	} else if fixes.has(rules.FixTimestamp) {
 		raw, ok = normalizeTimestampOnly(d.FrontmatterRaw, format)
 	}
 	if !ok {
