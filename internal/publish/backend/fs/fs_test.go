@@ -152,6 +152,43 @@ func TestExportTree(t *testing.T) {
 	assertNodeDirs(t, out, wantNodes)
 }
 
+// TestExportExternalLinkSurvives reproduces sigma/okf-tools#119 end to end: an
+// authored external link used to reach the backend as bare label text, because
+// the neutral tree dropped its target. It must survive the whole pipeline as a
+// real hyperlink — the fs backend renders a run's Link as Markdown, so a
+// round-trip of the source syntax is the assertion.
+func TestExportExternalLinkSurvives(t *testing.T) {
+	files := map[string]string{
+		"okf.toml": "",
+		"index.md": "---\nokf_version: \"0.1\"\n---\n# Root\n",
+		"docs/a.md": "---\ntype: adr\ntitle: A\n---\n" +
+			"- [Drive push](https://developers.google.com/workspace/drive/api/guides/push)\n" +
+			"- [Pub/Sub overview](https://docs.cloud.google.com/pubsub/docs/subscription-overview)\n\n" +
+			"# Citations\n\n- [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110)\n",
+	}
+	b := loadBundle(t, files)
+	out := t.TempDir()
+	publishToDisk(t, b, out)
+
+	tree := snapshot(t, filepath.Join(out, "docs", "a.md"))
+	for _, want := range []string{
+		"[Drive push](https://developers.google.com/workspace/drive/api/guides/push)",
+		"[Pub/Sub overview](https://docs.cloud.google.com/pubsub/docs/subscription-overview)",
+		"[RFC 9110](https://www.rfc-editor.org/rfc/rfc9110)",
+	} {
+		var found bool
+		for _, body := range tree {
+			if strings.Contains(body, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("exported tree lost the external link %s:\n%v", want, tree)
+		}
+	}
+}
+
 // TestExportSelfHostedAnchor reproduces sigma/okf-tools#76: a glossary host that
 // cites one of its OWN terms must publish on the fs backend. The optimizer
 // suppresses a self-hosted anchor ref from the txn's exposed Refs (it assumes the

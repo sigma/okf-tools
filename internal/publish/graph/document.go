@@ -91,9 +91,12 @@ type TableCell struct {
 // Inline is one inline node of a block's content: a text run, a first-class Ref,
 // or a text run carrying an external hyperlink (URL != ""). Ref and URL are
 // mutually exclusive: a Ref is a late-bound internal reference (Text is then
-// empty); a URL is an external link whose visible label is Text. Authored
-// Markdown never mints URL inlines — they carry the synthetic disclaimer banner's
-// source deep-link, the one external link the neutral model needs (ADR-0015).
+// empty); a URL is an external link whose visible label is Text.
+//
+// Two producers mint URL inlines: an authored Markdown link that is not an
+// in-bundle cross-reference (bundle.ResolvedLink.ExternalURL decides which
+// classes qualify, #119), and the synthetic disclaimer banner's source deep-link
+// (ADR-0015).
 type Inline struct {
 	Text string
 	Ref  *Ref
@@ -418,11 +421,12 @@ func (b *docBuilder) inlinesOf(n ast.Node) (inlines []Inline, refs []publish.Sym
 				if id, ok := refOf(rl); ok {
 					inlines = append(inlines, Inline{Ref: &Ref{ID: id}})
 					refs = append(refs, id)
-				} else if rl != nil {
-					// Keep the link's visible text as a plain run; no reference.
-					if txt := rl.Text; txt != "" {
-						inlines = append(inlines, Inline{Text: txt})
-					}
+				} else if rl != nil && rl.Text != "" {
+					// Not a late-bound Ref, so it renders as its visible text —
+					// hyperlinked when the link carries an external address
+					// (ResolvedLink.ExternalURL owns that call), plain otherwise.
+					url, _ := rl.ExternalURL()
+					inlines = append(inlines, Inline{Text: rl.Text, URL: url})
 				}
 			case *ast.Emphasis, *ast.CodeSpan:
 				visit(c) // formatting wrappers: keep their inner text/links inline

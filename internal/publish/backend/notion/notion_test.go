@@ -67,6 +67,49 @@ func TestTokenizeSplitsOversizedBlock(t *testing.T) {
 	}
 }
 
+// The char-cap splitter's hyperlink branch used to see one link per document (the
+// block-0 banner); since #119 an authored block can hold many. Splitting a run of
+// links must never fracture one across two units — a link's text and its URL ride
+// together, or the published span loses the address on one side of the cut.
+func TestTokenizeNeverFracturesALinkAcrossUnits(t *testing.T) {
+	b := New(WithMaxBlockChars(10))
+	link := func(text, url string) graph.Inline { return graph.Inline{Text: text, URL: url} }
+	doc := publish.Document{Group: "node:a.md", Blocks: []publish.Block{
+		{Content: para(
+			link("Drive push", "https://example.com/push"),
+			txt(" and "),
+			link("Pub/Sub overview", "https://example.com/pubsub"), // 16 chars: over the cap
+			txt(" and "),
+			link("limits", "https://example.com/limits"),
+		)},
+	}}
+
+	got := map[string]string{}
+	for _, u := range b.Tokenize(doc) {
+		for _, r := range payload(t, u).runs {
+			if r.Link == "" {
+				continue
+			}
+			if prev, dup := got[r.Link]; dup {
+				t.Errorf("link %s fractured across runs: %q then %q", r.Link, prev, r.Text)
+			}
+			got[r.Link] = r.Text
+		}
+	}
+	want := map[string]string{
+		// The oversized link is left intact rather than cut — a fractured link is
+		// worse than one span over the cap.
+		"https://example.com/push":   "Drive push",
+		"https://example.com/pubsub": "Pub/Sub overview",
+		"https://example.com/limits": "limits",
+	}
+	for url, text := range want {
+		if got[url] != text {
+			t.Errorf("link %s carried text %q, want %q", url, got[url], text)
+		}
+	}
+}
+
 // A code block carries its fence language onto every unit — including each unit
 // produced when an oversized code body is split across the char cap, a case only
 // reachable now that code blocks carry their literal text.

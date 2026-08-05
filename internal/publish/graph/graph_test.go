@@ -597,6 +597,126 @@ func TestNonConceptLinksAreNotRefs(t *testing.T) {
 	}
 }
 
+// --- external links keep their URL -----------------------------------------
+
+// inlinesFor flattens every block's inlines of a doc's SetContent op, table cells
+// included, so a test can assert on the whole neutral inline stream at once.
+func inlinesFor(t *testing.T, g *Graph, rel string) []Inline {
+	t.Helper()
+	sc := opFor(g, nodeRef(rel), SetContent)
+	if sc == nil || sc.Doc == nil {
+		t.Fatalf("no SetContent document for %q", rel)
+	}
+	var out []Inline
+	for _, blk := range sc.Doc.Blocks {
+		bc, ok := blk.Content.(BlockContent)
+		if !ok {
+			t.Fatalf("block content is %T, want BlockContent", blk.Content)
+		}
+		out = append(out, bc.Inlines...)
+		for _, row := range bc.Rows {
+			for _, cell := range row.Cells {
+				out = append(out, cell.Inlines...)
+			}
+		}
+	}
+	return out
+}
+
+// urlOf returns the URL the inline stream hyperlinks to the given label.
+func urlOf(inlines []Inline, text string) string {
+	for _, in := range inlines {
+		if in.Ref == nil && in.Text == text {
+			return in.URL
+		}
+	}
+	return ""
+}
+
+// An authored external link must publish as a hyperlink, not as bare label text
+// (#119). The banner is no longer the sole producer of URL inlines.
+func TestExternalLinkKeepsURL(t *testing.T) {
+	files := map[string]string{
+		"okf.toml": "",
+		"index.md": "---\nokf_version: \"0.1\"\n---\nRoot.\n",
+		"p.md": "---\ntype: c\n---\n" +
+			"- [Drive push](https://developers.google.com/workspace/drive/api/guides/push)\n" +
+			"- [`changes.list` reference](https://example.com/changes/list)\n" +
+			"- [mail us](mailto:okf@example.com)\n",
+	}
+	b := loadBundle(t, files)
+	g := gen(t, b, publish.NewCurrentState(nil, nil, nil))
+	inlines := inlinesFor(t, g, "p.md")
+
+	for label, want := range map[string]string{
+		"Drive push": "https://developers.google.com/workspace/drive/api/guides/push",
+		// The neutral inline model carries no character styling, so a code-span
+		// label flattens to its text — the link itself must still survive.
+		"changes.list reference": "https://example.com/changes/list",
+		"mail us":                "mailto:okf@example.com",
+	} {
+		if got := urlOf(inlines, label); got != want {
+			t.Errorf("URL for %q = %q, want %q", label, got, want)
+		}
+	}
+	if len(inlinesFor(t, g, "p.md")) == 0 {
+		t.Fatal("no inlines at all")
+	}
+}
+
+// A citation under # Citations is an external URL like any other and must keep
+// it; a citation pointing at an on-disk path has no URL to carry.
+func TestCitationLinkKeepsURLOnlyWhenAbsolute(t *testing.T) {
+	files := map[string]string{
+		"okf.toml": "",
+		"index.md": "---\nokf_version: \"0.1\"\n---\nRoot.\n",
+		"a.md":     "---\ntype: c\n---\nA.\n",
+		"p.md":     "---\ntype: c\n---\nBody.\n\n# Citations\n\n- [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110)\n- [local note](a.md)\n",
+	}
+	b := loadBundle(t, files)
+	cs := seed{unchanged: []string{"index.md", "a.md"}}.build(t, b)
+	inlines := inlinesFor(t, gen(t, b, cs), "p.md")
+
+	if got, want := urlOf(inlines, "RFC 9110"), "https://www.rfc-editor.org/rfc/rfc9110"; got != want {
+		t.Errorf("citation URL = %q, want %q", got, want)
+	}
+	if got := urlOf(inlines, "local note"); got != "" {
+		t.Errorf("path citation carried URL %q, want none", got)
+	}
+}
+
+// Images, wikilinks, and in-page anchors are each their own concern: none of them
+// is an external address, so none mints a URL inline.
+func TestNonExternalLinkClassesMintNoURL(t *testing.T) {
+	files := map[string]string{
+		"okf.toml": "",
+		"index.md": "---\nokf_version: \"0.1\"\n---\nRoot.\n",
+		"p.md":     "---\ntype: c\n---\n## Later\n\n![pic](img.png) and [[Some Note]] and [jump](#later) and [gone](missing.md).\n",
+	}
+	b := loadBundle(t, files)
+	inlines := inlinesFor(t, gen(t, b, publish.NewCurrentState(nil, nil, nil)), "p.md")
+	for _, in := range inlines {
+		if in.URL != "" {
+			t.Errorf("inline %q minted URL %q, want none", in.Text, in.URL)
+		}
+	}
+}
+
+// A table cell's inlines route through the same projection, so a link inside one
+// must gain its URL too.
+func TestTableCellExternalLinkKeepsURL(t *testing.T) {
+	files := map[string]string{
+		"okf.toml": "",
+		"index.md": "---\nokf_version: \"0.1\"\n---\nRoot.\n",
+		"p.md":     "---\ntype: c\n---\n| Doc | Where |\n| --- | --- |\n| API | [spec](https://example.com/spec) |\n",
+	}
+	b := loadBundle(t, files)
+	inlines := inlinesFor(t, gen(t, b, publish.NewCurrentState(nil, nil, nil)), "p.md")
+	if got, want := urlOf(inlines, "spec"), "https://example.com/spec"; got != want {
+		t.Errorf("table cell link URL = %q, want %q", got, want)
+	}
+}
+
 // --- linked images keep the link ordinal aligned ---------------------------
 
 // A linked image ([![alt](img)](target)) is two link-like nodes to the parser
