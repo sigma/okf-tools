@@ -34,9 +34,10 @@ const (
 	// repo is the source of truth, and a real edit around the ref re-heals it).
 	canonRefPlaceholder = "￼"
 	// canonCellSep joins a table row's cells, and canonLinkSep separates a run's
-	// visible text from an external link URL, so a banner source-link change still
-	// re-publishes (preserving the block-0 banner's URL sensitivity). Both are
-	// control chars that cannot occur in authored prose.
+	// visible text from an external link URL, so a URL change re-publishes even
+	// when the visible label is untouched — the block-0 banner's source deep-link
+	// and, since #119, every authored external link. Both are control chars that
+	// cannot occur in authored prose.
 	canonCellSep = "\x1f"
 	canonLinkSep = "\x02"
 )

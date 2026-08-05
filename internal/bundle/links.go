@@ -84,6 +84,28 @@ func (rl *ResolvedLink) AnchorTarget(src *Doc) (host *Doc, kind AnchorTargetKind
 	return host, HeadingAnchor
 }
 
+// ExternalURL reports the absolute address a link should hyperlink to in
+// published output, if any. It is the single home of the which-links-carry-a-URL
+// decision, kept next to the classification it reads so the publisher never
+// re-derives it: a ClassExternal link always has one, a ClassCitation link has
+// one only when its target is a URL rather than an on-disk path.
+//
+// Everything else is deliberately absent. A resolved ClassConcept link is a
+// first-class late-bound Ref, not a URL; a dangling one has no valid address (the
+// broken-link rule's concern). Images, wikilinks, and in-page anchors are each
+// their own concern, none of them an external address.
+func (rl *ResolvedLink) ExternalURL() (string, bool) {
+	switch rl.Class {
+	case ClassExternal:
+		return rl.Target, true
+	case ClassCitation:
+		if isURL(rl.Target) {
+			return rl.Target, true
+		}
+	}
+	return "", false
+}
+
 var schemeRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.-]*:`)
 
 // isURL reports whether target is an external reference rather than a path.
