@@ -71,9 +71,9 @@ func (b *Backend) Tokenize(doc publish.Document) []publish.AtomicUnit {
 func (b *Backend) TokenizeOp(op publish.NonContentOp) publish.AtomicUnit {
 	switch op.Kind {
 	case publish.CreateOp:
-		return publish.AtomicUnit{Payload: createBlock{node: op.Node}, Cost: 0}
+		return publish.AtomicUnit{Payload: createBlock{node: op.Node, parent: op.Parent}, Cost: 0}
 	case publish.PropertiesOp:
-		return publish.AtomicUnit{Payload: propsBlock{node: op.Node, props: op.Props}, Cost: 0}
+		return publish.AtomicUnit{Payload: propsBlock{node: op.Node, parent: op.Parent, props: op.Props}, Cost: 0}
 	case publish.DeleteOp:
 		return publish.AtomicUnit{Payload: deleteBlock{node: op.Node}, Cost: 0}
 	default:

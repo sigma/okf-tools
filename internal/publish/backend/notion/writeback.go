@@ -119,6 +119,13 @@ func (b *Backend) getPageProps(ctx context.Context, pageID string) (map[string]p
 // patchProps PATCHes a page's properties (the derived-column write). Notion merges
 // the given properties into the page, leaving untouched columns (title, type, …) as
 // they were.
+//
+// This is the third page-property write path, and the parent-kind rule binds it too:
+// a page-parented node is a child_page with none of the data source's columns, so
+// writing one to it 400s (#104, #128). It does not route through pageProps because
+// WriteBack never hands it a subpage — the routing above sends a subpage's record
+// into its PARENT row's `hashes` map, so every id reaching here is a top-level row.
+// Any future caller must preserve that, or send its properties through pageProps.
 func (b *Backend) patchProps(ctx context.Context, pageID string, props map[string]any) error {
 	return b.do(ctx, http.MethodPatch, "/pages/"+url.PathEscape(pageID), updatePageReq{Properties: props}, nil)
 }

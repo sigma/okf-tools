@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"sync"
 	"testing"
@@ -41,6 +42,14 @@ type fakeNotion struct {
 	// at least a "type". A PATCH /data_sources/{id} merges its added columns in, so
 	// a second reconcile in the same test sees them as present.
 	dsProps map[string]map[string]any
+
+	// childPages marks the page ids that live as a `child_page` under another page
+	// rather than as a row of the data source. Such a page has only a title and none
+	// of the data source's column properties, so writing a column property to one is
+	// a 400 "Invalid property identifier" — the real Notion behaviour behind
+	// sigma/okf-tools#104 and #128. Pages created with a page parent are marked
+	// automatically; a test seeds an already-existing subpage directly.
+	childPages map[string]bool
 }
 
 // recordedReq is one captured request: its method, path, decoded JSON body, and
@@ -58,6 +67,7 @@ func newFakeNotion() *fakeNotion {
 		liveBlocks: map[string][]map[string]any{},
 		pageProps:  map[string]map[string]any{},
 		dsProps:    map[string]map[string]any{},
+		childPages: map[string]bool{},
 	}
 }
 
@@ -142,6 +152,14 @@ func (f *fakeNotion) record(r *http.Request) map[string]any {
 func (f *fakeNotion) createPage(w http.ResponseWriter, r *http.Request) {
 	body := f.record(r)
 
+	// A page parented under another page is a child_page: it carries a title and
+	// nothing else, so any column property in the create 400s exactly as Notion does.
+	parent, _ := body["parent"].(map[string]any)
+	childPage := parent != nil && parent["type"] == "page_id"
+	if rejectColumnProps(w, body, childPage) {
+		return
+	}
+
 	f.mu.Lock()
 	f.seq++
 	pageID := fmt.Sprintf("page-%d", f.seq)
@@ -153,14 +171,63 @@ func (f *fakeNotion) createPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	f.children[pageID] = childIDs
+	if childPage {
+		f.childPages[pageID] = true
+	}
 	f.mu.Unlock()
 
 	writeJSON(w, map[string]any{"id": pageID})
 }
 
 func (f *fakeNotion) updatePage(w http.ResponseWriter, r *http.Request) {
-	f.record(r)
-	writeJSON(w, map[string]any{"id": r.PathValue("id")})
+	body := f.record(r)
+	id := r.PathValue("id")
+
+	// The same child_page rule as the create path: a page-parented page has no
+	// data-source columns, so PATCHing one 400s (sigma/okf-tools#128).
+	f.mu.Lock()
+	child := f.childPages[id]
+	f.mu.Unlock()
+	if rejectColumnProps(w, body, child) {
+		return
+	}
+
+	writeJSON(w, map[string]any{"id": id})
+}
+
+// rejectColumnProps is the child_page property guard both page-write paths share: if
+// the target is a page-parented child_page and the write carries any data-source
+// column property (anything that is not the `title`), it replies with Notion's real
+// 400 — the failure sigma/okf-tools#104 and #128 are about — and reports true so the
+// caller stops. Column names are sorted so the reported one is deterministic.
+func rejectColumnProps(w http.ResponseWriter, body map[string]any, childPage bool) bool {
+	if !childPage {
+		return false
+	}
+	props, ok := body["properties"].(map[string]any)
+	if !ok {
+		return false
+	}
+	names := make([]string, 0, len(props))
+	for k := range props {
+		if k != "title" {
+			names = append(names, k)
+		}
+	}
+	if len(names) == 0 {
+		return false
+	}
+	sort.Strings(names)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadRequest)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"object":  "error",
+		"status":  400,
+		"code":    "validation_error",
+		"message": fmt.Sprintf("%s is not a property that exists. Invalid property identifier.", names[0]),
+	})
+	return true
 }
 
 func (f *fakeNotion) getChildren(w http.ResponseWriter, r *http.Request) {

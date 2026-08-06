@@ -98,7 +98,7 @@ const (
 // neutral Group, write-target/parent Refs, and graph provenance.
 //
 // It is deliberately narrower than a graph.Op: the backend needs only what shapes
-// its payload (the kind, and Props for a PropertiesOp). Parent, edges, and
+// its payload (the kind, the node's parent, and Props for a PropertiesOp). Edges and
 // symbolic-id bookkeeping remain the optimizer's concern.
 type NonContentOp struct {
 	// Kind selects create / properties / delete.
@@ -108,6 +108,14 @@ type NonContentOp struct {
 	// create/append/archive addresses); the transport still resolves it to a real
 	// backend id at execute time.
 	Node SymbolicID
+	// Parent is the node's parent symbolic id — "" for a top-level node, else the
+	// cluster root it nests under. It is the parent KIND, not the ordering edge, that
+	// the backend needs it for: a page-parented node is a different kind of object
+	// from a top-level one (Notion: a child_page with no data-source columns versus a
+	// row that has them), and that distinction shapes the payload of every write path,
+	// not just the create (sigma/okf-tools#104, #128). The optimizer still owns the
+	// parent-before-child edge and the parent Ref a create resolves.
+	Parent SymbolicID
 	// Props are the neutral semantic properties, set only for a PropertiesOp; the
 	// backend reshapes them into its own property payload.
 	Props map[string]any
