@@ -27,8 +27,12 @@
 package notion
 
 import (
+	"context"
+	"fmt"
 	"net/http"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/sigma/okf-tools/internal/publish"
 	"github.com/sigma/okf-tools/internal/publish/backend"
@@ -60,6 +64,8 @@ const (
 // does — the production defaults are Notion's real limits. The HTTP fields are the
 // shared client the Executor and Scanner both trade through: baseURL and http are
 // injectable so tests drive an httptest server offline, with no live workspace.
+// That shared client also owns the rate-limit defenses — global pacing and retry
+// — because it is the one point every Notion request passes through (#129).
 type Backend struct {
 	maxBlocks int
 	maxChars  int
@@ -73,6 +79,13 @@ type Backend struct {
 	notionVersion string
 	dataSourceID  string
 	http          httpDoer
+
+	// limits is the rate-limit policy every request inherits from do — the global
+	// pacing gate and the retry schedule (see client.go). logf is where the backend
+	// reports operationally, currently the retry notices, so a throttled run is
+	// visible in its output rather than merely slow.
+	limits limiter
+	logf   func(format string, args ...any)
 
 	// schema is the parsed schema.json driving two things: provisioning (the
 	// Provisioner role reconciles the data source's columns against it) and typed
@@ -162,6 +175,35 @@ func WithNotionVersion(v string) Option {
 	}
 }
 
+// WithInterval sets the global minimum spacing between two Notion requests — the
+// pacing every call inherits from the shared request chokepoint, whatever page or
+// route it targets. A non-positive interval disables pacing entirely, which is the
+// setting the offline tests run under so they take no wall-clock delay.
+func WithInterval(d time.Duration) Option {
+	return func(b *Backend) { b.limits.interval = d }
+}
+
+// WithLogger redirects the backend's operational reporting — currently the retry
+// notices, which must reach the run's output so a chronically throttled publish is
+// visible rather than merely slow. The default writes to stderr. A nil logger is
+// ignored; pass a no-op function to silence it.
+func WithLogger(logf func(format string, args ...any)) Option {
+	return func(b *Backend) {
+		if logf != nil {
+			b.logf = logf
+		}
+	}
+}
+
+// withClock overrides the clock seam (now + sleep). Unexported: it exists only so
+// the package's own tests can drive pacing and retry backoff off a virtual clock.
+func withClock(now func() time.Time, sleep func(context.Context, time.Duration) error) Option {
+	return func(b *Backend) {
+		b.limits.now = now
+		b.limits.sleep = sleep
+	}
+}
+
 // WithSchema hands the backend the parsed schema.json. It drives both the
 // Provisioner role (which columns to reconcile onto the data source, and with
 // which Notion types) and typed property serialization (each value's shape keyed
@@ -171,8 +213,10 @@ func WithSchema(s *schema.Schema) Option {
 	return func(b *Backend) { b.schema = s }
 }
 
-// New builds a Notion backend with Notion's real limits and a default HTTP client
-// aimed at the public API, all overridable via options.
+// New builds a Notion backend with Notion's real limits, a default HTTP client
+// aimed at the public API, and the rate-limit defenses on (global pacing at
+// DefaultInterval, bounded retry of 429/5xx, retries reported to stderr) — all
+// overridable via options.
 func New(opts ...Option) *Backend {
 	b := &Backend{
 		maxBlocks:     maxBlocksPerTxn,
@@ -180,6 +224,15 @@ func New(opts ...Option) *Backend {
 		baseURL:       defaultBaseURL,
 		notionVersion: defaultNotionVersion,
 		http:          http.DefaultClient,
+		limits: limiter{
+			interval:    DefaultInterval,
+			maxAttempts: defaultMaxAttempts,
+			now:         time.Now,
+			sleep:       realSleep,
+		},
+		logf: func(format string, args ...any) {
+			fmt.Fprintf(os.Stderr, format+"\n", args...)
+		},
 	}
 	for _, opt := range opts {
 		opt(b)

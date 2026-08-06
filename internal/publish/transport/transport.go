@@ -5,15 +5,22 @@
 // the table from the scan's CurrentState, gates each PackedTxn on all its Refs
 // being resolved, calls Execute (behind which the backend performs the physical
 // ref substitution), and merges each ExecResult back so downstream transactions
-// resolve. It paces per Group so a target is not hammered faster than its rate
-// limit allows.
+// resolve.
 //
-// Concurrency and failure policy (429 backoff, partial-batch resumability) are
-// deferred (see sigma/ideas#172 "Out of Scope"). This drain is therefore
-// sequential and executes a wavefront's transactions in deterministic index
-// order, which keeps the recorded transaction stream reproducible; the
-// resolution table's per-lookup mutex is a foundation a future concurrent drain
-// can build on, not a claim that this drain is concurrent.
+// Rate limiting is deliberately NOT here. A backend's rate limit is measured in
+// requests, and one transaction is not one request (a create fans out into a
+// POST, an anchor re-materialization, a children read), while some backend
+// traffic — the scan, write-back's property writes — is not a transaction at all.
+// Pacing and retry therefore live at the backend's own request chokepoint, where
+// every call passes exactly once (sigma/okf-tools#129); the Notion backend's is
+// notion.(*Backend).do.
+//
+// Concurrency and partial-batch resumability are deferred (see sigma/ideas#172
+// "Out of Scope"). This drain is therefore sequential and executes a wavefront's
+// transactions in deterministic index order, which keeps the recorded
+// transaction stream reproducible; the resolution table's per-lookup mutex is a
+// foundation a future concurrent drain can build on, not a claim that this drain
+// is concurrent.
 //
 // See sigma/ideas#172 (ratified #162, #163).
 package transport
@@ -21,60 +28,21 @@ package transport
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/sigma/okf-tools/internal/publish"
 	"github.com/sigma/okf-tools/internal/publish/backend"
 	"github.com/sigma/okf-tools/internal/publish/optimize"
 )
 
-// DefaultInterval is the per-Group pacing interval used when none is configured —
-// the ~350ms cadence the spec sets so a large publish is not throttled to failure
-// by the backend's rate limit.
-const DefaultInterval = 350 * time.Millisecond
-
 // Transport drains transaction-DAGs against one Executor. Construct it with New;
 // the zero value is not usable.
 type Transport struct {
-	exec     backend.Executor
-	interval time.Duration
-	// now and sleep are the clock seam: real time by default, overridable in
-	// tests so pacing is exercised deterministically without wall-clock delay.
-	now   func() time.Time
-	sleep func(time.Duration)
+	exec backend.Executor
 }
 
-// Option configures a Transport built by New.
-type Option func(*Transport)
-
-// WithInterval sets the per-Group pacing interval. A non-positive interval
-// disables pacing entirely — the setting tests use to run fast and deterministic.
-func WithInterval(d time.Duration) Option {
-	return func(t *Transport) { t.interval = d }
-}
-
-// withClock overrides the clock seam (now + sleep). Unexported: it exists only so
-// the package's own tests can drive pacing off a virtual clock.
-func withClock(now func() time.Time, sleep func(time.Duration)) Option {
-	return func(t *Transport) {
-		t.now = now
-		t.sleep = sleep
-	}
-}
-
-// New builds a Transport over exec. By default it paces at DefaultInterval using
-// the real clock.
-func New(exec backend.Executor, opts ...Option) *Transport {
-	t := &Transport{
-		exec:     exec,
-		interval: DefaultInterval,
-		now:      time.Now,
-		sleep:    time.Sleep,
-	}
-	for _, opt := range opts {
-		opt(t)
-	}
-	return t
+// New builds a Transport over exec.
+func New(exec backend.Executor) *Transport {
+	return &Transport{exec: exec}
 }
 
 // Result is the outcome of a drained publish: the resolution-table updates
@@ -101,7 +69,6 @@ type Result struct {
 // fails rather than spinning.
 func (t *Transport) Run(ctx context.Context, dag *optimize.TxnDAG, seed *publish.CurrentState) (*Result, error) {
 	tbl := newTable(seed)
-	lastExec := map[publish.GroupKey]time.Time{}
 
 	// remaining holds the indices still to execute, kept in ascending order so the
 	// executed stream is deterministic.
@@ -130,7 +97,6 @@ func (t *Transport) Run(ctx context.Context, dag *optimize.TxnDAG, seed *publish
 
 		for _, i := range ready {
 			txn := dag.Txns[i]
-			t.pace(lastExec, txn.Group)
 			res, err := t.exec.Execute(ctx, txn.Txn, tbl)
 			if err != nil {
 				return nil, fmt.Errorf("transport: execute txn %d (group %s): %w", i, txn.Group, err)
@@ -198,19 +164,4 @@ func buildProvenance(dag *optimize.TxnDAG, tbl *table) publish.Provenance {
 		prov.Nodes[node] = np
 	}
 	return prov
-}
-
-// pace enforces the per-Group interval: it delays a transaction's execution until
-// at least interval has elapsed since the previous transaction of the same Group,
-// then records this execution's start time. A non-positive interval is a no-op.
-func (t *Transport) pace(last map[publish.GroupKey]time.Time, g publish.GroupKey) {
-	if t.interval <= 0 {
-		return
-	}
-	if prev, ok := last[g]; ok {
-		if wait := t.interval - t.now().Sub(prev); wait > 0 {
-			t.sleep(wait)
-		}
-	}
-	last[g] = t.now()
 }

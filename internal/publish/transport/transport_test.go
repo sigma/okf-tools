@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/sigma/okf-tools/internal/publish"
 	"github.com/sigma/okf-tools/internal/publish/backend"
@@ -84,7 +83,7 @@ func packed(group publish.GroupKey, refs, produces []publish.SymbolicID, anchors
 
 func run(t *testing.T, dag *optimize.TxnDAG, seed *publish.CurrentState, exec backend.Executor) *Result {
 	t.Helper()
-	res, err := New(exec, WithInterval(0)).Run(context.Background(), dag, seed)
+	res, err := New(exec).Run(context.Background(), dag, seed)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -165,7 +164,7 @@ func TestUnresolvableRefsFail(t *testing.T) {
 		packed("node:p", []publish.SymbolicID{publish.SymbolicID("node:ghost")},
 			[]publish.SymbolicID{publish.SymbolicID("node:p")}, nil),
 	}}
-	_, err := New(&stubExec{}, WithInterval(0)).Run(context.Background(), dag, nil)
+	_, err := New(&stubExec{}).Run(context.Background(), dag, nil)
 	if err == nil {
 		t.Fatal("want an error for an unresolvable ref, got nil")
 	}
@@ -176,77 +175,8 @@ func TestExecuteErrorPropagates(t *testing.T) {
 	dag := &optimize.TxnDAG{Txns: []publish.PackedTxn{
 		packed("node:p", nil, []publish.SymbolicID{publish.SymbolicID("node:p")}, nil),
 	}}
-	_, err := New(&stubExec{fail: true}, WithInterval(0)).Run(context.Background(), dag, nil)
+	_, err := New(&stubExec{fail: true}).Run(context.Background(), dag, nil)
 	if err == nil {
 		t.Fatal("want the Executor error to propagate, got nil")
-	}
-}
-
-// --- pacing -----------------------------------------------------------------
-
-// fakeClock models time advancing only by explicit sleeps, so pacing is exercised
-// without any wall-clock delay.
-type fakeClock struct {
-	t     time.Time
-	slept []time.Duration
-}
-
-func (c *fakeClock) now() time.Time          { return c.t }
-func (c *fakeClock) doSleep(d time.Duration) { c.slept = append(c.slept, d); c.t = c.t.Add(d) }
-
-// Consecutive transactions of the same Group are spaced by the interval; distinct
-// groups are not paced against each other.
-func TestPerGroupPacing(t *testing.T) {
-	interval := 100 * time.Millisecond
-	clock := &fakeClock{t: time.Unix(0, 0)}
-
-	// Three same-group txns (each independent) and one of another group. All refs
-	// empty so they all fall in one wavefront and execute in index order.
-	dag := &optimize.TxnDAG{Txns: []publish.PackedTxn{
-		packed("node:g1", nil, []publish.SymbolicID{publish.SymbolicID("node:g1a")}, nil),
-		packed("node:g1", nil, []publish.SymbolicID{publish.SymbolicID("node:g1b")}, nil),
-		packed("node:g1", nil, []publish.SymbolicID{publish.SymbolicID("node:g1c")}, nil),
-		packed("node:g2", nil, []publish.SymbolicID{publish.SymbolicID("node:g2a")}, nil),
-	}}
-	tr := New(&stubExec{}, WithInterval(interval), withClock(clock.now, clock.doSleep))
-	if _, err := tr.Run(context.Background(), dag, nil); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-
-	// Two intra-group gaps (g1 → g1 → g1) = two sleeps of one interval; g2 is a
-	// fresh group so it never sleeps.
-	if len(clock.slept) != 2 {
-		t.Fatalf("want 2 pacing sleeps, got %d: %v", len(clock.slept), clock.slept)
-	}
-	for i, d := range clock.slept {
-		if d != interval {
-			t.Errorf("sleep %d = %v, want %v", i, d, interval)
-		}
-	}
-}
-
-// New defaults the pacing interval to the spec's ~350ms when none is configured.
-func TestDefaultInterval(t *testing.T) {
-	if got := New(&stubExec{}).interval; got != DefaultInterval {
-		t.Errorf("default interval = %v, want %v", got, DefaultInterval)
-	}
-	if DefaultInterval != 350*time.Millisecond {
-		t.Errorf("DefaultInterval = %v, want the spec's ~350ms", DefaultInterval)
-	}
-}
-
-// Interval 0 disables pacing outright.
-func TestZeroIntervalNeverSleeps(t *testing.T) {
-	clock := &fakeClock{t: time.Unix(0, 0)}
-	dag := &optimize.TxnDAG{Txns: []publish.PackedTxn{
-		packed("node:g", nil, []publish.SymbolicID{publish.SymbolicID("node:a")}, nil),
-		packed("node:g", nil, []publish.SymbolicID{publish.SymbolicID("node:b")}, nil),
-	}}
-	tr := New(&stubExec{}, WithInterval(0), withClock(clock.now, clock.doSleep))
-	if _, err := tr.Run(context.Background(), dag, nil); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if len(clock.slept) != 0 {
-		t.Errorf("interval 0 should never sleep, slept %v", clock.slept)
 	}
 }

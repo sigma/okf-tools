@@ -10,7 +10,6 @@ import (
 	"github.com/sigma/okf-tools/internal/publish"
 	"github.com/sigma/okf-tools/internal/publish/backend/fake"
 	"github.com/sigma/okf-tools/internal/publish/graph"
-	"github.com/sigma/okf-tools/internal/publish/transport"
 )
 
 // loadBundle materializes an in-memory file set as a real okf bundle on disk and
@@ -81,7 +80,7 @@ func TestRunPublishesEverythingAgainstFake(t *testing.T) {
 	// acyclic: creates seal separately from content.
 	be := fake.New(fake.WithMaxCount(2))
 
-	res, err := Run(context.Background(), be, b, WithTransportOptions(transport.WithInterval(0)))
+	res, err := Run(context.Background(), be, b)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -139,8 +138,7 @@ func TestRunHostsAnchorFromAreasMarker(t *testing.T) {
 		t.Fatalf("marker did not designate CONTEXT.md as the glossary: %v", b.Glossaries)
 	}
 
-	res, err := Run(context.Background(), fake.New(fake.WithMaxCount(2)), b,
-		WithTransportOptions(transport.WithInterval(0)))
+	res, err := Run(context.Background(), fake.New(fake.WithMaxCount(2)), b)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -157,7 +155,7 @@ func TestRunNearNoopRerun(t *testing.T) {
 	seed := scanAfterPublish(b)
 	be := fake.New(fake.WithScan(seed))
 
-	res, err := Run(context.Background(), be, b, WithTransportOptions(transport.WithInterval(0)))
+	res, err := Run(context.Background(), be, b)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -199,7 +197,7 @@ func TestRunNearNoopSingleChange(t *testing.T) {
 	}
 	be := fake.New(fake.WithScan(publish.NewCurrentStateWithProps(nodes, hashes, propHashes, nil)))
 
-	res, err := Run(context.Background(), be, b, WithTransportOptions(transport.WithInterval(0)))
+	res, err := Run(context.Background(), be, b)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -225,7 +223,7 @@ func TestRunBannerThreadsIntoChangeDetection(t *testing.T) {
 
 	// Baseline: without a banner, this seed is a near-noop.
 	beNoBanner := fake.New(fake.WithScan(seed))
-	res, err := Run(context.Background(), beNoBanner, b, WithTransportOptions(transport.WithInterval(0)))
+	res, err := Run(context.Background(), beNoBanner, b)
 	if err != nil {
 		t.Fatalf("Run (no banner): %v", err)
 	}
@@ -237,7 +235,7 @@ func TestRunBannerThreadsIntoChangeDetection(t *testing.T) {
 	// plain-hash seed, so pages re-assert — the wiring is live.
 	beBanner := fake.New(fake.WithScan(seed))
 	bn := &graph.Banner{Text: "GEN", BaseURL: "https://h/r", Ref: "main"}
-	res2, err := Run(context.Background(), beBanner, b, WithBanner(bn), WithTransportOptions(transport.WithInterval(0)))
+	res2, err := Run(context.Background(), beBanner, b, WithBanner(bn))
 	if err != nil {
 		t.Fatalf("Run (banner): %v", err)
 	}

@@ -32,9 +32,8 @@ type Result struct {
 type Option func(*options)
 
 type options struct {
-	transportOpts []transport.Option
-	scanMode      backend.ScanMode
-	banner        *graph.Banner
+	scanMode backend.ScanMode
+	banner   *graph.Banner
 }
 
 // WithBanner threads a resolved generated-page disclaimer banner into Generation,
@@ -46,13 +45,6 @@ type options struct {
 // unaffected.
 func WithBanner(bn *graph.Banner) Option {
 	return func(o *options) { o.banner = bn }
-}
-
-// WithTransportOptions forwards options to Stage 3 (Transport) — chiefly the
-// per-Group pacing interval (transport.WithInterval), which tests set to 0 to run
-// without wall-clock delay.
-func WithTransportOptions(opts ...transport.Option) Option {
-	return func(o *options) { o.transportOpts = append(o.transportOpts, opts...) }
 }
 
 // WithScanMode selects the scan producer mode: backend.ScanStored (the cheap
@@ -110,7 +102,7 @@ func Run(ctx context.Context, be backend.Backend, b *bundle.Bundle, opts ...Opti
 
 	dag := optimize.Optimize(g, be, be)
 
-	res, err := transport.New(be, o.transportOpts...).Run(ctx, dag, scan)
+	res, err := transport.New(be).Run(ctx, dag, scan)
 	if err != nil {
 		return nil, fmt.Errorf("transport: %w", err)
 	}

@@ -59,7 +59,7 @@ func TestNotionEndToEnd(t *testing.T) {
 	dag := optimize.Optimize(g, be, be)
 
 	seed := publish.NewCurrentState(nil, nil, nil) // empty scan: everything is new
-	res, err := transport.New(be, transport.WithInterval(0)).Run(context.Background(), dag, seed)
+	res, err := transport.New(be).Run(context.Background(), dag, seed)
 	if err != nil {
 		t.Fatalf("transport run: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestNotionEndToEndSelfHostedAnchor(t *testing.T) {
 
 	dag := optimize.Optimize(g, be, be)
 	seed := publish.NewCurrentState(nil, nil, nil) // empty mirror: first publish
-	res, err := transport.New(be, transport.WithInterval(0)).Run(context.Background(), dag, seed)
+	res, err := transport.New(be).Run(context.Background(), dag, seed)
 	if err != nil {
 		t.Fatalf("first publish of a self-hosting glossary to an empty mirror should succeed: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestNotionEndToEndSelfHostedAnchorUnderNesting(t *testing.T) {
 
 	dag := optimize.Optimize(g, be, be)
 	seed := publish.NewCurrentState(nil, nil, nil) // empty mirror: first publish
-	res, err := transport.New(be, transport.WithInterval(0)).Run(context.Background(), dag, seed)
+	res, err := transport.New(be).Run(context.Background(), dag, seed)
 	if err != nil {
 		t.Fatalf("first publish of a nested self-hosting glossary to an empty mirror should succeed: %v", err)
 	}

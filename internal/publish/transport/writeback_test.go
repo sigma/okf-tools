@@ -40,7 +40,7 @@ func TestTransportWritesBackProvenance(t *testing.T) {
 		},
 	}}
 
-	if _, err := New(be, WithInterval(0)).Run(context.Background(), dag, seed); err != nil {
+	if _, err := New(be).Run(context.Background(), dag, seed); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -94,7 +94,7 @@ func TestTransportNoWriteBackWhenNothingWritten(t *testing.T) {
 		},
 	}}
 
-	if _, err := New(be, WithInterval(0)).Run(context.Background(), dag, seed); err != nil {
+	if _, err := New(be).Run(context.Background(), dag, seed); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if got := be.WrittenBack(); len(got) != 0 {

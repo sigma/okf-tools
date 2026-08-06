@@ -7,7 +7,6 @@ import (
 	"github.com/sigma/okf-tools/internal/publish"
 	"github.com/sigma/okf-tools/internal/publish/backend"
 	"github.com/sigma/okf-tools/internal/publish/backend/fake"
-	"github.com/sigma/okf-tools/internal/publish/transport"
 )
 
 // TestRunScanModeDefaultsToStored: a plain Run scans in the cheap steady-state
@@ -16,7 +15,7 @@ func TestRunScanModeDefaultsToStored(t *testing.T) {
 	b := loadBundle(t, smallBundle())
 
 	def := fake.New(fake.WithScan(scanAfterPublish(b)))
-	if _, err := Run(context.Background(), def, b, WithTransportOptions(transport.WithInterval(0))); err != nil {
+	if _, err := Run(context.Background(), def, b); err != nil {
 		t.Fatalf("Run (default): %v", err)
 	}
 	if mode, ok := def.LastScanMode(); !ok || mode != backend.ScanStored {
@@ -25,7 +24,7 @@ func TestRunScanModeDefaultsToStored(t *testing.T) {
 
 	rec := fake.New(fake.WithScan(scanAfterPublish(b)))
 	if _, err := Run(context.Background(), rec, b,
-		WithScanMode(backend.ScanRecompute), WithTransportOptions(transport.WithInterval(0))); err != nil {
+		WithScanMode(backend.ScanRecompute)); err != nil {
 		t.Fatalf("Run (recompute): %v", err)
 	}
 	if mode, ok := rec.LastScanMode(); !ok || mode != backend.ScanRecompute {
@@ -40,7 +39,7 @@ func TestRunWritesBackEveryPublishedNode(t *testing.T) {
 	b := loadBundle(t, smallBundle())
 	be := fake.New(fake.WithMaxCount(2))
 
-	if _, err := Run(context.Background(), be, b, WithTransportOptions(transport.WithInterval(0))); err != nil {
+	if _, err := Run(context.Background(), be, b); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -71,7 +70,7 @@ func TestRunNearNoopWritesNothingBack(t *testing.T) {
 	b := loadBundle(t, smallBundle())
 	be := fake.New(fake.WithScan(scanAfterPublish(b)))
 
-	if _, err := Run(context.Background(), be, b, WithTransportOptions(transport.WithInterval(0))); err != nil {
+	if _, err := Run(context.Background(), be, b); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if got := be.WrittenBack(); len(got) != 0 {
