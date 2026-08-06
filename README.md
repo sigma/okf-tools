@@ -132,6 +132,12 @@ NOTION_DB_ID    Notion data-source id
 OKF_SOURCE_URL  repo web base for the generated-page banner deep-link
                 (default: GITHUB_SERVER_URL/GITHUB_REPOSITORY, else local git)
 OKF_SOURCE_REF  branch the banner's /edit/ link targets (default: git branch, else main)
+
+OKF_SOURCE_PREFIX
+                bundle root's path within the repo, when the bundle is not at the
+                repo root (e.g. docs for `--bundle docs`). Without it the banner
+                deep-link omits that segment and 404s.
+                (default: `git rev-parse --show-prefix`, else none)
 ```
 
 > **`NOTION_DB_ID` is a data-source id, not a database id.** Under the

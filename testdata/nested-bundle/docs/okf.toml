@@ -1,0 +1,7 @@
+[frontmatter]
+require_description = true
+timestamp_format = "date"
+
+[index]
+check_sync = true
+descriptions_from_frontmatter = true

@@ -125,8 +125,12 @@ func runCmd(args []string) error {
 			Text:    bn.Text,
 			BaseURL: src.BaseURL,
 			Ref:     src.Ref,
+			Prefix:  src.Prefix,
 		}))
-		fmt.Printf("okfpub: banner: source %s @ %s\n", src.BaseURL, src.Ref)
+		// Echo the prefix too: a bundle nested in its repo emits links that are only
+		// correct with it, so a run that silently resolved none is worth seeing.
+		fmt.Printf("okfpub: banner: source %s @ %s (bundle at %s)\n",
+			src.BaseURL, src.Ref, prefixLabel(src.Prefix))
 	}
 
 	res, err := pipeline.Run(context.Background(), be, b, runOpts...)
@@ -137,6 +141,16 @@ func runCmd(args []string) error {
 	fmt.Printf("okfpub: published %d node(s), %d anchor(s) in %d transaction(s) via %s backend\n",
 		len(res.Nodes), len(res.Anchors), res.TxnCount, kind)
 	return nil
+}
+
+// prefixLabel renders a resolved source prefix for the run log, naming the
+// repo-root case explicitly so an empty prefix reads as a resolved answer rather
+// than as missing output.
+func prefixLabel(prefix string) string {
+	if prefix == "" {
+		return "repo root"
+	}
+	return prefix + "/"
 }
 
 // gitIn returns a source.Git that runs git subcommands in dir — the local-git

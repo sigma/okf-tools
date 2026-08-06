@@ -3,6 +3,7 @@ package graph
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"path"
 	"strings"
 
 	"github.com/sigma/okf-tools/internal/publish"
@@ -21,12 +22,20 @@ type Banner struct {
 	BaseURL string
 	// Ref is the branch the /edit/ deep-link targets (e.g. main).
 	Ref string
+	// Prefix is the bundle root's path within the source repo work tree (e.g.
+	// "docs"), empty when the bundle root is the repo root. A node knows only its
+	// bundle-relative path, so this is what turns it into the repo-relative path
+	// the deep-link needs.
+	Prefix string
 }
 
 // editURL is the GitHub web-editor deep-link for a page's source file:
-// <base>/edit/<ref>/<rel>. rel is the bundle-relative, forward-slash source path.
+// <base>/edit/<ref>/<prefix>/<rel>. rel is the bundle-relative, forward-slash
+// source path; joining the prefix onto it yields the repo-relative path, which is
+// what /edit/ resolves against. An empty prefix joins away cleanly, leaving the
+// repo-root-bundle URL byte-for-byte unchanged.
 func (bn *Banner) editURL(rel string) string {
-	return strings.TrimRight(bn.BaseURL, "/") + "/edit/" + bn.Ref + "/" + rel
+	return strings.TrimRight(bn.BaseURL, "/") + "/edit/" + bn.Ref + "/" + path.Join(bn.Prefix, rel)
 }
 
 // block renders the banner as the neutral Quote block a page carries at block-0:

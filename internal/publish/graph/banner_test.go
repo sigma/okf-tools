@@ -15,6 +15,57 @@ func TestBannerEditURL(t *testing.T) {
 	}
 }
 
+// TestBannerEditURLPrefix: the deep-link targets the source file's *repo*-relative
+// path. A node knows only its bundle-relative path, so a bundle nested in its repo
+// needs the prefix joined on — without it every banner on such a bundle 404s.
+// The empty-prefix case must stay byte-for-byte identical to the unprefixed URL.
+func TestBannerEditURLPrefix(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		prefix string
+		rel    string
+		want   string
+	}{
+		{
+			name:   "bundle at repo root is unchanged",
+			prefix: "",
+			rel:    "adr/0001.md",
+			want:   "https://github.com/acme/iac/edit/main/adr/0001.md",
+		},
+		{
+			name:   "bundle nested in the repo",
+			prefix: "docs",
+			rel:    "adr/0001.md",
+			want:   "https://github.com/acme/iac/edit/main/docs/adr/0001.md",
+		},
+		{
+			name:   "bundle nested two deep",
+			prefix: "sub/docs",
+			rel:    "index.md",
+			want:   "https://github.com/acme/iac/edit/main/sub/docs/index.md",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			bn := &Banner{BaseURL: "https://github.com/acme/iac", Ref: "main", Prefix: tt.prefix}
+			if got := bn.editURL(tt.rel); got != tt.want {
+				t.Errorf("editURL = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestBannerHashFoldingPrefix: the prefix reaches the page hash through the folded
+// edit URL, so fixing a wrong prefix re-publishes the affected pages instead of
+// hash-skipping them and leaving the broken links in place.
+func TestBannerHashFoldingPrefix(t *testing.T) {
+	base := publish.Hash("base-content-hash")
+	root := &Banner{Text: "GEN", BaseURL: "https://x/y", Ref: "main"}
+	nested := &Banner{Text: "GEN", BaseURL: "https://x/y", Ref: "main", Prefix: "docs"}
+	if root.hash(base, "a.md") == nested.hash(base, "a.md") {
+		t.Error("a prefix change must change the folded hash")
+	}
+}
+
 // TestBannerHashFolding: the fold is stable for an unchanged (banner, page) pair
 // but changes on any of text, ref/URL, or page — so a banner edit re-publishes the
 // affected pages while a steady-state re-run still hash-skips.
