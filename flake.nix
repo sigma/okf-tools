@@ -19,7 +19,7 @@
       ];
       forAllSystems = lib.genAttrs systems;
 
-      version = "0.2.2";
+      version = "0.3.0";
 
       okftoolFor =
         system:
