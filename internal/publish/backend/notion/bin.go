@@ -37,12 +37,11 @@ type bin struct {
 	group    publish.GroupKey
 	hasGroup bool
 
-	create       *createBlock
-	createParent publish.SymbolicID // the create unit's parent Ref, for POST /pages ("" = top-level)
-	props        *propsBlock
-	del          *deleteBlock
-	children     []childBlock
-	childCost    int
+	create    *createBlock
+	props     *propsBlock
+	del       *deleteBlock
+	children  []childBlock
+	childCost int
 }
 
 // Add tries to add a unit, returning false without mutating the bin if the unit
@@ -61,13 +60,6 @@ func (bn *bin) Add(u publish.AtomicUnit) bool {
 		}
 		bn.claim(u.Group)
 		bn.create = &p
-		// The optimizer stamps a CreateNode's parent as the create unit's only Ref
-		// (absent for a top-level node). Capture it so Build can carry it onto the
-		// Transaction: the Executor resolves it to the real parent page id at POST
-		// /pages time (or parents under the data source when absent).
-		if len(u.Refs) > 0 {
-			bn.createParent = u.Refs[0]
-		}
 		return true
 
 	case propsBlock:
@@ -119,7 +111,14 @@ func (bn *bin) Build() publish.Transaction {
 		t.Node = bn.create.node
 		// The Executor resolves the parent to the real parent page id at execute
 		// time (empty parent → a top-level row under the data source).
-		t.Parent = bn.createParent
+		t.Parent = bn.create.parent
+	} else if bn.props != nil {
+		// No create in this bin: the properties unit is the one that knows the parent,
+		// so a standalone property update still knows whether its target is a
+		// page-parented child_page or a data-source row — the #104 rule the update path
+		// used to be blind to (#128). A co-binned create is authoritative instead (both
+		// units are stamped from the same neutral op, so they agree).
+		t.Parent = bn.props.parent
 	}
 	if bn.props != nil {
 		t.Props = bn.props.props
@@ -164,9 +163,15 @@ type Transaction struct {
 	// Node is the symbolic id of the page this transaction creates, appends to, or
 	// archives.
 	Node publish.SymbolicID
-	// Parent is the symbolic id of the parent a page-create parents under (empty
-	// for a top-level node, which parents under the data source). The Executor
-	// resolves it to a real parent page id at execute time. Set only when Create.
+	// Parent is the symbolic id of the node's parent: empty for a top-level node
+	// (a data-source row), else the cluster index page it nests under as a
+	// child_page. It is set on any transaction that writes the node's properties —
+	// a create OR a standalone/fused property update — because it selects the
+	// parent KIND, and the parent kind decides which properties may be written at
+	// all (a child_page has no data-source columns, #104/#128). On a create the
+	// Executor additionally resolves it to the real parent page id for POST /pages;
+	// on an update it is only read, never resolved. A content-only append carries
+	// none, since it writes no properties.
 	Parent publish.SymbolicID
 	// Create marks a page-create (POST /pages) fusing Props and the first Children.
 	Create bool

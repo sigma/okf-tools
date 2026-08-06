@@ -599,6 +599,69 @@ func TestExecutePropsOnlyUpdate(t *testing.T) {
 	}
 }
 
+// TestExecuteSubpagePropsUpdateSendsTitleOnly: the #104 parent-kind rule holds on
+// the UPDATE path too, not just the create (sigma/okf-tools#128). A standalone
+// SetProperties against a page-parented node — the shape a cluster subpage reaches
+// on every run whose scan seeded no property hash for it — must PATCH only the
+// title; sending the data-source columns 400s "Invalid property identifier".
+func TestExecuteSubpagePropsUpdateSendsTitleOnly(t *testing.T) {
+	f := newFakeNotion()
+	f.childPages["page-child-real"] = true
+	be := newServer(t, f)
+
+	txn := &Transaction{
+		Group: "node:child.md", Node: "node:child.md",
+		Parent: "node:index.md",
+		Props: map[string]any{
+			"title": "Child", "type": "note", "status": "draft", "created": "2026-01-01",
+		},
+	}
+	r := stubResolver{"node:child.md": "page-child-real", "node:index.md": "page-index-real"}
+	if _, err := be.Execute(context.Background(), txn, r); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	reqs := f.requestsTo("PATCH", "/pages/page-child-real")
+	if len(reqs) != 1 {
+		t.Fatalf("want 1 property PATCH, got %d", len(reqs))
+	}
+	props := digInto(t, reqs[0].Body, "properties")
+	if _, ok := props["title"]; !ok {
+		t.Errorf("subpage update should carry the title property, got %v", props)
+	}
+	if len(props) != 1 {
+		t.Errorf("subpage update must carry only the title property, got %v", props)
+	}
+}
+
+// TestExecuteTopLevelPropsUpdateSendsFullProps: the other side of the parent-kind
+// rule — a data-source-parented node has a row of its own, so a standalone
+// SetProperties against it still PATCHes the full column set.
+func TestExecuteTopLevelPropsUpdateSendsFullProps(t *testing.T) {
+	f := newFakeNotion()
+	be := newServer(t, f)
+
+	txn := &Transaction{
+		Group: "node:a.md", Node: "node:a.md",
+		Props: map[string]any{"title": "A", "type": "note", "status": "draft"},
+	}
+	r := stubResolver{"node:a.md": "page-a-real"}
+	if _, err := be.Execute(context.Background(), txn, r); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	reqs := f.requestsTo("PATCH", "/pages/page-a-real")
+	if len(reqs) != 1 {
+		t.Fatalf("want 1 property PATCH, got %d", len(reqs))
+	}
+	props := digInto(t, reqs[0].Body, "properties")
+	for _, k := range []string{"title", "type", "status"} {
+		if _, ok := props[k]; !ok {
+			t.Errorf("top-level update should carry %q, got %v", k, props)
+		}
+	}
+}
+
 // TestExecuteUnresolvedRefErrors: a content Ref the Resolver cannot resolve is a
 // hard error (the transport must gate on it before Execute).
 func TestExecuteUnresolvedRefErrors(t *testing.T) {

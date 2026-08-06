@@ -189,19 +189,29 @@ func New(opts ...Option) *Backend {
 
 // --- The backend payloads (opaque to the pipeline, read only here and by #42) --
 
-// createBlock marks a page-create unit: the shell of a POST /pages. It carries no
-// data of its own — the parent id is a Ref the transport resolves at execute
-// time, and the properties / first children arrive via fusion in the same Bin.
+// createBlock marks a page-create unit: the shell of a POST /pages. The properties
+// and first children arrive via fusion in the same Bin. parent is the node's parent
+// symbolic id ("" for a top-level node); the transport resolves it to the real
+// parent page id at execute time, and its emptiness is also what tells the create
+// which KIND of object it is making (a data-source row or a child_page).
 type createBlock struct {
-	node publish.SymbolicID
+	node   publish.SymbolicID
+	parent publish.SymbolicID
 }
 
 // propsBlock carries a node's neutral properties, to be reshaped into Notion page
 // properties when the transaction is serialized (#42). Held neutrally here so no
 // Notion property shape leaks earlier than execution.
+//
+// parent is the node's parent symbolic id ("" for a top-level node). It is carried
+// on the properties unit — not just the create unit — because the parent KIND
+// selects which properties may be written at all: a page-parented node is a
+// child_page with no data-source columns. Without it a standalone property update
+// against a subpage PATCHes columns that do not exist and 400s (#128).
 type propsBlock struct {
-	node  publish.SymbolicID
-	props map[string]any
+	node   publish.SymbolicID
+	parent publish.SymbolicID
+	props  map[string]any
 }
 
 // deleteBlock marks an archive unit for an orphan node. Like createBlock it holds

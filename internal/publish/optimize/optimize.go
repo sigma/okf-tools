@@ -142,7 +142,7 @@ func tokenize(g *graph.Graph, tk backend.Tokenizer) []taggedUnit {
 	for _, op := range g.Ops {
 		switch op.Kind {
 		case graph.CreateNode:
-			u := tk.TokenizeOp(publish.NonContentOp{Kind: publish.CreateOp, Node: op.Node})
+			u := tk.TokenizeOp(publish.NonContentOp{Kind: publish.CreateOp, Node: op.Node, Parent: op.Parent})
 			u.Group = publish.GroupKey(op.Node)
 			if op.Parent != "" {
 				// Parent-before-child is just the create-unit referencing its parent.
@@ -158,8 +158,13 @@ func tokenize(g *graph.Graph, tk backend.Tokenizer) []taggedUnit {
 			})
 		case graph.SetProperties:
 			// SetProperties(A) carries Ref{node:A} — its write target (#164 §5). The
-			// backend turns op.Props into its own property payload.
-			u := tk.TokenizeOp(publish.NonContentOp{Kind: publish.PropertiesOp, Node: op.Node, Props: op.Props})
+			// backend turns op.Props into its own property payload, and needs the node's
+			// parent to know which KIND of object it is writing to: a page-parented node
+			// carries a different property set from a top-level one, on the update path
+			// just as on the create (#128). The parent rides the neutral op rather than
+			// the unit's Refs, since an update resolves no parent id and must not gain a
+			// parent-before-child edge it does not need.
+			u := tk.TokenizeOp(publish.NonContentOp{Kind: publish.PropertiesOp, Node: op.Node, Parent: op.Parent, Props: op.Props})
 			u.Group = publish.GroupKey(op.Node)
 			u.Refs = []publish.SymbolicID{op.Node}
 			out = append(out, taggedUnit{
