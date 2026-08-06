@@ -93,7 +93,7 @@ func TestNotionNearNoopRerun(t *testing.T) {
 		t.Fatalf("unchanged bundle should optimize to no transactions, got %d", len(dag.Txns))
 	}
 
-	if _, err := transport.New(be, transport.WithInterval(0)).Run(ctx, dag, scan); err != nil {
+	if _, err := transport.New(be).Run(ctx, dag, scan); err != nil {
 		t.Fatalf("transport: %v", err)
 	}
 

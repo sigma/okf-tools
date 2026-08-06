@@ -82,7 +82,7 @@ func publishToDisk(t *testing.T, b *bundle.Bundle, out string) *transport.Result
 		t.Fatalf("generate: %v", err)
 	}
 	dag := optimize.Optimize(g, be, be)
-	res, err := transport.New(be, transport.WithInterval(0)).Run(context.Background(), dag, scan)
+	res, err := transport.New(be).Run(context.Background(), dag, scan)
 	if err != nil {
 		t.Fatalf("transport: %v", err)
 	}

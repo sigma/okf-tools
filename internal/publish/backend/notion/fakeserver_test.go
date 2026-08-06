@@ -43,6 +43,13 @@ type fakeNotion struct {
 	// a second reconcile in the same test sees them as present.
 	dsProps map[string]map[string]any
 
+	// throttle is how many of the next requests the fake answers with Notion's 429
+	// rate-limit reply instead of serving them — the fault injection that exercises
+	// the client's retry path end to end. A throttled request never reaches a
+	// handler, so it is not recorded: the request log stays the log of what the
+	// workspace actually saw.
+	throttle int
+
 	// childPages marks the page ids that live as a `child_page` under another page
 	// rather than as a row of the data source. Such a page has only a title and none
 	// of the data source's column properties, so writing a column property to one is
@@ -82,7 +89,32 @@ func (f *fakeNotion) handler() http.Handler {
 	mux.HandleFunc("POST /data_sources/{id}/query", f.query)
 	mux.HandleFunc("GET /data_sources/{id}", f.getDataSource)
 	mux.HandleFunc("PATCH /data_sources/{id}", f.patchDataSource)
-	return mux
+	return f.rateLimit(mux)
+}
+
+// rateLimit fronts the fake surface with Notion's rate limiter: while throttle
+// requests remain, it replies 429 with a Retry-After and the request never reaches
+// the workspace behind it.
+func (f *fakeNotion) rateLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		throttled := f.throttle > 0
+		if throttled {
+			f.throttle--
+		}
+		f.mu.Unlock()
+		if !throttled {
+			next.ServeHTTP(w, r)
+			return
+		}
+		w.Header().Set("Retry-After", "1")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"object": "error", "status": 429, "code": "rate_limited",
+			"message": "You have been rate limited. Please try again in a few minutes.",
+		})
+	})
 }
 
 // getDataSource serves the data source's current column set for the Provisioner

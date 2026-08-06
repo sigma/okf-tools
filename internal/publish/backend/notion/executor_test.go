@@ -24,7 +24,9 @@ func newServer(t *testing.T, f *fakeNotion, opts ...Option) *Backend {
 	t.Helper()
 	srv := httptest.NewServer(f.handler())
 	t.Cleanup(srv.Close)
-	base := []Option{WithBaseURL(srv.URL), WithToken("tok"), WithDataSourceID("ds1")}
+	// Pacing off: the offline tests exercise request *content*, and the global
+	// interval would charge each of them wall-clock delay per request.
+	base := []Option{WithBaseURL(srv.URL), WithToken("tok"), WithDataSourceID("ds1"), WithInterval(0)}
 	return New(append(base, opts...)...)
 }
 

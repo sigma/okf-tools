@@ -7,7 +7,6 @@ import (
 	"github.com/sigma/okf-tools/internal/publish"
 	"github.com/sigma/okf-tools/internal/publish/backend"
 	"github.com/sigma/okf-tools/internal/publish/backend/fake"
-	"github.com/sigma/okf-tools/internal/publish/transport"
 )
 
 // provisioningBackend wraps a real backend and records the order of its lifecycle
@@ -36,7 +35,7 @@ func TestRunProvisionsBeforeScan(t *testing.T) {
 	b := loadBundle(t, smallBundle())
 	be := &provisioningBackend{Backend: fake.New(fake.WithMaxCount(2))}
 
-	if _, err := Run(context.Background(), be, b, WithTransportOptions(transport.WithInterval(0))); err != nil {
+	if _, err := Run(context.Background(), be, b); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 

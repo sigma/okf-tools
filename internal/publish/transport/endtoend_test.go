@@ -81,7 +81,7 @@ func pipeline(t *testing.T, files map[string]string) (*Result, *optimize.TxnDAG,
 	}
 	dag := optimize.Optimize(g, be, be)
 
-	res, err := New(be, WithInterval(0)).Run(context.Background(), dag, scan)
+	res, err := New(be).Run(context.Background(), dag, scan)
 	if err != nil {
 		t.Fatalf("transport: %v", err)
 	}
@@ -159,7 +159,7 @@ func publishUnbounded(t *testing.T, files map[string]string) (*Result, error) {
 		t.Fatalf("generate: %v", err)
 	}
 	dag := optimize.Optimize(g, be, be)
-	return New(be, WithInterval(0)).Run(context.Background(), dag, scan)
+	return New(be).Run(context.Background(), dag, scan)
 }
 
 // TestEndToEndFusionCycles is the red acceptance test for the reciprocal-link
