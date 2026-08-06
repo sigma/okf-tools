@@ -111,8 +111,10 @@ file = "schema.json"
 # every mirrored page stating the page is generated from the repo and linking to
 # its source file, so the strict-mirror contract is self-documenting. The per-page
 # source deep-link (<base>/edit/<ref>/<path>) is resolved by okfpub from the
-# environment (OKF_SOURCE_URL / OKF_SOURCE_REF, the GITHUB_* Actions variables, or
-# local git) — not configured here. Disable it for a co-authored surface.
+# environment (OKF_SOURCE_URL / OKF_SOURCE_REF / OKF_SOURCE_PREFIX, the GITHUB_*
+# Actions variables, or local git) — not configured here. <path> is repo-relative,
+# so a bundle that is not at the repo root needs OKF_SOURCE_PREFIX (or a checkout
+# for git to answer from). Disable the banner for a co-authored surface.
 enabled = true
 # text = "🔄 Generated from the repo — edits here are rolled back on the next sync; edit the source file."
 

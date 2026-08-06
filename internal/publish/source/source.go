@@ -11,15 +11,26 @@ package source
 
 import (
 	"fmt"
+	"path"
 	"strings"
 )
 
 // Source is the resolved source-repo web coordinates a banner links against: the
-// web base URL of the repo (e.g. https://github.com/sigma/ideas) and the branch
-// ref the GitHub /edit/ link targets.
+// web base URL of the repo (e.g. https://github.com/sigma/ideas), the branch ref
+// the GitHub /edit/ link targets, and the bundle root's own path within the repo
+// work tree.
+//
+// That third coordinate is what makes the link correct for a bundle that is not
+// the repo root: a node knows only its bundle-relative path, so without a prefix
+// the two only coincide when the bundle *is* the repo root, and every banner on a
+// docs/-rooted bundle deep-links to a path that does not exist.
 type Source struct {
 	BaseURL string
 	Ref     string
+	// Prefix is the bundle root relative to the repo work tree root, as a clean
+	// forward-slash path with no leading or trailing separator ("docs",
+	// "sub/docs"). Empty means the bundle root is the repo root.
+	Prefix string
 }
 
 // Git runs a git subcommand and returns its stdout (untrimmed) or an error. It is
@@ -34,6 +45,10 @@ const (
 	EnvSourceURL = "OKF_SOURCE_URL"
 	// EnvSourceRef overrides the branch ref (tier 1).
 	EnvSourceRef = "OKF_SOURCE_REF"
+	// EnvSourcePrefix overrides the bundle root's path within the repo (tier 1).
+	// It is the only way to get a correct deep-link out of a checkout-less run,
+	// where the local-git tier cannot answer.
+	EnvSourcePrefix = "OKF_SOURCE_PREFIX"
 
 	envGHServer = "GITHUB_SERVER_URL"
 	envGHRepo   = "GITHUB_REPOSITORY"
@@ -48,15 +63,26 @@ const defaultRef = "main"
 // Resolve determines the source base URL and ref by the ADR-0015 precedence,
 // resolved independently per field:
 //
-//  1. explicit override  — OKF_SOURCE_URL / OKF_SOURCE_REF
+//  1. explicit override  — OKF_SOURCE_URL / OKF_SOURCE_REF / OKF_SOURCE_PREFIX
 //  2. GitHub Actions env — {GITHUB_SERVER_URL}/{GITHUB_REPOSITORY}, GITHUB_REF_NAME
-//  3. local git          — `git remote get-url origin` (ssh→https), current branch
+//  3. local git          — `git remote get-url origin` (ssh→https), current branch,
+//     and `git rev-parse --show-prefix` for the bundle root's path within the repo
+//
+// The prefix has no GitHub Actions tier because no GITHUB_* variable carries it:
+// the value is a property of where the bundle sits, not of the run. Under Actions
+// the git tier answers it anyway, since actions/checkout provides a work tree.
 //
 // It fails loud when no base URL resolves by any tier: a mirror whose pages must
 // deep-link to their source cannot publish a banner with a dangling link, so this
 // surfaces the misconfiguration rather than emitting a broken one. A ref that
 // resolves nowhere falls back to the syncing branch rather than failing, keeping
-// the link usable.
+// the link usable. An unresolved prefix stays empty rather than failing: that is
+// the correct answer for a repo-root bundle, which is the common case, so failing
+// would break the majority to protect the minority.
+//
+// git is expected to run in the bundle root — `rev-parse --show-prefix` reports
+// the working directory's path relative to the repo toplevel, so the bundle's own
+// location is read directly rather than inferred by diffing two absolute paths.
 func Resolve(getenv func(string) string, git Git) (Source, error) {
 	if getenv == nil {
 		getenv = func(string) string { return "" }
@@ -85,6 +111,15 @@ func Resolve(getenv func(string) string, git Git) (Source, error) {
 		}
 	}
 
+	switch {
+	case getenv(EnvSourcePrefix) != "":
+		s.Prefix = normalizePrefix(getenv(EnvSourcePrefix))
+	case git != nil:
+		if out, err := git("rev-parse", "--show-prefix"); err == nil {
+			s.Prefix = normalizePrefix(out)
+		}
+	}
+
 	s.BaseURL = strings.TrimRight(strings.TrimSpace(s.BaseURL), "/")
 	if s.BaseURL == "" {
 		return Source{}, fmt.Errorf(
@@ -98,6 +133,29 @@ func Resolve(getenv func(string) string, git Git) (Source, error) {
 		s.Ref = defaultRef
 	}
 	return s, nil
+}
+
+// normalizePrefix reduces a raw prefix — an operator's OKF_SOURCE_PREFIX, or
+// git's trailing-slashed `--show-prefix` output — to the clean forward-slash
+// relative path the URL join expects: no leading or trailing separator, no "./".
+// Backslashes are folded to forward slashes so a Windows-style override still
+// yields a valid URL path.
+//
+// A value that escapes the repo root ("..", "../x") normalizes to empty: it
+// cannot name a path inside the repo, so there is no URL it could correctly
+// produce, and an unprefixed link is the same fallback an unresolved prefix gets.
+func normalizePrefix(raw string) string {
+	p := strings.TrimSpace(raw)
+	p = strings.ReplaceAll(p, "\\", "/")
+	p = strings.Trim(p, "/")
+	if p == "" {
+		return ""
+	}
+	p = path.Clean(p)
+	if p == "." || p == ".." || strings.HasPrefix(p, "../") {
+		return ""
+	}
+	return p
 }
 
 // normalizeRemote turns a git remote URL into a web base URL: an scp-style ssh
