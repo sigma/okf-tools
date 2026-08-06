@@ -3,14 +3,32 @@
 Tooling for authoring and maintaining [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
 (OKF) bundles.
 
-## Today
+## What's here
 
-A Nix flake exposing a dev shell that bundles [`qmd`](https://github.com/firefly-engineering/toolbox)
-(local hybrid search over markdown), consumed by downstream projects via:
+Two Go CLIs and a Nix flake:
+
+- [**`okftool`**](#okftool) — lints, formats, and scaffolds OKF bundles.
+- [**`okfpub`**](#okfpub) — publishes a bundle to a backend (Notion, or the
+  filesystem for dry runs).
+- a **dev shell** bundling [`qmd`](https://github.com/firefly-engineering/toolbox)
+  (local hybrid search over markdown), with both CLIs on `PATH`.
+
+The flake exposes each CLI as its own package and app:
+
+```
+nix run github:sigma/okf-tools#okftool -- lint
+nix run github:sigma/okf-tools#okfpub  -- run --dry-run
+```
+
+Downstream projects consume the dev shell with:
 
 ```
 use flake github:sigma/okf-tools
 ```
+
+Both CLIs ship lockstep from the same release tag, and each is also installable
+in CI without Nix — see [`setup-okftool`](#in-ci-without-nix) and
+[`setup-okfpub`](#in-ci-without-nix-1).
 
 ## `okftool`
 
@@ -74,7 +92,75 @@ near-duplicate detection and index staleness, needs `qmd` on `PATH`),
 `OKFEXT-SCHEMA-01` (frontmatter validated against a closed `schema.json`). Not yet
 built: the Claude Code hook wiring (a consuming-bundle artifact).
 
-Reference:
+## `okfpub`
+
+Publishes an OKF bundle to a backend, mirroring each page's content, its
+frontmatter-derived properties, and its cross-references — concept links become
+real links between published pages, and glossary-term citations resolve to
+in-page anchors. Change detection is hash-based, so a re-run touches only the
+pages whose source actually changed.
+
+```
+okfpub run [flags]   # publish the bundle to a backend
+okfpub version       # print the version
+```
+
+Run flags:
+
+```
+--backend  notion|fake|fs   (default notion)
+--bundle   bundle root      (default ".")
+--config   okf.toml path    (default: discovered)
+--areas    areas.json path  (default: <root>/areas.json if present)
+--schema   schema.json path (default: <root>/schema.json if present)
+--out      fs/export output dir   (default: okfpub-export)
+--dry-run  export to the filesystem instead of publishing (implies --backend fs)
+--recompute                 full live-block scan (true drift + self-heal)
+```
+
+`--dry-run` renders the whole pipeline to a local directory tree instead of
+calling the backend — the same generation, optimization, and transport code path
+that publishes to Notion, so it is a faithful preview. `--recompute` rebuilds each
+live page's fingerprint from the backend rather than trusting stored state,
+which detects out-of-band edits and re-heals them.
+
+The Notion backend reads its credentials from the environment:
+
+```
+NOTION_TOKEN    Notion integration token
+NOTION_DB_ID    Notion data-source id
+OKF_SOURCE_URL  repo web base for the generated-page banner deep-link
+                (default: GITHUB_SERVER_URL/GITHUB_REPOSITORY, else local git)
+OKF_SOURCE_REF  branch the banner's /edit/ link targets (default: git branch, else main)
+```
+
+> **`NOTION_DB_ID` is a data-source id, not a database id.** Under the
+> 2025-09-03 API a database can host several data sources, so the id in a Notion
+> URL is the wrong one. Resolve it with `GET /v1/databases/{id}` and read
+> `.data_sources[]`.
+
+Published pages carry a disclaimer banner linking back to the source file — on by
+default, configurable in `okf.toml` (see
+[`docs/okf.example.toml`](docs/okf.example.toml)).
+
+### In CI (without Nix)
+
+`setup-okfpub` mirrors `setup-okftool`, with the same tag-pinning rules:
+
+```yaml
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sigma/okf-tools/actions/setup-okfpub@v0
+      - run: okfpub run --bundle path/to/bundle
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DB_ID: ${{ secrets.NOTION_DB_ID }}
+```
+
+## Reference
 
 - [`docs/DESIGN.md`](docs/DESIGN.md) — architecture, CLI surface, bundle/link
   model, workflow integration, roadmap, open questions.
