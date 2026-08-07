@@ -42,6 +42,10 @@ type bin struct {
 	del       *deleteBlock
 	children  []childBlock
 	childCost int
+	// asserts records that one of the accepted content units is its node's first —
+	// which makes this bin the transaction that asserts the node's whole content
+	// rather than one that continues it (#130).
+	assertsContent bool
 }
 
 // Add tries to add a unit, returning false without mutating the bin if the unit
@@ -82,6 +86,7 @@ func (bn *bin) Add(u publish.AtomicUnit) bool {
 		// Thread the unit's hosted anchors onto the block so Build carries them and
 		// the Executor can map anchor-name → the block's real Notion id.
 		p.anchors = u.Anchors
+		bn.assertsContent = bn.assertsContent || p.assertsContent
 		bn.children = append(bn.children, p)
 		bn.childCost += cost
 		return true
@@ -105,7 +110,7 @@ func (bn *bin) Add(u publish.AtomicUnit) bool {
 // co-binned create + properties + first content chunk. The bin must not be used
 // after Build.
 func (bn *bin) Build() publish.Transaction {
-	t := &Transaction{Group: bn.group, Children: bn.children}
+	t := &Transaction{Group: bn.group, Children: bn.children, AssertsContent: bn.assertsContent}
 	if bn.create != nil {
 		t.Create = true
 		t.Node = bn.create.node
@@ -177,6 +182,16 @@ type Transaction struct {
 	Create bool
 	// Delete marks an archive of Node.
 	Delete bool
+	// AssertsContent marks this transaction as the one asserting the node's COMPLETE
+	// expected content: its Children are the node's whole body, not an increment.
+	// The update path therefore clears the page's existing children before
+	// appending them, so a re-publish replaces the old body instead of doubling it
+	// (sigma/okf-tools#130). It is set on the transaction holding the node's first
+	// content block; the follow-on overflow chunks of that same assertion carry it
+	// false and merely append. A create carries it too but has nothing to clear —
+	// POST /pages makes the page and its first children in one call — so the create
+	// path ignores it.
+	AssertsContent bool
 	// Props are the neutral properties to set (fused into a create, or a
 	// standalone property update), nil if none.
 	Props map[string]any

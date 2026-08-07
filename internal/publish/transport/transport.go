@@ -63,10 +63,23 @@ type Result struct {
 // updates the run produced.
 //
 // A wavefront is the set of not-yet-executed transactions whose Refs all resolve
-// against the current table; its members are executed in ascending index order,
-// each result merged back before the next wavefront is computed. If a wavefront
-// comes up empty while transactions remain, their Refs are unsatisfiable and Run
-// fails rather than spinning.
+// against the current table AND whose group has no earlier transaction still
+// pending; its members are executed in ascending index order, each result merged
+// back before the next wavefront is computed. If a wavefront comes up empty while
+// transactions remain, Run fails rather than spinning.
+//
+// The in-order rule within a Group is a correctness constraint the Ref edges do not
+// supply. The optimizer packs one node's content as an ordered SEQUENCE of
+// transactions, but a continuation chunk's only Ref is the node's own id, so on a
+// re-publish (where that id is scan-seeded, produced by nothing this run) no edge
+// orders the chunks at all. Left to Refs alone, a chunk whose content links a page
+// created this run waits while a later chunk of the same page runs ahead of it —
+// which lands the page's body out of order, and, since the first chunk is the one
+// that asserts (replaces) the node's content, silently destroys the chunks that
+// jumped the queue (sigma/okf-tools#130). Holding a group to its packing order costs
+// nothing when nothing is blocked and cannot deadlock an acyclic DAG: a group waits
+// only on its own earlier transaction, which is itself waiting on a producer
+// elsewhere.
 func (t *Transport) Run(ctx context.Context, dag *optimize.TxnDAG, seed *publish.CurrentState) (*Result, error) {
 	tbl := newTable(seed)
 
@@ -83,16 +96,22 @@ func (t *Transport) Run(ctx context.Context, dag *optimize.TxnDAG, seed *publish
 		}
 
 		var ready, blocked []int
+		// stalled holds the groups with an earlier still-unexecuted transaction, so a
+		// later one of the same group waits behind it (see the in-order rule above).
+		stalled := map[publish.GroupKey]bool{}
 		for _, i := range remaining {
-			if tbl.resolves(dag.Txns[i].Refs) {
-				ready = append(ready, i)
-			} else {
+			g := dag.Txns[i].Group
+			switch {
+			case stalled[g], !tbl.resolves(dag.Txns[i].Refs):
+				stalled[g] = true
 				blocked = append(blocked, i)
+			default:
+				ready = append(ready, i)
 			}
 		}
 		if len(ready) == 0 {
-			return nil, fmt.Errorf("transport: %d transaction(s) have unresolvable refs; first blocked txn %d needs %v",
-				len(blocked), blocked[0], tbl.unresolved(dag.Txns[blocked[0]].Refs))
+			return nil, fmt.Errorf("transport: %d transaction(s) cannot proceed; first blocked txn %d (group %s) needs %v",
+				len(blocked), blocked[0], dag.Txns[blocked[0]].Group, tbl.unresolved(dag.Txns[blocked[0]].Refs))
 		}
 
 		for _, i := range ready {

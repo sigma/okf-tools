@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -86,6 +88,7 @@ func (f *fakeNotion) handler() http.Handler {
 	mux.HandleFunc("GET /blocks/{id}/children", f.getChildren)
 	mux.HandleFunc("PATCH /blocks/{id}/children", f.appendChildren)
 	mux.HandleFunc("PATCH /blocks/{id}", f.updateBlock)
+	mux.HandleFunc("DELETE /blocks/{id}", f.deleteBlock)
 	mux.HandleFunc("POST /data_sources/{id}/query", f.query)
 	mux.HandleFunc("GET /data_sources/{id}", f.getDataSource)
 	mux.HandleFunc("PATCH /data_sources/{id}", f.patchDataSource)
@@ -289,18 +292,45 @@ func (f *fakeNotion) getChildren(w http.ResponseWriter, r *http.Request) {
 
 func (f *fakeNotion) appendChildren(w http.ResponseWriter, r *http.Request) {
 	body := f.record(r)
+	pageID := r.PathValue("id")
 
 	f.mu.Lock()
 	var results []map[string]any
 	if ch, ok := body["children"].([]any); ok {
 		for range ch {
 			f.seq++
-			results = append(results, map[string]any{"id": fmt.Sprintf("block-%d", f.seq)})
+			id := fmt.Sprintf("block-%d", f.seq)
+			// The appended blocks join the page's child list, so a follow-up GET (or a
+			// content replacement's clear) sees the page as the workspace really holds it.
+			f.children[pageID] = append(f.children[pageID], id)
+			results = append(results, map[string]any{"id": id})
 		}
 	}
 	f.mu.Unlock()
 
 	writeJSON(w, map[string]any{"results": results})
+}
+
+// deleteBlock models Notion's DELETE /blocks/{id}: the block leaves its parent's
+// child list. It is what a content replacement issues per existing child before
+// appending the new body (sigma/okf-tools#130).
+func (f *fakeNotion) deleteBlock(w http.ResponseWriter, r *http.Request) {
+	f.record(r)
+	id := r.PathValue("id")
+
+	f.mu.Lock()
+	for page, ids := range f.children {
+		kept := make([]string, 0, len(ids))
+		for _, c := range ids {
+			if c != id {
+				kept = append(kept, c)
+			}
+		}
+		f.children[page] = kept
+	}
+	f.mu.Unlock()
+
+	writeJSON(w, map[string]any{"id": id, "archived": true})
 }
 
 // updateBlock records a PATCH /blocks/{id} in-place block content update — the
@@ -351,6 +381,31 @@ func (f *fakeNotion) requestsTo(method, path string) []recordedReq {
 // countPath returns how many recorded requests hit method+path.
 func (f *fakeNotion) countPath(method, path string) int {
 	return len(f.requestsTo(method, path))
+}
+
+// pathIndex returns the position of the first recorded request matching
+// method+path, or -1. It exposes request ORDER, which countPath cannot: a content
+// replacement must delete the existing children BEFORE it appends the new ones.
+func (f *fakeNotion) pathIndex(method, path string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.IndexFunc(f.reqs, func(r recordedReq) bool {
+		return r.Method == method && r.Path == path
+	})
+}
+
+// deletedBlockIDs returns the block ids the run issued DELETE /blocks/{id} for, in
+// request order.
+func (f *fakeNotion) deletedBlockIDs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, r := range f.reqs {
+		if r.Method == http.MethodDelete && strings.HasPrefix(r.Path, "/blocks/") {
+			out = append(out, strings.TrimPrefix(r.Path, "/blocks/"))
+		}
+	}
+	return out
 }
 
 // --- request/response helpers -----------------------------------------------

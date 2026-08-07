@@ -20,6 +20,9 @@ type stubTxn struct {
 	refs     []publish.SymbolicID
 	produces []publish.SymbolicID
 	anchors  []publish.AnchorName
+	// label names the transaction in the execution log, for the tests whose subject
+	// is ORDER rather than production — a content chunk produces nothing.
+	label string
 }
 
 // execCall records one Execute invocation: the transaction's group ordinal and,
@@ -28,6 +31,7 @@ type stubTxn struct {
 type execCall struct {
 	produces    []publish.SymbolicID
 	allResolved bool
+	label       string
 }
 
 // stubExec mints deterministic backend ids and logs each call in execution order.
@@ -65,7 +69,7 @@ func (e *stubExec) Execute(_ context.Context, txn publish.Transaction, r backend
 		e.seq++
 		res.Anchors[a] = publish.BackendID(fmt.Sprintf("anc-%d", e.seq))
 	}
-	e.log = append(e.log, execCall{produces: st.produces, allResolved: allResolved})
+	e.log = append(e.log, execCall{produces: st.produces, allResolved: allResolved, label: st.label})
 	return res, nil
 }
 
@@ -167,6 +171,66 @@ func TestUnresolvableRefsFail(t *testing.T) {
 	_, err := New(&stubExec{}).Run(context.Background(), dag, nil)
 	if err == nil {
 		t.Fatal("want an error for an unresolvable ref, got nil")
+	}
+}
+
+// TestGroupDrainsInPackingOrder covers sigma/okf-tools#130's ordering premise: the
+// transactions of one Group are an ordered sequence (a node's content assertion
+// followed by its overflow continuations), and a continuation must never run ahead
+// of the transaction it continues.
+//
+// Ref edges alone do not supply that. Here the assertion chunk links a page created
+// this run, so it is blocked in the first wavefront, while the continuation — whose
+// only ref is the node's own scan-seeded id — resolves immediately. A drain that
+// gated on refs alone would run the tail first; the backend would then clear the
+// page when the head finally landed, destroying the tail.
+func TestGroupDrainsInPackingOrder(t *testing.T) {
+	newPage := publish.SymbolicID("node:new")
+	existing := publish.SymbolicID("node:big")
+	seed := publish.NewCurrentState(
+		map[publish.SymbolicID]publish.BackendID{existing: "be-big"}, nil, nil)
+
+	labeled := func(label string, refs []publish.SymbolicID) publish.PackedTxn {
+		p := packed("node:big", refs, nil, nil)
+		p.Txn.(*stubTxn).label = label
+		return p
+	}
+	dag := &optimize.TxnDAG{Txns: []publish.PackedTxn{
+		// index 0: the assertion chunk — blocked on a page created later this run.
+		labeled("head", []publish.SymbolicID{existing, newPage}),
+		// index 1: the continuation — nothing blocks it.
+		labeled("tail", []publish.SymbolicID{existing}),
+		// index 2: the producer of the page the head links.
+		packed("node:new", nil, []publish.SymbolicID{newPage}, nil),
+	}}
+	exec := &stubExec{}
+	run(t, dag, seed, exec)
+
+	var order []string
+	for _, c := range exec.log {
+		if c.label != "" {
+			order = append(order, c.label)
+		}
+	}
+	if len(order) != 2 || order[0] != "head" || order[1] != "tail" {
+		t.Errorf("a group must drain in packing order, got %v", order)
+	}
+}
+
+// TestGroupOrderStillDeadlocksLoudly: holding a group to its packing order can
+// close a ref cycle that the ref edges alone did not have. That must fail with the
+// same hard stop an unsatisfiable ref gets — never a silent partial publish.
+func TestGroupOrderCycleFailsLoudly(t *testing.T) {
+	other := publish.SymbolicID("node:other")
+	dag := &optimize.TxnDAG{Txns: []publish.PackedTxn{
+		// node:big's head waits on node:other, whose producer waits on node:big's tail,
+		// which the in-order rule holds behind the head.
+		packed("node:big", []publish.SymbolicID{other}, nil, nil),
+		packed("node:big", nil, nil, []publish.AnchorName{"x"}),
+		packed("node:other", []publish.SymbolicID{publish.AnchorRef("x")}, []publish.SymbolicID{other}, nil),
+	}}
+	if _, err := New(&stubExec{}).Run(context.Background(), dag, nil); err == nil {
+		t.Fatal("want a hard stop when a group's order closes a cycle, got nil")
 	}
 }
 

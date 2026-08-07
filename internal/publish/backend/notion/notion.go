@@ -286,6 +286,13 @@ type childBlock struct {
 	language string // fence language for a code block; empty otherwise
 	runs     []publish.Run
 	anchors  []publish.AnchorName
+	// assertsContent marks the first block of a node's content assertion — the
+	// tokenizer sets it on the first unit it emits for a Document, and only there.
+	// The Bin promotes it to the sealed Transaction's AssertsContent flag, which is what
+	// distinguishes "assert this node's whole content" from "append this
+	// continuation chunk" (sigma/okf-tools#130). It is metadata, not payload: it
+	// never reaches the wire.
+	assertsContent bool
 	// rows and hasColumnHeader carry a table block's content: rows → cells → the
 	// cell's inline runs, header row first. Set only when kind is graph.Table; runs
 	// is then empty, since a table's inline content lives per-cell here.
