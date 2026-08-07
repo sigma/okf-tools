@@ -228,6 +228,12 @@ func replaySafe(method, path string) bool {
 		// The single-object set writes. PATCH /blocks/{id}/children — the append — has
 		// three segments and so never matches.
 		return len(seg) == 2 && (seg[0] == "pages" || seg[0] == "blocks" || seg[0] == "data_sources")
+	case http.MethodDelete:
+		// DELETE /blocks/{id} archives one block — a set, like the PATCHes above:
+		// replaying it lands the same state (the block stays archived) and can
+		// duplicate nothing. It is the per-child call a content replacement issues
+		// before appending the new body (#130).
+		return len(seg) == 2 && seg[0] == "blocks"
 	default:
 		return false
 	}
@@ -328,9 +334,13 @@ func realSleep(ctx context.Context, d time.Duration) error {
 // --- wire types shared by the Executor and Scanner --------------------------
 
 // object is any Notion object carrying at least an id — a created page, an
-// appended block. The Executor reads the id back to seed the resolution table.
+// appended block, a listed child. The Executor reads the id back to seed the
+// resolution table. Type is the block type, present when the object came from a
+// children listing (empty on a create/append echo, which needs only the id): a
+// content assertion reads it to leave a child_page — a node of its own — alone.
 type object struct {
-	ID string `json:"id"`
+	ID   string `json:"id"`
+	Type string `json:"type"`
 }
 
 // pageParent is the parent a page-create attaches to: a data-source row for a

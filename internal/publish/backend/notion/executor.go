@@ -122,8 +122,17 @@ func (b *Backend) patchSelfHostedCites(ctx context.Context, children []childBloc
 
 // update executes a non-create, non-delete transaction against an existing page:
 // a property PATCH (a standalone SetProperties, or a fused properties-without-
-// create write) and/or a PATCH children append (content overflow). The page id is
-// resolved from the transaction's write-target Ref, which the transport gated on.
+// create write) and/or a children write. The page id is resolved from the
+// transaction's write-target Ref, which the transport gated on.
+//
+// The children write comes in two shapes, told apart by AssertsContent. A content
+// assertion writes the node's COMPLETE expected content, so it clears the page's
+// existing children before appending — otherwise a re-publish appends a second copy
+// of the body below the first, and compounds on every run (sigma/okf-tools#130). A
+// continuation is a follow-on overflow chunk of an assertion an earlier transaction
+// of the same node already made; it only appends, or a large page would keep just
+// its last chunk. The transport guarantees that ordering: it holds a group to its
+// packing order, so the assertion always precedes its continuations.
 //
 // A self-hosted anchor can ride the append too, not just the create (sigma/okf-
 // tools#102): when cluster subpage nesting force-splits a glossary host's create
@@ -154,6 +163,11 @@ func (b *Backend) update(ctx context.Context, t *Transaction, r backend.Resolver
 	}
 
 	if len(t.Children) > 0 {
+		if t.AssertsContent {
+			if err := b.clearChildren(ctx, string(id)); err != nil {
+				return fmt.Errorf("notion: replace content of %s: %w", target, err)
+			}
+		}
 		hosted := hostedAnchorNames(t.Children)
 		appendChildren, deferred := deferSelfHostedCites(t.Children, hosted)
 		children, err := b.childrenJSON(appendChildren, r)
@@ -219,11 +233,69 @@ func (b *Backend) parentOf(t *Transaction, r backend.Resolver) (pageParent, erro
 	return pageParent{Type: "page_id", PageID: string(id)}, nil
 }
 
-// listChildIDs pages through GET /blocks/{id}/children, returning the child block
-// ids in order — the create path's way to learn the ids POST /pages does not echo,
-// so hosted anchors can be mapped.
+// clearChildren empties a page of the blocks that are its own content — the first
+// half of a content assertion's clear-then-append (sigma/okf-tools#130). It lists
+// the page's children through the same paginated helper the create path's anchor
+// mapping uses, then archives each with DELETE /blocks/{id}.
+//
+// A `child_page` child is skipped: it is not this page's content but its own node
+// (the rule recompute_hash.go states when it excludes a child_page from a page's
+// hash). A cluster index page holds its subpages as child_page blocks, so deleting
+// them would archive whole pages the assertion never claimed to own — and the
+// parent row's `hashes` subtree would still record them, so no later run would
+// notice or restore them.
+//
+// Two consequences are deliberate, not oversights:
+//
+//   - It destroys edits made by hand in Notion. Replacement IS the contract of
+//     SetContent: the mirror is a function of the source, and a page whose body can
+//     drift from it makes the stored content hash meaningless as a change signal.
+//     Published pages carry a generated-page banner saying so.
+//   - It is not atomic. An abort between the deletes and the append leaves the page
+//     truncated. That is accepted because it self-corrects: a failed run never
+//     reaches write-back, so the node's content hash is never stamped, so the next
+//     run cannot conclude "unchanged" and re-asserts the full body.
+//
+// It costs one GET plus one DELETE per existing block, all through the global pacer
+// — the price of a content change roughly doubles. Notion offers no bulk block
+// delete, so there is no cheaper way to assert a page's whole body.
+func (b *Backend) clearChildren(ctx context.Context, pageID string) error {
+	children, err := b.listChildren(ctx, pageID)
+	if err != nil {
+		return err
+	}
+	for _, c := range children {
+		if c.Type == nTypeChildPage {
+			continue
+		}
+		if err := b.do(ctx, http.MethodDelete, "/blocks/"+url.PathEscape(c.ID), nil, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// listChildIDs returns a page's child block ids in order — the create path's way to
+// learn the ids POST /pages does not echo, so hosted anchors can be mapped.
 func (b *Backend) listChildIDs(ctx context.Context, pageID string) ([]string, error) {
-	var ids []string
+	children, err := b.listChildren(ctx, pageID)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, len(children))
+	for i, c := range children {
+		ids[i] = c.ID
+	}
+	return ids, nil
+}
+
+// listChildren pages through GET /blocks/{id}/children, returning the child blocks
+// in order with their ids and Notion types. The type is what lets clearChildren
+// tell a page's own content from a child_page that is a node in its own right;
+// callers that only match positionally against what they just sent take the ids
+// alone through listChildIDs.
+func (b *Backend) listChildren(ctx context.Context, pageID string) ([]object, error) {
+	var out []object
 	cursor := ""
 	for {
 		path := "/blocks/" + url.PathEscape(pageID) + "/children?page_size=100"
@@ -234,15 +306,13 @@ func (b *Backend) listChildIDs(ctx context.Context, pageID string) ([]string, er
 		if err := b.do(ctx, http.MethodGet, path, nil, &page); err != nil {
 			return nil, err
 		}
-		for _, o := range page.Results {
-			ids = append(ids, o.ID)
-		}
+		out = append(out, page.Results...)
 		if !page.HasMore || page.NextCursor == "" {
 			break
 		}
 		cursor = page.NextCursor
 	}
-	return ids, nil
+	return out, nil
 }
 
 // --- payload serialization --------------------------------------------------

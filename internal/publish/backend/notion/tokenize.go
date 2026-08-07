@@ -61,6 +61,16 @@ func (b *Backend) Tokenize(doc publish.Document) []publish.AtomicUnit {
 			units = append(units, u)
 		}
 	}
+	// One Document is one node's complete expected content, so its first unit is
+	// where that assertion starts; every later unit is a continuation of the same
+	// assertion. Marking it here — the one place a node's content is turned into
+	// units — is what lets the Bin tell the two apart downstream (#130).
+	if len(units) > 0 {
+		if cb, ok := units[0].Payload.(childBlock); ok {
+			cb.assertsContent = true
+			units[0].Payload = cb
+		}
+	}
 	return units
 }
 
