@@ -22,7 +22,7 @@
       # One version binding for the whole module: okftool and okfpub ship
       # lockstep from the same tag (#46), and the release workflow rewrites
       # exactly this line — it fails loudly if it ever finds more than one.
-      version = "0.3.2";
+      version = "0.4.0";
 
       # Recomputed with `nix build .#okftool` (copy the hash from the mismatch).
       # One Go module, so every derivation below vendors identically.
