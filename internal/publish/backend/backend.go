@@ -146,6 +146,24 @@ type Provisioner interface {
 	Provision(ctx context.Context) error
 }
 
+// RequestReporter is an OPTIONAL backend role: a backend that talks to a remote
+// service over a metered connection implements it, and the pipeline reads it once
+// at the end of a run to report what the run cost in API traffic. Like Provisioner
+// it is deliberately outside the Backend umbrella — the in-memory fake and the
+// filesystem export issue no requests and simply omit it, and the pipeline skips
+// the report via a type assertion.
+//
+// It exists because a slow publish has two very different causes with one symptom
+// (sigma/okf-tools#134): a run throttled by the service, and a run that issued far
+// more requests than its transaction count implies. The transaction count
+// distinguishes neither, so the traffic must be reported alongside it.
+//
+// RequestStats must be safe to call while requests are in flight, and must report
+// zeros rather than nothing for a backend that has issued none.
+type RequestReporter interface {
+	RequestStats() publish.RequestStats
+}
+
 // Backend is the umbrella that embeds every role for construction and wiring.
 // One concrete backend struct satisfies all of them (sharing, e.g., its HTTP
 // client across them); a stage that needs only one role depends on that role, not

@@ -45,6 +45,10 @@ type fakeNotion struct {
 	// a second reconcile in the same test sees them as present.
 	dsProps map[string]map[string]any
 
+	// received counts EVERY request the server saw, throttled ones included — the
+	// ground truth a run's own reported request count is checked against (#134).
+	received int
+
 	// throttle is how many of the next requests the fake answers with Notion's 429
 	// rate-limit reply instead of serving them — the fault injection that exercises
 	// the client's retry path end to end. A throttled request never reaches a
@@ -101,6 +105,7 @@ func (f *fakeNotion) handler() http.Handler {
 func (f *fakeNotion) rateLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
+		f.received++
 		throttled := f.throttle > 0
 		if throttled {
 			f.throttle--

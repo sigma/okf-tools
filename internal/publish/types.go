@@ -285,3 +285,24 @@ type Block struct {
 	// Anchors are the named anchors this block declares.
 	Anchors []AnchorName
 }
+
+// RequestStats is what a run cost the backend in API traffic: how many requests it
+// issued and how many of those were retried after the service refused or failed
+// them. It exists so a slow run is diagnosable from its own summary — "slow
+// because throttled" and "slow because it issued thousands of requests" are
+// different problems with the same symptom, and the transaction count alone
+// distinguishes neither (sigma/okf-tools#134).
+//
+// Requests counts ATTEMPTS, not logical calls: a call retried twice contributes
+// three. Throttled and Transient count the retries themselves (429 and 5xx
+// respectively), so Requests-minus-retries is the number of attempts that were not
+// re-sent. A backend that does not track traffic reports the zero value, which
+// reads correctly as "no requests".
+type RequestStats struct {
+	// Requests is every HTTP attempt the run made, retries included.
+	Requests int
+	// Throttled is how many attempts were retried after a 429.
+	Throttled int
+	// Transient is how many attempts were retried after a 5xx.
+	Transient int
+}

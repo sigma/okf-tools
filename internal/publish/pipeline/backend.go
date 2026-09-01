@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/sigma/okf-tools/internal/publish/backend"
 	"github.com/sigma/okf-tools/internal/publish/backend/fake"
@@ -47,11 +48,15 @@ func SelectBackend(kind BackendKind, cfg *Config) (backend.Backend, error) {
 		if cfg.NotionDBID == "" {
 			return nil, fmt.Errorf("backend %q requires %s", BackendNotion, EnvNotionDBID)
 		}
-		return notion.New(
+		opts := []notion.Option{
 			notion.WithToken(cfg.NotionToken),
 			notion.WithDataSourceID(cfg.NotionDBID),
 			notion.WithSchema(cfg.Schema),
-		), nil
+		}
+		if d, ok := intervalOverride(cfg); ok {
+			opts = append(opts, notion.WithInterval(d))
+		}
+		return notion.New(opts...), nil
 	case BackendFake:
 		return fake.New(), nil
 	case BackendFS:
@@ -63,4 +68,16 @@ func SelectBackend(kind BackendKind, cfg *Config) (backend.Backend, error) {
 	default:
 		return nil, fmt.Errorf("unknown backend %q (want %q, %q or %q)", kind, BackendNotion, BackendFake, BackendFS)
 	}
+}
+
+// intervalOverride reports the write-pacing interval the operator configured, and
+// whether they configured one at all. The two answers must stay separate: unset
+// leaves notion.DefaultInterval in place, while an explicit zero disables pacing —
+// so collapsing them (treating zero as "unset") would make `--interval 0` silently
+// pace at the default, which is the opposite of what it says.
+func intervalOverride(cfg *Config) (time.Duration, bool) {
+	if cfg == nil || cfg.NotionInterval == nil {
+		return 0, false
+	}
+	return *cfg.NotionInterval, true
 }

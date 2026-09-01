@@ -14,6 +14,7 @@ import (
 
 	"github.com/sigma/okf-tools/internal/bundle"
 	"github.com/sigma/okf-tools/internal/publish/backend"
+	"github.com/sigma/okf-tools/internal/publish/backend/notion"
 	"github.com/sigma/okf-tools/internal/publish/graph"
 	"github.com/sigma/okf-tools/internal/publish/pipeline"
 	"github.com/sigma/okf-tools/internal/publish/source"
@@ -61,6 +62,7 @@ func runCmd(args []string) error {
 	outDir := fs.String("out", "", "output dir for the fs/export backend (default: "+pipeline.DefaultOutDir+")")
 	dryRun := fs.Bool("dry-run", false, "export to the filesystem instead of publishing (implies --backend fs)")
 	recompute := fs.Bool("recompute", false, "opt into the full live-block scan (true drift + subpage/anchor self-heal); default is the cheap steady-state scan")
+	interval := fs.Duration("interval", notion.DefaultInterval, "minimum spacing between Notion writes (reads burst ahead of it); zero or less disables pacing")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -86,6 +88,7 @@ func runCmd(args []string) error {
 		return err
 	}
 	cfg.OutDir = *outDir
+	cfg.NotionInterval = interval
 
 	// --dry-run is sugar for --backend fs: export to the filesystem instead of
 	// touching a live workspace.
@@ -96,6 +99,13 @@ func runCmd(args []string) error {
 	be, err := pipeline.SelectBackend(kind, cfg)
 	if err != nil {
 		return err
+	}
+	// Echo a non-default pacing choice, but only where it applies: a run that is
+	// unusually fast or slow should say so in its own log rather than leave the
+	// reader to guess at the operator's flags. The fs/fake backends pace nothing, so
+	// printing it there would describe a knob that did not turn.
+	if kind == pipeline.BackendNotion && *interval != notion.DefaultInterval {
+		fmt.Printf("okfpub: notion pacing: %v between writes\n", *interval)
 	}
 
 	// Echo the resolved config surface so a scheduled run's log shows what contract
@@ -140,6 +150,14 @@ func runCmd(args []string) error {
 
 	fmt.Printf("okfpub: published %d node(s), %d anchor(s) in %d transaction(s) via %s backend\n",
 		len(res.Nodes), len(res.Anchors), res.TxnCount, kind)
+	// The traffic line is what makes a slow run diagnosable without a debugger: a
+	// run whose request count dwarfs its transaction count is doing per-request work
+	// nobody planned, and one whose retries dominate is throttled. Printed for every
+	// backend that meters traffic, zeros included — "0 request(s)" is an answer.
+	if res.Metered {
+		fmt.Printf("okfpub: %d request(s), %d retried after 429, %d after 5xx\n",
+			res.Stats.Requests, res.Stats.Throttled, res.Stats.Transient)
+	}
 	return nil
 }
 
@@ -197,6 +215,7 @@ Run flags:
   --out      fs/export output dir   (default: okfpub-export)
   --dry-run  export to the filesystem instead of publishing (implies --backend fs)
   --recompute                       full live-block scan (true drift + self-heal)
+  --interval  minimum spacing between Notion writes (default 350ms; 0 or less disables)
 
 Environment:
   NOTION_TOKEN    Notion integration token (required by the notion backend)
