@@ -56,7 +56,9 @@ func (b *Backend) scanRecompute(ctx context.Context) (*publish.CurrentState, err
 	for _, row := range rows {
 		path := plainText(row.Properties["path"])
 		if path == "" {
-			continue // a stray hand-made row the pipeline never created
+			// Unclaimed: no path, so no node — reclaimed rather than walked (#135).
+			markUnclaimed(nodeIDs, row.ID)
+			continue
 		}
 		if err := claim(path, row.ID); err != nil {
 			return nil, err

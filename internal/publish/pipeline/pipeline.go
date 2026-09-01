@@ -35,6 +35,13 @@ type Result struct {
 	// are ambiguous and a bin has to re-derive the answer from the backend's concrete
 	// type — the switch the RequestReporter role exists to avoid.
 	Metered bool
+	// Reclaimed is how many unclaimed backend objects the run archived: rows an
+	// earlier aborted run created and never recorded (#135). It counts the run's
+	// PLAN, which is the same number as what was archived because a Result is
+	// returned only after the whole plan drains — a run that fails partway returns an
+	// error and no Result. It is reported rather than left silent because a mirror
+	// that keeps producing them is telling you runs keep dying partway.
+	Reclaimed int
 }
 
 // Option configures Run.
@@ -117,9 +124,10 @@ func Run(ctx context.Context, be backend.Backend, b *bundle.Bundle, opts ...Opti
 	}
 
 	out := &Result{
-		Nodes:    res.Nodes,
-		Anchors:  res.Anchors,
-		TxnCount: len(dag.Txns),
+		Nodes:     res.Nodes,
+		Anchors:   res.Anchors,
+		TxnCount:  len(dag.Txns),
+		Reclaimed: g.UnclaimedDeletes(),
 	}
 	// Read the traffic meter last, so it covers every stage that issued requests:
 	// Provision, Scan, the drain, and write-back alike.

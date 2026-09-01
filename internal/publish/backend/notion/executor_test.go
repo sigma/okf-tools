@@ -678,3 +678,74 @@ func TestExecuteUnresolvedRefErrors(t *testing.T) {
 		t.Fatal("expected an error for an unresolved content Ref")
 	}
 }
+
+// --- identity at create time (#135) -----------------------------------------
+
+// A top-level row carries its identifying `path` from the moment it exists, not
+// from write-back: an interrupted run must leave an identifiable row rather than an
+// anonymous one no later run can match to a source node or reclaim.
+func TestCreateWritesThePathColumn(t *testing.T) {
+	f := newFakeNotion()
+	be := newServer(t, f)
+
+	txn := &Transaction{
+		Group: "node:docs/adr/0002.md", Node: "node:docs/adr/0002.md", Create: true,
+		Props: map[string]any{"title": "ADR 2"},
+	}
+	if _, err := be.Execute(context.Background(), txn, stubResolver{}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	props := digInto(t, f.requestsTo("POST", "/pages")[0].Body, "properties")
+	got := plainTextOf(t, props["path"])
+	if got != "docs/adr/0002.md" {
+		t.Errorf("create wrote path %q, want the node's bundle-relative path", got)
+	}
+}
+
+// The parent-kind rule still binds: a cluster subpage is a child_page with none of
+// the data source's columns, so it must not be sent a path either (#104, #128).
+func TestSubpageCreateOmitsThePathColumn(t *testing.T) {
+	f := newFakeNotion()
+	be := newServer(t, f)
+
+	txn := &Transaction{
+		Group: "node:docs/cluster/child.md", Node: "node:docs/cluster/child.md", Create: true,
+		Parent: "node:docs/cluster/index.md",
+		Props:  map[string]any{"title": "Child"},
+	}
+	r := stubResolver{"node:docs/cluster/index.md": "page-index-real"}
+	if _, err := be.Execute(context.Background(), txn, r); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	props := digInto(t, f.requestsTo("POST", "/pages")[0].Body, "properties")
+	if _, ok := props["path"]; ok {
+		t.Errorf("subpage create must not carry a path column, got %v", props)
+	}
+	if len(props) != 1 {
+		t.Errorf("subpage create must carry only the title property, got %v", props)
+	}
+}
+
+// plainTextOf reads the concatenated text out of a recorded rich_text property
+// value, the shape the derived columns are written in.
+func plainTextOf(t *testing.T, v any) string {
+	t.Helper()
+	prop, ok := v.(map[string]any)
+	if !ok {
+		t.Fatalf("property is not an object: %#v", v)
+	}
+	spans, ok := prop["rich_text"].([]any)
+	if !ok {
+		t.Fatalf("property carries no rich_text: %#v", prop)
+	}
+	var out string
+	for _, span := range spans {
+		m, _ := span.(map[string]any)
+		text, _ := m["text"].(map[string]any)
+		s, _ := text["content"].(string)
+		out += s
+	}
+	return out
+}

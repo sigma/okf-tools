@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"sort"
@@ -88,11 +89,7 @@ func (b *Backend) WriteBack(ctx context.Context, prov publish.Provenance) error 
 // current column, folds in the run's new/updated subpage entries, and PATCHes the
 // merged map back — so adding one subpage never clobbers the map's other members.
 func (b *Backend) mergeSubtree(ctx context.Context, parentID string, updates map[string]subtreeEntry) error {
-	current, err := b.getPageProps(ctx, parentID)
-	if err != nil {
-		return err
-	}
-	merged, err := storedSubtree(plainText(current["hashes"]), parentID)
+	merged, err := b.currentSubtree(ctx, parentID)
 	if err != nil {
 		return err
 	}
@@ -103,7 +100,49 @@ func (b *Backend) mergeSubtree(ctx context.Context, parentID string, updates map
 	if err != nil {
 		return fmt.Errorf("encode subtree map: %w", err)
 	}
-	return b.patchProps(ctx, parentID, map[string]any{"hashes": b.richTextProp(string(enc))})
+	if err := b.patchProps(ctx, parentID, map[string]any{"hashes": b.richTextProp(string(enc))}); err != nil {
+		return err
+	}
+	b.rememberSubtree(parentID, merged)
+	return nil
+}
+
+// currentSubtree reports a parent row's subtree map as this run last left it: from
+// the run's own memory when it has already merged into that row, otherwise read
+// from Notion.
+//
+// The memory is what makes per-group write-back (#135) safe. Write-back used to run
+// once, merging every subpage of a parent in a single read-modify-write; it now runs
+// as each subpage's group completes, so a parent with N subpages merges N times. Re-
+// reading the column each time would make correctness depend on Notion serving a
+// write this same run issued moments earlier — a read-after-write assumption the API
+// does not promise — and would spend N extra requests to learn something the run
+// already knows. The map is per-Backend and so per-run: it never outlives the writes
+// it describes.
+func (b *Backend) currentSubtree(ctx context.Context, parentID string) (map[string]subtreeEntry, error) {
+	b.subtreeMu.Lock()
+	cached, ok := b.subtrees[parentID]
+	b.subtreeMu.Unlock()
+	if ok {
+		return maps.Clone(cached), nil
+	}
+
+	current, err := b.getPageProps(ctx, parentID)
+	if err != nil {
+		return nil, err
+	}
+	return storedSubtree(plainText(current["hashes"]), parentID)
+}
+
+// rememberSubtree records the map this run just wrote to a parent row, so the next
+// merge into that row starts from it rather than from a re-read.
+func (b *Backend) rememberSubtree(parentID string, merged map[string]subtreeEntry) {
+	b.subtreeMu.Lock()
+	if b.subtrees == nil {
+		b.subtrees = map[string]map[string]subtreeEntry{}
+	}
+	b.subtrees[parentID] = maps.Clone(merged)
+	b.subtreeMu.Unlock()
 }
 
 // getPageProps reads a page's properties via GET /pages/{id} — the read half of

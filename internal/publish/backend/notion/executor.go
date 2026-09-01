@@ -72,7 +72,7 @@ func (b *Backend) create(ctx context.Context, t *Transaction, r backend.Resolver
 	}
 
 	var page object
-	req := createPageReq{Parent: parent, Properties: b.pageProps(t.Parent, t.Props), Children: children}
+	req := createPageReq{Parent: parent, Properties: b.createProps(t), Children: children}
 	if err := b.do(ctx, http.MethodPost, "/pages", req, &page); err != nil {
 		return err
 	}
@@ -88,6 +88,28 @@ func (b *Backend) create(ctx context.Context, t *Transaction, r backend.Resolver
 		return err
 	}
 	return b.resolveSelfHostedAnchors(ctx, fmt.Sprintf("notion: create %s", writeTarget(t)), t.Children, ids, deferred, res.Anchors, r)
+}
+
+// createProps builds the property set a page-create sends: the transaction's own
+// properties through the parent-kind seam, plus — for a top-level row — the `path`
+// column that identifies which source node the row IS.
+//
+// Writing path here rather than only at write-back is what makes an interrupted run
+// recoverable (sigma/okf-tools#135). Both scan modes key a row to its node by its
+// path and skip a row without one as "not ours", so a row created by a run that died
+// before write-back was invisible to every later run: not matched to its source node
+// (which was therefore created again) and not recognisable as a leak. A row is now
+// identifiable from the moment it exists.
+//
+// A page-parented node is a cluster subpage — a child_page carrying no data-source
+// columns — so it gets no path, for the same reason it gets no other column (#104,
+// #128). Its identity lives in its parent row's subtree map instead.
+func (b *Backend) createProps(t *Transaction) map[string]any {
+	props := b.pageProps(t.Parent, t.Props)
+	if t.Parent == "" {
+		props["path"] = b.richTextProp(writeTarget(t).Rel())
+	}
+	return props
 }
 
 // patchSelfHostedCites re-materializes the self-hosted anchor citations the POST
