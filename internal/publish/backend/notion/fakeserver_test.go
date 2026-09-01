@@ -49,6 +49,11 @@ type fakeNotion struct {
 	// ground truth a run's own reported request count is checked against (#134).
 	received int
 
+	// failCreateFrom, when > 0, makes the Nth page create onward fail with a 400 —
+	// the fault injection for a run that dies partway (#135).
+	failCreateFrom int
+	creates        int
+
 	// throttle is how many of the next requests the fake answers with Notion's 429
 	// rate-limit reply instead of serving them — the fault injection that exercises
 	// the client's retry path end to end. A throttled request never reaches a
@@ -190,6 +195,21 @@ func (f *fakeNotion) record(r *http.Request) map[string]any {
 }
 
 func (f *fakeNotion) createPage(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	f.creates++
+	fail := f.failCreateFrom > 0 && f.creates >= f.failCreateFrom
+	f.mu.Unlock()
+	if fail {
+		f.record(r)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"object": "error", "status": 400, "code": "validation_error",
+			"message": "injected failure",
+		})
+		return
+	}
+
 	body := f.record(r)
 
 	// A page parented under another page is a child_page: it carries a title and
@@ -232,7 +252,68 @@ func (f *fakeNotion) updatePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// PERSIST the write, so a later read observes it. Recording alone would let a
+	// read-modify-write test pass against a workspace that never changed — which is
+	// exactly the sequence per-group write-back newly depends on (#135): merge a
+	// second subpage into a parent row whose map the run itself just wrote.
+	f.mu.Lock()
+	if archived, _ := body["archived"].(bool); archived {
+		f.rows = slices.DeleteFunc(f.rows, func(row map[string]any) bool { return row["id"] == id })
+	}
+	if props, ok := body["properties"].(map[string]any); ok {
+		cur := f.pageProps[id]
+		if cur == nil {
+			cur = map[string]any{}
+			f.pageProps[id] = cur
+		}
+		for name, v := range props {
+			cur[name] = writtenProp(v)
+		}
+		for _, row := range f.rows {
+			if row["id"] != id {
+				continue
+			}
+			rp, _ := row["properties"].(map[string]any)
+			if rp == nil {
+				rp = map[string]any{}
+				row["properties"] = rp
+			}
+			for name, v := range props {
+				rp[name] = writtenProp(v)
+			}
+		}
+	}
+	f.mu.Unlock()
+
 	writeJSON(w, map[string]any{"id": id})
+}
+
+// writtenProp converts a property value as the CLIENT sent it into the shape the
+// server serves back. A client writes rich_text spans as {"text":{"content":…}};
+// Notion echoes them with a server-filled plain_text, which is what the scanner and
+// the write-back read path both read.
+func writtenProp(v any) any {
+	prop, ok := v.(map[string]any)
+	if !ok {
+		return v
+	}
+	spans, ok := prop["rich_text"].([]any)
+	if !ok {
+		return v
+	}
+	var text string
+	for _, span := range spans {
+		m, _ := span.(map[string]any)
+		if t, ok := m["text"].(map[string]any); ok {
+			if c, ok := t["content"].(string); ok {
+				text += c
+			}
+		}
+		if pt, ok := m["plain_text"].(string); ok {
+			text += pt
+		}
+	}
+	return richProp(text)
 }
 
 // rejectColumnProps is the child_page property guard both page-write paths share: if

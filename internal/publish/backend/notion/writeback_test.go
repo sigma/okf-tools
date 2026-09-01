@@ -3,9 +3,14 @@ package notion
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/sigma/okf-tools/internal/publish"
+	"github.com/sigma/okf-tools/internal/publish/graph"
+	"github.com/sigma/okf-tools/internal/publish/optimize"
+	"github.com/sigma/okf-tools/internal/publish/transport"
 )
 
 // TestWriteBackTopLevelRow: a top-level node's provenance is PATCHed onto its own
@@ -176,4 +181,155 @@ func columnText(t *testing.T, props map[string]any, key string) string {
 		out += digInto(t, span, "text")["content"].(string)
 	}
 	return out
+}
+
+// --- incremental write-back (#135) ------------------------------------------
+
+// Two subpages of one parent, written back in SEPARATE calls (what per-group
+// write-back produces), must both survive in the parent's subtree map. This is the
+// read-modify-write's real exposure: the second merge must start from what the
+// first one wrote, not from a stale read.
+func TestSubtreeMergeAcrossSeparateWriteBacks(t *testing.T) {
+	f := newFakeNotion()
+	f.pageProps = map[string]map[string]any{
+		"page-parent": {"hashes": richProp(mustJSON(t, map[string]subtreeEntry{
+			"cluster/old.md": {ID: "page-old", Hash: "hOld"},
+		}))},
+	}
+	be := newServer(t, f)
+	ctx := context.Background()
+
+	first := publish.Provenance{Nodes: map[publish.SymbolicID]publish.NodeProvenance{
+		"node:cluster/a.md": {
+			ID: "page-a", ParentID: "page-parent",
+			NodeStamp: publish.NodeStamp{Hash: "hA", Parent: "node:cluster/index.md", Title: "A"},
+		},
+	}}
+	second := publish.Provenance{Nodes: map[publish.SymbolicID]publish.NodeProvenance{
+		"node:cluster/b.md": {
+			ID: "page-b", ParentID: "page-parent",
+			NodeStamp: publish.NodeStamp{Hash: "hB", Parent: "node:cluster/index.md", Title: "B"},
+		},
+	}}
+	if err := be.WriteBack(ctx, first); err != nil {
+		t.Fatalf("first write-back: %v", err)
+	}
+	if err := be.WriteBack(ctx, second); err != nil {
+		t.Fatalf("second write-back: %v", err)
+	}
+
+	// Read the map back the way the next run's scan would.
+	patches := f.requestsTo(http.MethodPatch, "/pages/page-parent")
+	if len(patches) != 2 {
+		t.Fatalf("want one merge per write-back (2), got %d", len(patches))
+	}
+	f.mu.Lock()
+	stored := f.pageProps["page-parent"]["hashes"]
+	f.mu.Unlock()
+
+	// Decode it exactly as a scan would: through the server's own property shape.
+	raw, err := json.Marshal(map[string]any{"hashes": stored})
+	if err != nil {
+		t.Fatalf("re-encode stored props: %v", err)
+	}
+	var served struct {
+		Hashes property `json:"hashes"`
+	}
+	if err := json.Unmarshal(raw, &served); err != nil {
+		t.Fatalf("decode stored props: %v", err)
+	}
+	merged, err := storedSubtree(plainText(served.Hashes), "page-parent")
+	if err != nil {
+		t.Fatalf("decode merged map: %v", err)
+	}
+	for subpath, wantHash := range map[string]string{
+		"cluster/old.md": "hOld", "cluster/a.md": "hA", "cluster/b.md": "hB",
+	} {
+		if got, ok := merged[subpath]; !ok || got.Hash != wantHash {
+			t.Errorf("subtree map lost %s: got %+v (map %v)", subpath, got, merged)
+		}
+	}
+}
+
+// The second merge into a parent costs no extra READ: the run already knows what it
+// wrote there, so re-reading would only expose it to serving a stale copy of its own
+// write.
+func TestSubtreeMergeDoesNotRereadWhatItJustWrote(t *testing.T) {
+	f := newFakeNotion()
+	be := newServer(t, f)
+	ctx := context.Background()
+
+	for _, sub := range []struct{ node, id, hash string }{
+		{"node:cluster/a.md", "page-a", "hA"},
+		{"node:cluster/b.md", "page-b", "hB"},
+	} {
+		prov := publish.Provenance{Nodes: map[publish.SymbolicID]publish.NodeProvenance{
+			publish.SymbolicID(sub.node): {
+				ID: publish.BackendID(sub.id), ParentID: "page-parent",
+				NodeStamp: publish.NodeStamp{Hash: publish.Hash(sub.hash), Parent: "node:cluster/index.md"},
+			},
+		}}
+		if err := be.WriteBack(ctx, prov); err != nil {
+			t.Fatalf("write-back %s: %v", sub.node, err)
+		}
+	}
+
+	if got := f.countPath(http.MethodGet, "/pages/page-parent"); got != 1 {
+		t.Errorf("parent row read %d time(s), want 1 — the run remembers its own write", got)
+	}
+}
+
+// The end-to-end shape of #135: a publish that dies partway leaves the pages it
+// finished DESCRIBING THEMSELVES in the mirror — path recorded at create, hash
+// recorded by that group's write-back — so the next run's scan reads the truth
+// rather than state predating every write the run made.
+func TestInterruptedPublishLeavesFinishedPagesDescribed(t *testing.T) {
+	f := newFakeNotion()
+	// Fail the run partway: the fake rejects the SECOND page create, standing in for
+	// a cancelled job or a rejected write.
+	f.failCreateFrom = 2
+	be := newServer(t, f, WithLogger(func(string, ...any) {}))
+
+	g := &graph.Graph{Ops: []*graph.Op{
+		createOp("node:first.md"), propsOp("node:first.md"),
+		contentOpBlocks("node:first.md", publish.Block{Content: para(txt("one"))}),
+		createOp("node:second.md"), propsOp("node:second.md"),
+		contentOpBlocks("node:second.md", publish.Block{Content: para(txt("two"))}),
+	}}
+	for _, op := range g.Ops {
+		op.NodeStamp = publish.NodeStamp{Hash: publish.Hash("h-" + string(op.Node))}
+	}
+
+	dag := optimize.Optimize(g, be, be)
+	if _, err := transport.New(be).Run(context.Background(), dag, publish.NewCurrentState(nil, nil, nil)); err == nil {
+		t.Fatal("publish should have failed on the second create")
+	}
+
+	// The first page was created carrying its path...
+	creates := f.requestsTo(http.MethodPost, "/pages")
+	if len(creates) == 0 {
+		t.Fatal("no page was created")
+	}
+	props := digInto(t, creates[0].Body, "properties")
+	if got := plainTextOf(t, props["path"]); got != "first.md" {
+		t.Errorf("created row carries path %q, want first.md", got)
+	}
+
+	// ...and its group's write-back recorded the hash before the run died.
+	var recorded bool
+	for _, req := range f.reqs {
+		if req.Method != http.MethodPatch || !strings.HasPrefix(req.Path, "/pages/") {
+			continue
+		}
+		p, ok := req.Body["properties"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, ok := p["hash"]; ok {
+			recorded = true
+		}
+	}
+	if !recorded {
+		t.Error("the finished page's hash was never recorded — an interrupted run recorded nothing")
+	}
 }

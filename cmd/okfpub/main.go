@@ -158,6 +158,12 @@ func runCmd(args []string) error {
 		fmt.Printf("okfpub: %d request(s), %d retried after 429, %d after 5xx\n",
 			res.Stats.Requests, res.Stats.Throttled, res.Stats.Transient)
 	}
+	// Reclaimed rows are worth naming: each one is a row an earlier run created and
+	// died before recording, so a run that keeps reporting them is reporting that
+	// runs keep dying partway (#135).
+	if res.Reclaimed > 0 {
+		fmt.Printf("okfpub: reclaimed %d unrecorded row(s) left by an earlier interrupted run\n", res.Reclaimed)
+	}
 	return nil
 }
 

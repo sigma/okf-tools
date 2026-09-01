@@ -43,11 +43,15 @@ func TestRunWritesBackEveryPublishedNode(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	written := be.WrittenBack()
-	if len(written) != 1 {
-		t.Fatalf("want one write-back for the publish, got %d", len(written))
+	// Provenance is persisted per completed group (#135), so a full publish records
+	// through several write-backs; what matters here is that every node is in one of
+	// them.
+	nodes := map[publish.SymbolicID]publish.NodeProvenance{}
+	for _, p := range be.WrittenBack() {
+		for node, np := range p.Nodes {
+			nodes[node] = np
+		}
 	}
-	nodes := written[0].Nodes
 	for _, d := range b.Docs {
 		id := publish.SymbolicID("node:" + d.Rel)
 		np, ok := nodes[id]

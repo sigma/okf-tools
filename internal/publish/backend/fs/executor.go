@@ -37,6 +37,14 @@ func (b *Backend) Execute(_ context.Context, txn publish.Transaction, r backend.
 		Anchors: map[publish.AnchorName]publish.BackendID{},
 	}
 
+	// An unclaimed group names a backend object with no path (#135) — a row an
+	// aborted run left unrecorded. Only a backend whose scan mints one can be handed
+	// it, and this one never does (its scan reads node.json, which always carries a
+	// path), so reaching here is a wiring bug rather than a data condition. Say so
+	// instead of panicking inside Rel.
+	if id, ok := publish.SymbolicID(t.group).Unclaimed(); ok {
+		return publish.ExecResult{}, fmt.Errorf("fs: unclaimed object %s has no path to export under; the fs scan mints none", id)
+	}
 	rel := publish.SymbolicID(t.group).Rel()
 	dir := filepath.Join(b.root, filepath.FromSlash(rel))
 

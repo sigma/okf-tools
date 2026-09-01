@@ -32,6 +32,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sigma/okf-tools/internal/publish"
@@ -89,6 +90,13 @@ type Backend struct {
 	// stats accumulates the run's API traffic (attempts, retries) so the pipeline
 	// can report what the run actually cost — see RequestStats.
 	stats counters
+
+	// subtrees remembers, per parent row, the subtree map this run last wrote there,
+	// so incremental write-back (#135) merges into what the run knows rather than
+	// re-reading a column it just wrote. Guarded because the transport drives
+	// write-back from its execution path, which may run concurrently.
+	subtreeMu sync.Mutex
+	subtrees  map[string]map[string]subtreeEntry
 
 	// schema is the parsed schema.json driving two things: provisioning (the
 	// Provisioner role reconciles the data source's columns against it) and typed

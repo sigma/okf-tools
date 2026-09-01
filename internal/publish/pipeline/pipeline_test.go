@@ -325,3 +325,57 @@ func TestZeroIntervalIsExplicitNotUnset(t *testing.T) {
 		})
 	}
 }
+
+// --- reclaiming unclaimed rows (#135) ---------------------------------------
+
+// The run reports how many unclaimed objects it reclaimed, so an operator sees that
+// earlier runs died partway rather than having to go looking.
+func TestRunReportsReclaimedRows(t *testing.T) {
+	b := loadBundle(t, smallBundle())
+	seed := scanAfterPublish(b)
+
+	// Fold two unclaimed rows into the converged seed: rows an aborted run created
+	// and never recorded.
+	nodes := map[publish.SymbolicID]publish.BackendID{}
+	hashes := map[publish.SymbolicID]publish.Hash{}
+	for node := range seed.Nodes() {
+		id, _ := seed.NodeID(node)
+		nodes[node] = id
+		if h, ok := seed.ContentHash(node); ok {
+			hashes[node] = h
+		}
+	}
+	props := map[publish.SymbolicID]publish.Hash{}
+	for node := range seed.Nodes() {
+		if h, ok := seed.PropertyHash(node); ok {
+			props[node] = h
+		}
+	}
+	nodes[publish.UnclaimedRef("leaked-1")] = "leaked-1"
+	nodes[publish.UnclaimedRef("leaked-2")] = "leaked-2"
+	withLeaks := publish.NewCurrentStateWithProps(nodes, hashes, props, nil)
+
+	res, err := Run(context.Background(), fake.New(fake.WithScan(withLeaks)), b)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Reclaimed != 2 {
+		t.Errorf("Reclaimed = %d, want 2", res.Reclaimed)
+	}
+	// Reclaiming is the ONLY work: the converged pages stay hash-skipped.
+	if res.TxnCount != 2 {
+		t.Errorf("TxnCount = %d, want 2 (one archive per unclaimed row)", res.TxnCount)
+	}
+}
+
+// A converged run with nothing leaked reports zero, and stays a true no-op.
+func TestRunReportsNoReclamationWhenClean(t *testing.T) {
+	b := loadBundle(t, smallBundle())
+	res, err := Run(context.Background(), fake.New(fake.WithScan(scanAfterPublish(b))), b)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Reclaimed != 0 || res.TxnCount != 0 {
+		t.Errorf("clean run reclaimed=%d txns=%d, want 0 and 0", res.Reclaimed, res.TxnCount)
+	}
+}

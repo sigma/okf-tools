@@ -48,8 +48,12 @@ func (b *Backend) scanStored(ctx context.Context) (*publish.CurrentState, error)
 	for _, row := range rows {
 		path := plainText(row.Properties["path"])
 		if path == "" {
-			// A stray hand-made row the pipeline never created: reason only about
-			// pages we own.
+			// A row carrying no path is either a stray the pipeline never created or —
+			// far more likely — one IT created and could not record before the run died
+			// (#135). The two are indistinguishable from here, and both are unusable:
+			// nothing can key them to a source node. Surface them as unclaimed so
+			// reconciliation reclaims them instead of leaking one per aborted run.
+			markUnclaimed(nodeIDs, row.ID)
 			continue
 		}
 		if err := claim(path, row.ID); err != nil {
@@ -167,4 +171,12 @@ func newPathClaimer() func(path, by string) error {
 		owner[path] = by
 		return nil
 	}
+}
+
+// markUnclaimed records a path-less row as an unclaimed object resolving to itself,
+// so reconciliation reclaims it (#135). Both scan modes share it: a row without a
+// path is unusable to either, and a third scan mode must reach the same conclusion
+// rather than re-deciding what an unidentifiable row means.
+func markUnclaimed(nodeIDs map[publish.SymbolicID]publish.BackendID, rowID string) {
+	nodeIDs[publish.UnclaimedRef(publish.BackendID(rowID))] = publish.BackendID(rowID)
 }

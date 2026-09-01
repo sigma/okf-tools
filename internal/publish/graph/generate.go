@@ -287,7 +287,16 @@ func orphanOps(docs []*bundle.Doc, cs *publish.CurrentState, ar *areas.Registry)
 	}
 	var scanned []string
 	vanished := map[publish.SymbolicID]bool{}
+	// An unclaimed object (a row an aborted run created and never recorded, #135)
+	// has no path, so it takes no part in the subtree reasoning below: it can be
+	// neither an ancestor nor a descendant of anything. It is reclaimed on its own
+	// terms — sourceless by construction, since no source doc can mint its id.
+	var unclaimed []publish.SymbolicID
 	for id := range cs.Nodes() {
+		if _, isUnclaimed := id.Unclaimed(); isUnclaimed {
+			unclaimed = append(unclaimed, id)
+			continue
+		}
 		scanned = append(scanned, id.Rel())
 		if !live[id] {
 			vanished[id] = true
@@ -300,6 +309,9 @@ func orphanOps(docs []*bundle.Doc, cs *publish.CurrentState, ar *areas.Registry)
 		if p := h.parent(id.Rel()); p != "" && vanished[p] {
 			continue // covered by the ancestor's subtree deletion
 		}
+		ops = append(ops, &Op{Kind: DeleteNode, Node: id})
+	}
+	for _, id := range unclaimed {
 		ops = append(ops, &Op{Kind: DeleteNode, Node: id})
 	}
 	sort.Slice(ops, func(i, j int) bool { return ops[i].Node < ops[j].Node })
@@ -375,4 +387,21 @@ func sortEdges(edges []Edge) {
 			return a.To.Kind < b.To.Kind
 		}
 	})
+}
+
+// UnclaimedDeletes reports how many of the graph's ops reclaim an unclaimed backend
+// object rather than archive a vanished node (#135). It lives here because it is a
+// question about this package's op vocabulary; a caller that reports the number
+// should not have to know how a reclaim op is spelled.
+func (g *Graph) UnclaimedDeletes() int {
+	n := 0
+	for _, op := range g.Ops {
+		if op.Kind != DeleteNode {
+			continue
+		}
+		if _, ok := op.Node.Unclaimed(); ok {
+			n++
+		}
+	}
+	return n
 }

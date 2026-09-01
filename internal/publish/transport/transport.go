@@ -90,6 +90,25 @@ func (t *Transport) Run(ctx context.Context, dag *optimize.TxnDAG, seed *publish
 		remaining[i] = i
 	}
 
+	// Write-back is incremental, per group (sigma/okf-tools#135). byGroup holds each
+	// group's transaction indices and done counts how many of them have executed;
+	// when a group's count reaches its size, that group's provenance is persisted
+	// immediately, rather than the whole run's being held until the last transaction
+	// of the last group lands. An interrupted run then
+	// leaves the mirror describing what it actually completed, instead of describing
+	// a state that predates every write it made.
+	//
+	// The unit is the GROUP, not the transaction: the optimizer packs one node's
+	// content as an ordered sequence, and only once all of it has landed does the
+	// node's recorded hash describe the body the mirror holds. Recording after the
+	// first chunk would claim a complete body for a half-written page, and the next
+	// run would hash-skip it — worse than recording nothing.
+	byGroup := map[publish.GroupKey][]int{}
+	for i, txn := range dag.Txns {
+		byGroup[txn.Group] = append(byGroup[txn.Group], i)
+	}
+	done := map[publish.GroupKey]int{}
+
 	for len(remaining) > 0 {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -121,37 +140,55 @@ func (t *Transport) Run(ctx context.Context, dag *optimize.TxnDAG, seed *publish
 				return nil, fmt.Errorf("transport: execute txn %d (group %s): %w", i, txn.Group, err)
 			}
 			tbl.merge(res)
-		}
-		remaining = blocked
-	}
 
-	// Publish-time write-back (#167 decision 7): once the whole graph has drained,
-	// persist the run's provenance back into the backend's self-describing state so
-	// the next ScanStored is accurate. It is an obligation of the execution path, so
-	// the transport owns triggering it; the backend that knows its derived-column
-	// shape performs the actual writes. A backend that does not implement WriteBacker
-	// (or an unchanged run, whose provenance is empty) writes nothing.
-	if wb, ok := t.exec.(backend.WriteBacker); ok {
-		prov := buildProvenance(dag, tbl)
-		if len(prov.Nodes) > 0 {
-			if err := wb.WriteBack(ctx, prov); err != nil {
-				return nil, fmt.Errorf("transport: write-back: %w", err)
+			done[txn.Group]++
+			if done[txn.Group] < len(byGroup[txn.Group]) {
+				continue
+			}
+			if err := t.writeBack(ctx, dag, tbl, byGroup[txn.Group]); err != nil {
+				return nil, err
 			}
 		}
+		remaining = blocked
 	}
 
 	return &Result{Nodes: tbl.nodesCopy(), Anchors: tbl.anchorsCopy()}, nil
 }
 
-// buildProvenance assembles the run's write-back provenance from the drained
-// transaction-DAG and the final resolution table. Each transaction that wrote a
-// node's content (a non-empty Hash — this excludes DeleteNode archives) contributes
-// that node's resolved id, expected hash, parent routing, and any hosted anchors.
-// Transactions of the same node (a fused create plus its content overflow) merge
-// into one record: the hash/parent agree, and the anchor maps union.
-func buildProvenance(dag *optimize.TxnDAG, tbl *table) publish.Provenance {
+// writeBack persists one completed group's provenance (#167 decision 7, made
+// incremental by #135): it assembles the record from that group's transactions and
+// the resolution table as it stands, and hands it to the backend. It is an
+// obligation of the execution path, so the transport owns triggering it; the
+// backend that knows its derived-column shape performs the actual writes.
+//
+// A backend that does not implement WriteBacker, and a group that wrote no node
+// content (a DeleteNode archive, whose provenance is empty), write nothing.
+func (t *Transport) writeBack(ctx context.Context, dag *optimize.TxnDAG, tbl *table, idxs []int) error {
+	wb, ok := t.exec.(backend.WriteBacker)
+	if !ok {
+		return nil
+	}
+	prov := buildProvenance(dag, tbl, idxs)
+	if len(prov.Nodes) == 0 {
+		return nil
+	}
+	if err := wb.WriteBack(ctx, prov); err != nil {
+		return fmt.Errorf("transport: write-back: %w", err)
+	}
+	return nil
+}
+
+// buildProvenance assembles the write-back provenance for the transactions named by
+// idxs — one completed group — from the resolution table as it stands. Each
+// transaction that wrote a node's content (a non-empty Hash — this excludes
+// DeleteNode archives) contributes that node's resolved id, expected hash, parent
+// routing, and any hosted anchors. Transactions of the same node (a fused create
+// plus its content overflow) merge into one record: the hash/parent agree, and the
+// anchor maps union.
+func buildProvenance(dag *optimize.TxnDAG, tbl *table, idxs []int) publish.Provenance {
 	prov := publish.Provenance{Nodes: map[publish.SymbolicID]publish.NodeProvenance{}}
-	for _, txn := range dag.Txns {
+	for _, i := range idxs {
+		txn := dag.Txns[i]
 		if txn.Hash == "" {
 			continue // no node content written (e.g. a DeleteNode) — nothing to record
 		}

@@ -2,11 +2,16 @@ package notion
 
 import (
 	"context"
+	"net/http"
 	"slices"
 	"testing"
 
+	"github.com/sigma/okf-tools/internal/bundle"
 	"github.com/sigma/okf-tools/internal/publish"
 	"github.com/sigma/okf-tools/internal/publish/backend"
+	"github.com/sigma/okf-tools/internal/publish/graph"
+	"github.com/sigma/okf-tools/internal/publish/optimize"
+	"github.com/sigma/okf-tools/internal/publish/transport"
 )
 
 // TestScanStoredSeedsCurrentState: one data-source query over self-describing
@@ -96,9 +101,12 @@ func TestScanStoredPaginates(t *testing.T) {
 	}
 }
 
-// TestScanStoredSkipsStrayRows: a row with no path is a hand-made row the pipeline
-// never created and is skipped.
-func TestScanStoredSkipsStrayRows(t *testing.T) {
+// TestScanStoredSurfacesPathlessRowsAsUnclaimed: a row with no path names no
+// source node — most often one an aborted run created and never recorded (#135).
+// The scan surfaces it as an unclaimed object keyed by its row id, so
+// reconciliation can reclaim it, instead of dropping it on the floor where it
+// leaks one row per aborted run forever.
+func TestScanStoredSurfacesPathlessRowsAsUnclaimed(t *testing.T) {
 	f := newFakeNotion()
 	f.rows = []map[string]any{
 		row("owned", map[string]any{"path": richProp("a.md")}),
@@ -110,12 +118,23 @@ func TestScanStoredSkipsStrayRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
-	count := 0
-	for range cs.Nodes() {
-		count++
+
+	if id, ok := cs.NodeID(publish.NodeRef("a.md")); !ok || id != "owned" {
+		t.Errorf("owned row = %q,%v, want the owned page id", id, ok)
 	}
-	if count != 1 {
-		t.Errorf("stray row should be skipped, Nodes count = %d, want 1", count)
+	unclaimed := publish.UnclaimedRef("stray")
+	id, ok := cs.NodeID(unclaimed)
+	if !ok || id != "stray" {
+		t.Errorf("path-less row = %q,%v, want it surfaced as unclaimed resolving to its row id", id, ok)
+	}
+	// It is unclaimed, not a node: nothing may read a path off it.
+	for scanned := range cs.Nodes() {
+		if _, isUnclaimed := scanned.Unclaimed(); isUnclaimed {
+			continue
+		}
+		if scanned != publish.NodeRef("a.md") {
+			t.Errorf("unexpected node in the snapshot: %s", scanned)
+		}
 	}
 }
 
@@ -187,4 +206,89 @@ func TestScanQueryPinsDataSourceAPIVersion(t *testing.T) {
 			t.Errorf("scan query Notion-Version = %q, want 2025-09-03 (the data-source API surface)", r.Version)
 		}
 	}
+}
+
+// A publish reclaims the rows an aborted run left behind: an unclaimed row is
+// archived exactly as a vanished node is, end to end through Generation,
+// Optimization and the transport (#135). Running it twice archives nothing further.
+func TestPublishArchivesUnclaimedRowsAndIsIdempotent(t *testing.T) {
+	b := loadNoopBundle(t)
+	f := newFakeNotion()
+	be := newServer(t, f)
+	ctx := context.Background()
+
+	// Steady state for every source page, plus rows the mirror should reclaim: two
+	// an earlier run created and died before recording (no path), and one that has a
+	// path but no source left — the ordinary vanished node, which must keep behaving
+	// exactly as it did.
+	for _, d := range b.Docs {
+		f.rows = append(f.rows, row("page-"+d.Rel, map[string]any{
+			"path": richProp(d.Rel),
+			"hash": richProp(encodeHashPair(be.sourceContentHash(d, nil), graph.PropertyHash(d))),
+		}))
+	}
+	f.rows = append(f.rows,
+		row("leaked-1", map[string]any{}),
+		row("leaked-2", map[string]any{"hash": richProp("h")}), // hash but no path
+		row("vanished", map[string]any{"path": richProp("gone.md"), "hash": richProp("h")}),
+	)
+
+	publish1 := publishOnce(t, ctx, be, b)
+	if publish1.reclaimed != 2 {
+		t.Errorf("first run reclaimed %d unclaimed row(s), want 2", publish1.reclaimed)
+	}
+
+	for _, id := range []string{"leaked-1", "leaked-2", "vanished"} {
+		reqs := f.requestsTo(http.MethodPatch, "/pages/"+id)
+		if len(reqs) != 1 {
+			t.Errorf("row %s: %d archive request(s), want exactly 1", id, len(reqs))
+			continue
+		}
+		if archived, _ := reqs[0].Body["archived"].(bool); !archived {
+			t.Errorf("row %s: PATCH body = %v, want archived:true", id, reqs[0].Body)
+		}
+	}
+	// Reclaiming a leak must not drag the rest of the mirror into a rewrite.
+	if got := f.countPath(http.MethodPost, "/pages"); got != 0 {
+		t.Errorf("reclaim run created %d page(s), want 0", got)
+	}
+
+	// Second run over the state the first one left: the archived rows are gone from
+	// the query, so there is nothing left to reclaim and nothing at all to do.
+	publish2 := publishOnce(t, ctx, be, b)
+	if publish2.ops != 0 {
+		t.Errorf("second run planned %d op(s), want none: %v", publish2.ops, publish2.opKinds)
+	}
+	if publish2.reclaimed != 0 {
+		t.Errorf("second run reclaimed %d row(s), want 0", publish2.reclaimed)
+	}
+}
+
+// publishRun is what one drive of the pipeline stages reports back to a test.
+type publishRun struct {
+	ops       int
+	reclaimed int
+	opKinds   []string
+}
+
+// publishOnce drives Scan → Generate → Optimize → Transport against the live fake,
+// the same wiring pipeline.Run uses, and reports what the run planned.
+func publishOnce(t *testing.T, ctx context.Context, be *Backend, b *bundle.Bundle) publishRun {
+	t.Helper()
+	scan, err := be.Scan(ctx, backend.ScanStored)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	g, err := graph.Generate(ctx, b, scan, graph.WithHasher(be.RecomputeContentHasher(nil)))
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if _, err := transport.New(be).Run(ctx, optimize.Optimize(g, be, be), scan); err != nil {
+		t.Fatalf("transport: %v", err)
+	}
+	out := publishRun{ops: len(g.Ops), reclaimed: g.UnclaimedDeletes()}
+	for _, op := range g.Ops {
+		out.opKinds = append(out.opKinds, op.Kind.String()+" "+string(op.Node))
+	}
+	return out
 }

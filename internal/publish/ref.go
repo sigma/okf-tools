@@ -24,6 +24,9 @@ type AnchorName string
 const (
 	nodeScheme   = "node:"
 	anchorScheme = "anchor:"
+	// unclaimedScheme names a backend object the pipeline owns but that corresponds
+	// to no source node — see UnclaimedRef.
+	unclaimedScheme = "unclaimed:"
 )
 
 // NodeRef mints the symbolic id of a node reference from its bundle-relative
@@ -58,4 +61,28 @@ func (id SymbolicID) AnchorName() (AnchorName, bool) {
 		return AnchorName(rest), true
 	}
 	return "", false
+}
+
+// UnclaimedRef mints the symbolic id of an UNCLAIMED backend object: something the
+// pipeline created but that names no source node, keyed by its backend id because
+// that is the only identity it has (sigma/okf-tools#135).
+//
+// A row acquires this state exactly one way: a run created it and died before
+// recording which node it is. Since a scan keys a row to its node by the path the
+// row carries, such a row is unmatchable — the next run neither recognises it as
+// its node's row (creating the node a second time) nor as a leak. Naming it in the
+// symbolic scheme is what lets the ordinary vanished-node reconciliation see it:
+// no source doc can ever mint this id, so it is always "scanned but sourceless",
+// which is precisely the condition that archives a node.
+//
+// It is deliberately NOT a node ref: it has no path, and Rel panics on it rather
+// than inventing one.
+func UnclaimedRef(id BackendID) SymbolicID { return SymbolicID(unclaimedScheme + string(id)) }
+
+// Unclaimed reports whether id names an unclaimed backend object and, if so, the
+// backend id it stands for. It is the reader counterpart to UnclaimedRef, and the
+// guard every stage that would otherwise read a node's path must consult first.
+func (id SymbolicID) Unclaimed() (BackendID, bool) {
+	rest, ok := strings.CutPrefix(string(id), unclaimedScheme)
+	return BackendID(rest), ok
 }
