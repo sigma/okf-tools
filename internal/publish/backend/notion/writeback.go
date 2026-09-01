@@ -52,7 +52,12 @@ func (b *Backend) WriteBack(ctx context.Context, prov publish.Provenance) error 
 			m = map[string]subtreeEntry{}
 			subByOwner[owner] = m
 		}
-		m[node.Rel()] = subtreeEntry{ID: string(np.ID), Hash: string(np.Hash), PropHash: string(np.PropHash), Title: np.Title}
+		// A subpage's anchors ride its entry, since it has no row to carry an anchors
+		// column (#142).
+		m[node.Rel()] = subtreeEntry{
+			ID: string(np.ID), Hash: string(np.Hash), PropHash: string(np.PropHash),
+			Title: np.Title, Anchors: anchorMap(np.Anchors),
+		}
 	}
 
 	// Own-row writes for top-level nodes, in sorted order for deterministic request

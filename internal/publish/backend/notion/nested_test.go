@@ -300,3 +300,23 @@ func TestPartialRunRecordsAgainstAnUntouchedOwner(t *testing.T) {
 		t.Errorf("re-run after the partial publish planned %d op(s), want none", len(next))
 	}
 }
+
+// writeSubtreeMap replaces a row's recorded subtree map, so a test can stage the
+// state an older version of the writer would have left.
+func writeSubtreeMap(t *testing.T, f *fakeNotion, rowID string, m map[string]subtreeEntry) {
+	t.Helper()
+	enc, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("encode subtree map: %v", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, row := range f.rows {
+		if row["id"] != rowID {
+			continue
+		}
+		props, _ := row["properties"].(map[string]any)
+		props["hashes"] = richProp(string(enc))
+	}
+	f.pageProps[rowID] = map[string]any{"hashes": richProp(string(enc))}
+}

@@ -106,7 +106,7 @@ func Generate(ctx context.Context, b *bundle.Bundle, cs *publish.CurrentState, o
 	// deterministic (docs preserves b.Docs' rel sort) regardless of goroutine
 	// scheduling.
 	src := srcHierarchy(docs, b.Areas)
-	results := make([][]*Op, len(docs))
+	results := make([]docOps, len(docs))
 	var wg sync.WaitGroup
 	for i, d := range docs {
 		wg.Add(1)
@@ -123,9 +123,14 @@ func Generate(ctx context.Context, b *bundle.Bundle, cs *publish.CurrentState, o
 		return nil, err
 	}
 
+	// An anchor a page CITES must be resolvable: either the scan already knows it, or
+	// something in this run mints it. Where neither holds, re-assert its host even
+	// though the host hash-skipped — see repairUnhostedAnchors.
+	repairUnhostedAnchors(results, cs)
+
 	g := &Graph{}
-	for _, ops := range results {
-		g.Ops = append(g.Ops, ops...)
+	for _, r := range results {
+		g.Ops = append(g.Ops, r.ops...)
 	}
 	// Orphans: scanned nodes with no in-scope source → DeleteNode on the subtree
 	// roots. Liveness is the publish set, so a page that fell out of scope (or was
@@ -136,6 +141,98 @@ func Generate(ctx context.Context, b *bundle.Bundle, cs *publish.CurrentState, o
 	return g, nil
 }
 
+// docOps is one page's diff result: the ops it emits, plus its content op and
+// whether that op was emitted. The content op is reported even when suppressed
+// because it is the only thing that mints the page's anchor map, so a later pass may
+// need to bring it back — see repairUnhostedAnchors.
+type docOps struct {
+	ops []*Op
+	// content is the page's SetContent op, reported whether or not it was emitted:
+	// it is the only thing that mints the page's anchor map, so a later pass may need
+	// to bring it back. contentEmitted says which it is, so a caller cannot mistake a
+	// suppressed op for a scheduled one.
+	content        *Op
+	contentEmitted bool
+}
+
+// repairUnhostedAnchors re-asserts the host of any anchor this run CITES but cannot
+// resolve — neither seeded by the scan nor minted by an op already emitted.
+//
+// Asserting a page's content is the only thing that mints and records its anchor map,
+// so a host whose map was never recorded (a glossary hosted as a subpage, before
+// sigma/okf-tools#142 gave subtree entries an anchors field) hash-skips forever while
+// every page citing it has a reference the run cannot resolve. The run then aborts
+// with "transactions cannot proceed", identically on every retry. This is the escape:
+// the citation is the evidence that the map is needed, and the host is re-asserted to
+// produce it.
+//
+// The repair is decided HERE rather than in the scan, which is a deliberate
+// departure from what #142 first proposed. A scan cannot see it: a host that
+// recorded no anchors is indistinguishable from one that hosts none, and only the
+// source says which. Deciding it in Generation also covers the steady-state scan,
+// which has no live blocks to reason about at all — where #138's dangling rule,
+// which needs them, necessarily lives in the recompute scan.
+//
+// It is demand-driven on purpose. Re-asserting every host whose anchors happen to be
+// unseeded would rewrite pages nothing cites — churn, and exactly the false re-write
+// the drift detection is careful to avoid.
+//
+// The repeat pass exists because a repair can create demand: the content op it brings
+// back may itself cite an anchor hosted by a page that has not been re-asserted. Each
+// pass can only flip a page from suppressed to emitted, and never back, so it runs at
+// most once per page and then stops.
+//
+// Iteration is over slices, never maps, so the ops a run emits do not depend on map
+// ordering — the same determinism the concurrent fan-out above preserves by slotting
+// results by index.
+func repairUnhostedAnchors(results []docOps, cs *publish.CurrentState) {
+	// Which page hosts an anchor. When two pages declare the same name — two glossary
+	// files defining one term — the later one wins, matching how assembleEdges picks
+	// that anchor's producer. The two must agree: repairing one page while wiring the
+	// edge to another would order the run against a producer it never scheduled.
+	hostOf := map[publish.AnchorName]int{}
+	for i, r := range results {
+		if r.content == nil {
+			continue // a page whose diff never ran (a cancelled fan-out)
+		}
+		for _, name := range r.content.Anchors {
+			hostOf[name] = i
+		}
+	}
+
+	for {
+		repaired := false
+		for _, r := range results {
+			for _, op := range r.ops {
+				for _, ref := range op.Refs {
+					name, ok := ref.AnchorName()
+					if !ok {
+						continue
+					}
+					if _, seeded := cs.AnchorID(name); seeded {
+						continue
+					}
+					host, known := hostOf[name]
+					// An already-emitted host is producing the anchor this run; a name
+					// nothing hosts is a dangling citation the transport reports by name.
+					if !known || results[host].contentEmitted {
+						continue
+					}
+					// Only the content op comes back. Properties are gated by their own
+					// hash and are not what mints an anchor map, so re-asserting them
+					// here would be a rewrite nothing asked for.
+					results[host].ops = append(results[host].ops, results[host].content)
+					results[host].contentEmitted = true
+					repaired = true
+				}
+			}
+		}
+		if !repaired {
+			return
+		}
+	}
+}
+
 // diffDoc emits the ops for one source page from the uniform diff→ops mapping:
 //
 //	new              → CreateNode + SetProperties + SetContent
@@ -143,7 +240,7 @@ func Generate(ctx context.Context, b *bundle.Bundle, cs *publish.CurrentState, o
 //	unchanged        → nothing (hash-skip)
 //
 // (Vanished nodes have no source and are handled by orphanOps.)
-func diffDoc(d *bundle.Doc, cs *publish.CurrentState, o *options, src *hierarchy) []*Op {
+func diffDoc(d *bundle.Doc, cs *publish.CurrentState, o *options, src *hierarchy) docOps {
 	node := publish.NodeRef(d.Rel)
 	parent := src.parent(d.Rel)
 	owner := src.owner(d.Rel)
@@ -158,7 +255,8 @@ func diffDoc(d *bundle.Doc, cs *publish.CurrentState, o *options, src *hierarchy
 	setContent := &Op{Kind: SetContent, Node: node, Doc: doc, Refs: refs, Anchors: anchors, NodeStamp: publish.NodeStamp{Parent: parent, Owner: owner, Hash: hash, PropHash: propHash, Title: title}}
 
 	if _, exists := cs.NodeID(node); !exists {
-		return []*Op{{Kind: CreateNode, Node: node, NodeStamp: publish.NodeStamp{Parent: parent, Owner: owner, Hash: hash, PropHash: propHash, Title: title}}, setProps, setContent}
+		create := &Op{Kind: CreateNode, Node: node, NodeStamp: publish.NodeStamp{Parent: parent, Owner: owner, Hash: hash, PropHash: propHash, Title: title}}
+		return docOps{ops: []*Op{create, setProps, setContent}, content: setContent, contentEmitted: true}
 	}
 	// Existing: gate the two arms independently, each by its own scanned hash. An arm
 	// hash-skips iff its scanned hash is present and equals the expected one; a
@@ -171,10 +269,11 @@ func diffDoc(d *bundle.Doc, cs *publish.CurrentState, o *options, src *hierarchy
 	if !(pok && propGot == propHash) {
 		ops = append(ops, setProps)
 	}
-	if !(cok && contentGot == hash) {
+	emitted := !(cok && contentGot == hash)
+	if emitted {
 		ops = append(ops, setContent)
 	}
-	return ops
+	return docOps{ops: ops, content: setContent, contentEmitted: emitted}
 }
 
 // propsOf builds the semantic property set SetProperties asserts: the doc's

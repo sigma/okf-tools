@@ -93,6 +93,7 @@ func (b *Backend) scanRecompute(ctx context.Context) (*publish.CurrentState, err
 		walk := &subtreeWalk{
 			be: b, rowID: row.ID, stored: stored, byID: byID, byTitle: byTitle,
 			claim: claim, nodeIDs: nodeIDs, hashes: hashes, propHashes: propHashes,
+			anchorIDs: anchorIDs,
 		}
 		if err := walk.descend(ctx, row.ID, blocks); err != nil {
 			return nil, err
@@ -111,6 +112,9 @@ func (b *Backend) scanRecompute(ctx context.Context) (*publish.CurrentState, err
 			if e.PropHash != "" {
 				propHashes[sub] = publish.Hash(e.PropHash)
 			}
+			// Not surfaced by the live walk, so there are no live children to validate
+			// against; fall back to the record, exactly as the id and hash do.
+			foldAnchors(e.Anchors, anchorIDs)
 		}
 
 		// Anchors: a row carrying an anchors column is the glossary-role row. Its
@@ -166,7 +170,7 @@ func (b *Backend) scanRecompute(ctx context.Context) (*publish.CurrentState, err
 // hosts lives: the executor writes a node's body as a flat list of child blocks and
 // reports hosted anchors per child, so an anchor id is always one of them. A nested
 // block could never be matched here and would read as permanently dangling.
-func seedRecordedAnchors(row queryRow, blocks []liveBlock, anchorIDs map[publish.AnchorName]publish.BackendID) (dangling bool, err error) {
+func seedRecordedAnchors(row queryRow, blocks []liveBlock, anchorIDs map[publish.AnchorName]publish.BackendID) (stale bool, err error) {
 	raw := plainText(row.Properties["anchors"])
 	if raw == "" {
 		return false, nil
@@ -176,17 +180,31 @@ func seedRecordedAnchors(row queryRow, blocks []liveBlock, anchorIDs map[publish
 		return false, err
 	}
 
+	if dangling(recorded, blocks) {
+		return true, nil
+	}
+	maps.Copy(anchorIDs, recorded)
+	return false, nil
+}
+
+// dangling reports whether any recorded anchor points at a block that is no longer a
+// live child of its host. It is the one predicate both hosts are judged by — a row
+// through its `anchors` column, a subpage through its subtree entry (#138, #142) —
+// so the two cannot drift into disagreeing about what "stale" means.
+func dangling[K comparable, V ~string](recorded map[K]V, blocks []liveBlock) bool {
+	if len(recorded) == 0 {
+		return false
+	}
 	live := make(map[string]bool, len(blocks))
 	for _, blk := range blocks {
 		live[blk.id] = true
 	}
 	for _, id := range recorded {
 		if !live[string(id)] {
-			return true, nil
+			return true
 		}
 	}
-	maps.Copy(anchorIDs, recorded)
-	return false, nil
+	return false
 }
 
 // subtreeWalk carries the state one row's live subtree walk threads through its
@@ -209,6 +227,7 @@ type subtreeWalk struct {
 	nodeIDs    map[publish.SymbolicID]publish.BackendID
 	hashes     map[publish.SymbolicID]publish.Hash
 	propHashes map[publish.SymbolicID]publish.Hash
+	anchorIDs  map[publish.AnchorName]publish.BackendID
 }
 
 // descend walks the child_page blocks of one page, recording each subpage it
@@ -254,10 +273,20 @@ func (w *subtreeWalk) descend(ctx context.Context, pageID string, blocks []liveB
 			return err
 		}
 		w.hashes[sub] = liveContentHash(subBlocks)
-		// The subpage's property hash rides its recorded subtree entry (stored-
-		// readback), even as its content hash is reconstructed live.
-		if e, ok := w.stored[subpath]; ok && e.PropHash != "" {
-			w.propHashes[sub] = publish.Hash(e.PropHash)
+		if e, ok := w.stored[subpath]; ok {
+			// The subpage's property hash rides its recorded subtree entry (stored-
+			// readback), even as its content hash is reconstructed live.
+			if e.PropHash != "" {
+				w.propHashes[sub] = publish.Hash(e.PropHash)
+			}
+			// A subpage hosts anchors exactly as a row does, so the #138 validation
+			// applies to it identically: seed a map whose blocks are all live, and on a
+			// dangling one withhold the host's content hash so it re-asserts (#142).
+			if dangling(e.Anchors, subBlocks) {
+				delete(w.hashes, sub)
+			} else {
+				foldAnchors(e.Anchors, w.anchorIDs)
+			}
 		}
 		delete(w.stored, subpath)
 
