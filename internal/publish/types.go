@@ -160,9 +160,21 @@ type NodeStamp struct {
 	// of Hash gating SetContent (the two-hash split, #110 phase 2). Empty for a DeleteNode.
 	PropHash Hash
 	// Parent is the node's parent symbolic id — "" for a top-level area-DB row, else the
-	// cluster root a subpage lives under. It routes write-back (a subpage folds into its
-	// parent's subtree map) and, on a CreateNode, wires parent-before-child ordering.
+	// page a subpage is nested under. It wires parent-before-child ordering on a
+	// CreateNode and names where the page LIVES in the mirror.
 	Parent SymbolicID
+	// Owner is the nearest ancestor that is a ROW — the node whose subtree map records
+	// this node — and "" when the node is itself a row. It is distinct from Parent
+	// because a mirror nests deeper than one level: a cluster index may itself be a
+	// subpage, and a record written to it would land on a child_page, which carries a
+	// title and none of the data source's columns (sigma/okf-tools#141).
+	//
+	// Where a node LIVES and where it is RECORDED are therefore different questions,
+	// and only the first is answered by Parent. Owner is stamped by Generation, which
+	// can see the whole source hierarchy; a backend cannot derive it, since a run may
+	// touch only some nodes and the ancestors between a node and its row need not
+	// appear in that run's provenance at all.
+	Owner SymbolicID
 	// Title is the node's display title, recorded in a subpage's subtree-map entry so a
 	// later ScanRecompute can match a live page (which carries only a title, not a repo
 	// path) back to its subpath. Empty for a DeleteNode.
@@ -182,6 +194,9 @@ func (s *NodeStamp) FillMissing(o NodeStamp) {
 	}
 	if s.Parent == "" {
 		s.Parent = o.Parent
+	}
+	if s.Owner == "" {
+		s.Owner = o.Owner
 	}
 	if s.Title == "" {
 		s.Title = o.Title
@@ -238,9 +253,9 @@ type Provenance struct {
 	Nodes map[SymbolicID]NodeProvenance
 }
 
-// NodeProvenance is one node's write-back record: its real backend id, the
-// content hash to store, its parent routing (top-level row vs. subtree-map
-// member), and any anchors its content hosts.
+// NodeProvenance is one node's write-back record: its real backend id, the content
+// hash to store, the row that records it (its own, or an ancestor's subtree map), and
+// any anchors its content hosts.
 type NodeProvenance struct {
 	// NodeStamp is the node's unresolved generation-time provenance (content and
 	// property hashes, parent symbolic id, title), carried verbatim from the
@@ -250,9 +265,15 @@ type NodeProvenance struct {
 	// ID is the node's real backend id, resolved from the run (minted for a new
 	// node, scan-seeded for a re-asserted existing one).
 	ID BackendID
-	// ParentID is the parent's resolved backend id (the row whose subtree map a
-	// subpage folds into), set only when Parent is non-empty.
-	ParentID BackendID
+	// OwnerID is the resolved backend id of the row that RECORDS this node: the
+	// nearest ancestor row's, whose subtree map the node's entry folds into. Set only
+	// when Owner is non-empty (a node that is itself a row writes its own row).
+	//
+	// There is deliberately no resolved counterpart to Parent here. Where a page LIVES
+	// is settled during execution — the executor resolves a create's parent through
+	// the transport's table — so provenance, which is only about what gets RECORDED,
+	// carries the owning row alone (sigma/okf-tools#141).
+	OwnerID BackendID
 	// Anchors are the anchors this node's content hosts, name → backend block id,
 	// written into the node's `anchors` derived column (the glossary role row).
 	Anchors map[AnchorName]BackendID

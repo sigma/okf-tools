@@ -146,6 +146,7 @@ func Generate(ctx context.Context, b *bundle.Bundle, cs *publish.CurrentState, o
 func diffDoc(d *bundle.Doc, cs *publish.CurrentState, o *options, src *hierarchy) []*Op {
 	node := publish.NodeRef(d.Rel)
 	parent := src.parent(d.Rel)
+	owner := src.owner(d.Rel)
 	hash := o.hash(d)
 	propHash := PropertyHash(d)
 	title := d.Title()
@@ -153,11 +154,11 @@ func diffDoc(d *bundle.Doc, cs *publish.CurrentState, o *options, src *hierarchy
 	// Stamp the parent, both expected hashes, and title on every op (not just the
 	// create) so publish-time write-back can route and record a touched node — new
 	// or re-asserted — and stamp both hash columns from whichever arm survives.
-	setProps := &Op{Kind: SetProperties, Node: node, Props: propsOf(d), NodeStamp: publish.NodeStamp{Parent: parent, Hash: hash, PropHash: propHash, Title: title}}
-	setContent := &Op{Kind: SetContent, Node: node, Doc: doc, Refs: refs, Anchors: anchors, NodeStamp: publish.NodeStamp{Parent: parent, Hash: hash, PropHash: propHash, Title: title}}
+	setProps := &Op{Kind: SetProperties, Node: node, Props: propsOf(d), NodeStamp: publish.NodeStamp{Parent: parent, Owner: owner, Hash: hash, PropHash: propHash, Title: title}}
+	setContent := &Op{Kind: SetContent, Node: node, Doc: doc, Refs: refs, Anchors: anchors, NodeStamp: publish.NodeStamp{Parent: parent, Owner: owner, Hash: hash, PropHash: propHash, Title: title}}
 
 	if _, exists := cs.NodeID(node); !exists {
-		return []*Op{{Kind: CreateNode, Node: node, NodeStamp: publish.NodeStamp{Parent: parent, Hash: hash, PropHash: propHash, Title: title}}, setProps, setContent}
+		return []*Op{{Kind: CreateNode, Node: node, NodeStamp: publish.NodeStamp{Parent: parent, Owner: owner, Hash: hash, PropHash: propHash, Title: title}}, setProps, setContent}
 	}
 	// Existing: gate the two arms independently, each by its own scanned hash. An arm
 	// hash-skips iff its scanned hash is present and equals the expected one; a
@@ -274,6 +275,27 @@ func (h *hierarchy) parent(rel string) publish.SymbolicID {
 		if dir == "." || dir == "/" || dir == "" {
 			return ""
 		}
+	}
+}
+
+// owner returns the symbolic id of the nearest ancestor of rel that is a ROW — the
+// node whose subtree map records rel — or "" when rel is itself a row.
+//
+// It walks the same parent chain as parent, but keeps climbing while each ancestor
+// is itself page-parented: a mirror may nest arbitrarily deep, and only a node with
+// no parent has a data-source row to hold a record (sigma/okf-tools#141). For the
+// one-level case — a leaf under a cluster index that is itself top-level — owner and
+// parent are the same node, which is why the common layout is unaffected.
+func (h *hierarchy) owner(rel string) publish.SymbolicID {
+	for cur := rel; ; {
+		p := h.parent(cur)
+		if p == "" {
+			if cur == rel {
+				return "" // rel is itself a row
+			}
+			return publish.NodeRef(cur)
+		}
+		cur = p.Rel()
 	}
 }
 

@@ -201,9 +201,12 @@ func buildProvenance(dag *optimize.TxnDAG, tbl *table, idxs []int) publish.Prove
 		np, seen := prov.Nodes[node]
 		if !seen {
 			np = publish.NodeProvenance{ID: id, NodeStamp: txn.NodeStamp}
-			if txn.Parent != "" {
-				if pid, ok := tbl.Resolve(txn.Parent); ok {
-					np.ParentID = pid
+			// Resolve the OWNING ROW — where this node's record goes — which is not the
+			// parent: the parent is where the page lives, and the two differ as soon as
+			// the mirror nests more than one level (#141).
+			if txn.Owner != "" {
+				if oid, ok := tbl.Resolve(txn.Owner); ok {
+					np.OwnerID = oid
 				}
 			}
 		}
