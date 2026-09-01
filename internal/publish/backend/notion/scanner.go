@@ -70,7 +70,7 @@ func (b *Backend) scanStored(ctx context.Context) (*publish.CurrentState, error)
 			propHashes[sym] = prop
 		}
 
-		if err := readSubtree(plainText(row.Properties["hashes"]), row.ID, claim, nodeIDs, hashes, propHashes); err != nil {
+		if err := readSubtree(plainText(row.Properties["hashes"]), row.ID, claim, nodeIDs, hashes, propHashes, anchorIDs); err != nil {
 			return nil, err
 		}
 		if err := readAnchors(plainText(row.Properties["anchors"]), anchorIDs); err != nil {
@@ -113,12 +113,22 @@ type subtreeEntry struct {
 	Hash     string `json:"hash"`
 	PropHash string `json:"prop_hash,omitempty"`
 	Title    string `json:"title,omitempty"`
+	// Anchors are the anchors this subpage's content hosts, name → block id — the
+	// subpage counterpart of a row's `anchors` column (sigma/okf-tools#142).
+	//
+	// A node's anchors have to be recorded wherever that node's record lives, and a
+	// subpage's record lives here. Without it a glossary hosted as a subpage recorded
+	// nothing, so every page citing it had a reference no later run could resolve:
+	// the run aborted, and re-asserting the glossary — the only thing that re-mints
+	// the map — never happened, because its content was unchanged. Omitted when empty,
+	// so entries for ordinary subpages are unchanged on the wire.
+	Anchors map[string]string `json:"anchors,omitempty"`
 }
 
 // readSubtree folds a row's `hashes` subtree-map column into the node/hash tables:
 // each subpath becomes node:<subpath> resolving to the stored id and hash, with the
 // same 1:1 path-uniqueness guard as top-level rows.
-func readSubtree(raw, rowID string, claim func(path, by string) error, nodeIDs map[publish.SymbolicID]publish.BackendID, hashes, propHashes map[publish.SymbolicID]publish.Hash) error {
+func readSubtree(raw, rowID string, claim func(path, by string) error, nodeIDs map[publish.SymbolicID]publish.BackendID, hashes, propHashes map[publish.SymbolicID]publish.Hash, anchorIDs map[publish.AnchorName]publish.BackendID) error {
 	sub, err := storedSubtree(raw, rowID)
 	if err != nil {
 		return err
@@ -137,8 +147,18 @@ func readSubtree(raw, rowID string, claim func(path, by string) error, nodeIDs m
 		if e.PropHash != "" {
 			propHashes[sym] = publish.Hash(e.PropHash)
 		}
+		foldAnchors(e.Anchors, anchorIDs)
 	}
 	return nil
+}
+
+// foldAnchors folds a recorded name → block-id map into the neutral anchor table.
+// Both the row's `anchors` column and a subpage's entry (#142) arrive through here,
+// so a citing page resolves an anchor identically whichever kind of node hosts it.
+func foldAnchors(recorded map[string]string, anchorIDs map[publish.AnchorName]publish.BackendID) {
+	for name, id := range recorded {
+		anchorIDs[publish.AnchorName(name)] = publish.BackendID(id)
+	}
 }
 
 // readAnchors folds the glossary-role row's `anchors` column (anchor-name → block
