@@ -23,12 +23,15 @@ import (
 //     the row's `path` and `hash` columns (and, for the glossary-role row, its
 //     `anchors` map). This is a cheap property write, never a body rewrite.
 //   - a cluster subpage (a parent) has no row of its own: its {id, hash} folds into
-//     the parent row's `hashes` subtree map (#146), merged with whatever else that
-//     map already held via a read-modify-write.
+//     its OWNING ROW's `hashes` subtree map (#146), merged with whatever else that map
+//     already held via a read-modify-write. The owning row is the nearest ancestor
+//     that is a row, which for a one-level cluster is the subpage's parent and for a
+//     nested one is further up (#141) — the distinction the parent-kind rule forces,
+//     since only a row carries the derived columns.
 func (b *Backend) WriteBack(ctx context.Context, prov publish.Provenance) error {
-	// Group subpages by their parent row so each parent's subtree map is updated in
-	// one merged write, and collect the top-level nodes for their own-row writes.
-	subByParent := map[publish.BackendID]map[string]subtreeEntry{}
+	// Group subpages by their OWNING ROW so each row's subtree map is updated in one
+	// merged write, and collect the top-level nodes for their own-row writes.
+	subByOwner := map[publish.BackendID]map[string]subtreeEntry{}
 	var topLevel []publish.SymbolicID
 
 	for node, np := range prov.Nodes {
@@ -36,13 +39,18 @@ func (b *Backend) WriteBack(ctx context.Context, prov publish.Provenance) error 
 			topLevel = append(topLevel, node)
 			continue
 		}
-		if np.ParentID == "" {
-			return fmt.Errorf("notion: write-back: subpage %s has parent %s but no resolved parent id", node, np.Parent)
+		// The record climbs to the nearest ancestor ROW, which is the only page that
+		// has the derived columns to hold it. Its immediate parent may be a child_page
+		// — a nested cluster index — and writing a column there is the #104/#128 400
+		// (sigma/okf-tools#141).
+		owner := np.OwnerID
+		if owner == "" {
+			return fmt.Errorf("notion: write-back: subpage %s is recorded by %s, which did not resolve to a row", node, np.Owner)
 		}
-		m := subByParent[np.ParentID]
+		m := subByOwner[owner]
 		if m == nil {
 			m = map[string]subtreeEntry{}
-			subByParent[np.ParentID] = m
+			subByOwner[owner] = m
 		}
 		m[node.Rel()] = subtreeEntry{ID: string(np.ID), Hash: string(np.Hash), PropHash: string(np.PropHash), Title: np.Title}
 	}
@@ -70,26 +78,26 @@ func (b *Backend) WriteBack(ctx context.Context, prov publish.Provenance) error 
 		}
 	}
 
-	// Subtree-map writes: read-modify-write each parent row's `hashes` column so a
+	// Subtree-map writes: read-modify-write each owning row's `hashes` column so a
 	// new subpage's {id, hash} is added without dropping the map's other entries.
-	parents := make([]publish.BackendID, 0, len(subByParent))
-	for id := range subByParent {
-		parents = append(parents, id)
+	owners := make([]publish.BackendID, 0, len(subByOwner))
+	for id := range subByOwner {
+		owners = append(owners, id)
 	}
-	sort.Slice(parents, func(i, j int) bool { return parents[i] < parents[j] })
-	for _, parentID := range parents {
-		if err := b.mergeSubtree(ctx, string(parentID), subByParent[parentID]); err != nil {
-			return fmt.Errorf("notion: write-back subtree of %s: %w", parentID, err)
+	sort.Slice(owners, func(i, j int) bool { return owners[i] < owners[j] })
+	for _, ownerID := range owners {
+		if err := b.mergeSubtree(ctx, string(ownerID), subByOwner[ownerID]); err != nil {
+			return fmt.Errorf("notion: write-back subtree of %s: %w", ownerID, err)
 		}
 	}
 	return nil
 }
 
-// mergeSubtree read-modify-writes a parent row's `hashes` subtree map: it reads the
+// mergeSubtree read-modify-writes an owning row's `hashes` subtree map: it reads the
 // current column, folds in the run's new/updated subpage entries, and PATCHes the
 // merged map back — so adding one subpage never clobbers the map's other members.
-func (b *Backend) mergeSubtree(ctx context.Context, parentID string, updates map[string]subtreeEntry) error {
-	merged, err := b.currentSubtree(ctx, parentID)
+func (b *Backend) mergeSubtree(ctx context.Context, ownerID string, updates map[string]subtreeEntry) error {
+	merged, err := b.currentSubtree(ctx, ownerID)
 	if err != nil {
 		return err
 	}
@@ -100,14 +108,14 @@ func (b *Backend) mergeSubtree(ctx context.Context, parentID string, updates map
 	if err != nil {
 		return fmt.Errorf("encode subtree map: %w", err)
 	}
-	if err := b.patchProps(ctx, parentID, map[string]any{"hashes": b.richTextProp(string(enc))}); err != nil {
+	if err := b.patchProps(ctx, ownerID, map[string]any{"hashes": b.richTextProp(string(enc))}); err != nil {
 		return err
 	}
-	b.rememberSubtree(parentID, merged)
+	b.rememberSubtree(ownerID, merged)
 	return nil
 }
 
-// currentSubtree reports a parent row's subtree map as this run last left it: from
+// currentSubtree reports an owning row's subtree map as this run last left it: from
 // the run's own memory when it has already merged into that row, otherwise read
 // from Notion.
 //
@@ -119,29 +127,29 @@ func (b *Backend) mergeSubtree(ctx context.Context, parentID string, updates map
 // does not promise — and would spend N extra requests to learn something the run
 // already knows. The map is per-Backend and so per-run: it never outlives the writes
 // it describes.
-func (b *Backend) currentSubtree(ctx context.Context, parentID string) (map[string]subtreeEntry, error) {
+func (b *Backend) currentSubtree(ctx context.Context, ownerID string) (map[string]subtreeEntry, error) {
 	b.subtreeMu.Lock()
-	cached, ok := b.subtrees[parentID]
+	cached, ok := b.subtrees[ownerID]
 	b.subtreeMu.Unlock()
 	if ok {
 		return maps.Clone(cached), nil
 	}
 
-	current, err := b.getPageProps(ctx, parentID)
+	current, err := b.getPageProps(ctx, ownerID)
 	if err != nil {
 		return nil, err
 	}
-	return storedSubtree(plainText(current["hashes"]), parentID)
+	return storedSubtree(plainText(current["hashes"]), ownerID)
 }
 
-// rememberSubtree records the map this run just wrote to a parent row, so the next
+// rememberSubtree records the map this run just wrote to an owning row, so the next
 // merge into that row starts from it rather than from a re-read.
-func (b *Backend) rememberSubtree(parentID string, merged map[string]subtreeEntry) {
+func (b *Backend) rememberSubtree(ownerID string, merged map[string]subtreeEntry) {
 	b.subtreeMu.Lock()
 	if b.subtrees == nil {
 		b.subtrees = map[string]map[string]subtreeEntry{}
 	}
-	b.subtrees[parentID] = maps.Clone(merged)
+	b.subtrees[ownerID] = maps.Clone(merged)
 	b.subtreeMu.Unlock()
 }
 

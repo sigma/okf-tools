@@ -69,8 +69,8 @@ func TestWriteBackSubpageFoldsIntoParentSubtree(t *testing.T) {
 	prov := publish.Provenance{Nodes: map[publish.SymbolicID]publish.NodeProvenance{
 		"node:docs/adr/new.md": {
 			ID:        "page-new",
-			ParentID:  "page-root",
-			NodeStamp: publish.NodeStamp{Hash: "hNew", Parent: "node:index.md", Title: "New Page"},
+			OwnerID:   "page-root", // one level: the parent IS the owning row
+			NodeStamp: publish.NodeStamp{Hash: "hNew", Parent: "node:index.md", Owner: "node:index.md", Title: "New Page"},
 		},
 	}}
 	if err := be.WriteBack(context.Background(), prov); err != nil {
@@ -201,13 +201,13 @@ func TestSubtreeMergeAcrossSeparateWriteBacks(t *testing.T) {
 
 	first := publish.Provenance{Nodes: map[publish.SymbolicID]publish.NodeProvenance{
 		"node:cluster/a.md": {
-			ID: "page-a", ParentID: "page-parent",
+			ID: "page-a", OwnerID: "page-parent",
 			NodeStamp: publish.NodeStamp{Hash: "hA", Parent: "node:cluster/index.md", Title: "A"},
 		},
 	}}
 	second := publish.Provenance{Nodes: map[publish.SymbolicID]publish.NodeProvenance{
 		"node:cluster/b.md": {
-			ID: "page-b", ParentID: "page-parent",
+			ID: "page-b", OwnerID: "page-parent",
 			NodeStamp: publish.NodeStamp{Hash: "hB", Parent: "node:cluster/index.md", Title: "B"},
 		},
 	}}
@@ -265,7 +265,7 @@ func TestSubtreeMergeDoesNotRereadWhatItJustWrote(t *testing.T) {
 	} {
 		prov := publish.Provenance{Nodes: map[publish.SymbolicID]publish.NodeProvenance{
 			publish.SymbolicID(sub.node): {
-				ID: publish.BackendID(sub.id), ParentID: "page-parent",
+				ID: publish.BackendID(sub.id), OwnerID: "page-parent",
 				NodeStamp: publish.NodeStamp{Hash: publish.Hash(sub.hash), Parent: "node:cluster/index.md"},
 			},
 		}}

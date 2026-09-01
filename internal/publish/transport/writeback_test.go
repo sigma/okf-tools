@@ -38,7 +38,7 @@ func TestTransportWritesBackProvenance(t *testing.T) {
 			Txn:       fakeTxn(be, "node:docs/adr/sub.md"),
 			Group:     "node:docs/adr/sub.md",
 			Produces:  []publish.SymbolicID{"node:docs/adr/sub.md"},
-			NodeStamp: publish.NodeStamp{Hash: "hS", Parent: "node:index.md", Title: "Sub Page"},
+			NodeStamp: publish.NodeStamp{Hash: "hS", Parent: "node:index.md", Owner: "node:index.md", Title: "Sub Page"},
 		},
 	}}
 
@@ -71,8 +71,8 @@ func TestTransportWritesBackProvenance(t *testing.T) {
 	if sub.Hash != "hS" || sub.Parent != "node:index.md" || sub.Title != "Sub Page" {
 		t.Errorf("subpage provenance = %+v, want hash hS, parent node:index.md, title Sub Page", sub)
 	}
-	if sub.ParentID != "page-index" {
-		t.Errorf("subpage ParentID = %q, want the seed-resolved page-index", sub.ParentID)
+	if sub.OwnerID != "page-index" {
+		t.Errorf("subpage OwnerID = %q, want the seed-resolved page-index", sub.OwnerID)
 	}
 }
 

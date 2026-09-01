@@ -250,6 +250,16 @@ func (f *fakeNotion) createPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	f.children[pageID] = childIDs
+	// A page-parented create appears in its PARENT's block list as a child_page, which
+	// is how Notion represents nesting and how the recompute walk finds a subpage at
+	// all (sigma/okf-tools#141).
+	if childPage {
+		parentID, _ := parent["page_id"].(string)
+		f.blocks[parentID] = append(f.blocks[parentID], map[string]any{
+			"id": pageID, "type": nTypeChildPage,
+			nTypeChildPage: map[string]any{"title": titleOf(body)},
+		})
+	}
 	// A top-level create is a data-source row, so the next query must return it —
 	// with the properties the create carried (its `path`, #135).
 	if !childPage {
@@ -619,4 +629,22 @@ func mustJSON(t *testing.T, v any) string {
 		t.Fatalf("marshal: %v", err)
 	}
 	return string(b)
+}
+
+// titleOf reads the plain title text out of a create's properties, the value Notion
+// echoes back on a child_page block.
+func titleOf(body map[string]any) string {
+	props, _ := body["properties"].(map[string]any)
+	title, _ := props["title"].(map[string]any)
+	spans, _ := title["title"].([]any)
+	var out string
+	for _, span := range spans {
+		m, _ := span.(map[string]any)
+		if t, ok := m["text"].(map[string]any); ok {
+			if c, ok := t["content"].(string); ok {
+				out += c
+			}
+		}
+	}
+	return out
 }

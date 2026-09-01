@@ -90,33 +90,12 @@ func (b *Backend) scanRecompute(ctx context.Context) (*publish.CurrentState, err
 			return nil, err
 		}
 		byID, byTitle := subtreeIndexes(stored)
-		for _, blk := range blocks {
-			if blk.typ != nTypeChildPage {
-				continue
-			}
-			subpath, ok := byID[blk.id]
-			if !ok {
-				subpath, ok = byTitle[blk.childPageTitle]
-			}
-			if !ok {
-				continue
-			}
-			if err := claim(subpath, "subtree of "+row.ID); err != nil {
-				return nil, err
-			}
-			sub := publish.NodeRef(subpath)
-			nodeIDs[sub] = publish.BackendID(blk.id) // live id, healing a stale stored one
-			subBlocks, err := b.listLiveBlocks(ctx, blk.id)
-			if err != nil {
-				return nil, err
-			}
-			hashes[sub] = liveContentHash(subBlocks)
-			// The subpage's property hash rides its stored subtree entry (stored-
-			// readback), even as its content hash is reconstructed live.
-			if e, ok := stored[subpath]; ok && e.PropHash != "" {
-				propHashes[sub] = publish.Hash(e.PropHash)
-			}
-			delete(stored, subpath)
+		walk := &subtreeWalk{
+			be: b, rowID: row.ID, stored: stored, byID: byID, byTitle: byTitle,
+			claim: claim, nodeIDs: nodeIDs, hashes: hashes, propHashes: propHashes,
+		}
+		if err := walk.descend(ctx, row.ID, blocks); err != nil {
+			return nil, err
 		}
 		for subpath, e := range stored {
 			if err := claim(subpath, "subtree of "+row.ID); err != nil {
@@ -208,6 +187,85 @@ func seedRecordedAnchors(row queryRow, blocks []liveBlock, anchorIDs map[publish
 	}
 	maps.Copy(anchorIDs, recorded)
 	return false, nil
+}
+
+// subtreeWalk carries the state one row's live subtree walk threads through its
+// recursion: what the row RECORDS (stored, and the two reverse lookups into it) and
+// where the walk writes what it finds. It exists so the descent can recurse without
+// passing eight arguments down each level.
+type subtreeWalk struct {
+	be *Backend
+	// What the row records: the subtree map, and the two reverse lookups a live
+	// child_page is matched through (by id, or by title once the id has gone stale).
+	rowID   string
+	stored  map[string]subtreeEntry
+	byID    map[string]string
+	byTitle map[string]string
+	// claim guards the mirror's 1:1 path invariant across the whole scan, and doubles
+	// as this walk's cycle guard — see descend.
+	claim func(path, by string) error
+
+	// Where the walk writes what it finds.
+	nodeIDs    map[publish.SymbolicID]publish.BackendID
+	hashes     map[publish.SymbolicID]publish.Hash
+	propHashes map[publish.SymbolicID]publish.Hash
+}
+
+// descend walks the child_page blocks of one page, recording each subpage it
+// recognises and then recursing into it.
+//
+// It recurses because a mirror nests deeper than one level: a cluster index is a
+// page like any other and may hold subpages of its own, and every one of them is
+// recorded in the same row's map, which is what makes them reachable from here
+// (sigma/okf-tools#141). Walking only the row's direct children would leave a
+// grandchild's live content unread while the scan still claimed to cover it, so the
+// mode would report a stored hash as though it had been verified live.
+//
+// A live child_page carries only a page id and a title, never the repo path, so it is
+// matched back to a recorded subpath by id (unchanged) or, when the id has gone
+// stale, by the recorded title. A child_page matching neither is not one we own by
+// record and is skipped — never given a fabricated subpath id.
+//
+// TERMINATION rests on claim: a subpath can be claimed once, so a live tree that
+// somehow cycles (a page reachable from itself) fails loudly on the second claim
+// instead of recursing forever. The walk itself imposes no depth limit, because the
+// legitimate depth is whatever the source hierarchy has. Each descent names its
+// containing page as the claimant, so the error identifies the two places a path was
+// reached from rather than naming the row twice.
+func (w *subtreeWalk) descend(ctx context.Context, pageID string, blocks []liveBlock) error {
+	for _, blk := range blocks {
+		if blk.typ != nTypeChildPage {
+			continue
+		}
+		subpath, ok := w.byID[blk.id]
+		if !ok {
+			subpath, ok = w.byTitle[blk.childPageTitle]
+		}
+		if !ok {
+			continue
+		}
+		if err := w.claim(subpath, "child of "+pageID+" (subtree of "+w.rowID+")"); err != nil {
+			return err
+		}
+		sub := publish.NodeRef(subpath)
+		w.nodeIDs[sub] = publish.BackendID(blk.id) // live id, healing a stale stored one
+		subBlocks, err := w.be.listLiveBlocks(ctx, blk.id)
+		if err != nil {
+			return err
+		}
+		w.hashes[sub] = liveContentHash(subBlocks)
+		// The subpage's property hash rides its recorded subtree entry (stored-
+		// readback), even as its content hash is reconstructed live.
+		if e, ok := w.stored[subpath]; ok && e.PropHash != "" {
+			w.propHashes[sub] = publish.Hash(e.PropHash)
+		}
+		delete(w.stored, subpath)
+
+		if err := w.descend(ctx, blk.id, subBlocks); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // subtreeIndexes builds the reverse lookups the live child_page walk matches
