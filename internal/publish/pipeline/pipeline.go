@@ -26,6 +26,15 @@ type Result struct {
 	// TxnCount is the number of transactions Transport executed against the backend
 	// this run — the backend-call count a scheduled publish wants near zero.
 	TxnCount int
+	// Stats is what the run cost in API traffic, for a backend that meters it (the
+	// backend.RequestReporter role). It stays the zero value for a backend that does
+	// not — the fake and the filesystem export issue no requests.
+	Stats publish.RequestStats
+	// Metered says whether Stats was actually reported, so a caller can tell "this
+	// backend issued no requests" from "this backend counts none". Without it, zeros
+	// are ambiguous and a bin has to re-derive the answer from the backend's concrete
+	// type — the switch the RequestReporter role exists to avoid.
+	Metered bool
 }
 
 // Option configures Run.
@@ -107,9 +116,15 @@ func Run(ctx context.Context, be backend.Backend, b *bundle.Bundle, opts ...Opti
 		return nil, fmt.Errorf("transport: %w", err)
 	}
 
-	return &Result{
+	out := &Result{
 		Nodes:    res.Nodes,
 		Anchors:  res.Anchors,
 		TxnCount: len(dag.Txns),
-	}, nil
+	}
+	// Read the traffic meter last, so it covers every stage that issued requests:
+	// Provision, Scan, the drain, and write-back alike.
+	if rr, ok := be.(backend.RequestReporter); ok {
+		out.Stats, out.Metered = rr.RequestStats(), true
+	}
+	return out, nil
 }

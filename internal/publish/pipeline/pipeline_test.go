@@ -5,9 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/sigma/okf-tools/internal/bundle"
 	"github.com/sigma/okf-tools/internal/publish"
+	"github.com/sigma/okf-tools/internal/publish/backend"
 	"github.com/sigma/okf-tools/internal/publish/backend/fake"
 	"github.com/sigma/okf-tools/internal/publish/graph"
 )
@@ -241,5 +243,85 @@ func TestRunBannerThreadsIntoChangeDetection(t *testing.T) {
 	}
 	if res2.TxnCount == 0 {
 		t.Fatal("a banner over a plain-hash seed should re-publish, got 0 txns")
+	}
+}
+
+// --- request accounting (#134) ----------------------------------------------
+
+// meteredBackend is a fake that also meters its traffic — the optional
+// backend.RequestReporter role the Notion backend implements for real.
+type meteredBackend struct {
+	*fake.Backend
+	stats publish.RequestStats
+}
+
+func (m *meteredBackend) RequestStats() publish.RequestStats { return m.stats }
+
+// A backend that meters its API traffic has that traffic reported in the Result,
+// so the bin can print it alongside the transaction count.
+func TestRunReportsBackendRequestStats(t *testing.T) {
+	b := loadBundle(t, smallBundle())
+	want := publish.RequestStats{Requests: 41, Throttled: 2, Transient: 1}
+	be := &meteredBackend{Backend: fake.New(fake.WithScan(scanAfterPublish(b))), stats: want}
+
+	res, err := Run(context.Background(), be, b)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Stats != want || !res.Metered {
+		t.Errorf("Stats = %+v (metered=%v), want %+v metered", res.Stats, res.Metered, want)
+	}
+}
+
+// A backend that meters nothing (the fake, the filesystem export) leaves the
+// stats at zero rather than making the Result unusable.
+func TestRunWithoutRequestReporterReportsZeroStats(t *testing.T) {
+	b := loadBundle(t, smallBundle())
+	res, err := Run(context.Background(), fake.New(), b)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Stats != (publish.RequestStats{}) || res.Metered {
+		t.Errorf("Stats = %+v (metered=%v), want zeros and unmetered for a backend that issues no requests",
+			res.Stats, res.Metered)
+	}
+}
+
+// The operator's pacing lever reaches the backend: a configured interval selects a
+// Notion backend that meters traffic, and an unset one leaves the default in place.
+func TestSelectBackendAcceptsAPacingInterval(t *testing.T) {
+	for _, d := range []*time.Duration{nil, ptr(0 * time.Second), ptr(50 * time.Millisecond), ptr(-1 * time.Second)} {
+		be, err := SelectBackend(BackendNotion, &Config{NotionToken: "tok", NotionDBID: "ds1", NotionInterval: d})
+		if err != nil {
+			t.Fatalf("SelectBackend(interval=%v): %v", d, err)
+		}
+		if _, ok := be.(backend.RequestReporter); !ok {
+			t.Errorf("interval=%v: notion backend must meter its traffic", d)
+		}
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
+
+// An explicitly configured zero is passed to the backend rather than mistaken for
+// "unset": the two readings differ, and only one matches the backend's contract
+// that a non-positive interval paces nothing. This is the `--interval 0` trap.
+func TestZeroIntervalIsExplicitNotUnset(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		cfg     *Config
+		want    time.Duration
+		wantSet bool
+	}{
+		{"unset leaves the backend default", &Config{}, 0, false},
+		{"zero disables pacing", &Config{NotionInterval: ptr(0 * time.Second)}, 0, true},
+		{"a duration paces at it", &Config{NotionInterval: ptr(50 * time.Millisecond)}, 50 * time.Millisecond, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := intervalOverride(tc.cfg)
+			if got != tc.want || ok != tc.wantSet {
+				t.Errorf("intervalOverride = (%v, %v), want (%v, %v)", got, ok, tc.want, tc.wantSet)
+			}
+		})
 	}
 }

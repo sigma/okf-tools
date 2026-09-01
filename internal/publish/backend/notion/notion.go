@@ -86,6 +86,9 @@ type Backend struct {
 	// visible in its output rather than merely slow.
 	limits limiter
 	logf   func(format string, args ...any)
+	// stats accumulates the run's API traffic (attempts, retries) so the pipeline
+	// can report what the run actually cost — see RequestStats.
+	stats counters
 
 	// schema is the parsed schema.json driving two things: provisioning (the
 	// Provisioner role reconciles the data source's columns against it) and typed
@@ -175,6 +178,16 @@ func WithNotionVersion(v string) Option {
 	}
 }
 
+// WithReadBurst sets how many read-only requests may be admitted back to back
+// before reads, too, pace at the sustained rate (DefaultReadBurst by default). A
+// burst of 1 makes reads pace exactly like writes — the pre-#134 behavior, kept
+// reachable for an operator who needs the most conservative possible traffic —
+// and a non-positive burst disables read pacing outright, the sibling of what a
+// non-positive WithInterval does to both policies.
+func WithReadBurst(n int) Option {
+	return func(b *Backend) { b.limits.readBurst = n }
+}
+
 // WithInterval sets the global minimum spacing between two Notion requests — the
 // pacing every call inherits from the shared request chokepoint, whatever page or
 // route it targets. A non-positive interval disables pacing entirely, which is the
@@ -226,6 +239,7 @@ func New(opts ...Option) *Backend {
 		http:          http.DefaultClient,
 		limits: limiter{
 			interval:    DefaultInterval,
+			readBurst:   DefaultReadBurst,
 			maxAttempts: defaultMaxAttempts,
 			now:         time.Now,
 			sleep:       realSleep,

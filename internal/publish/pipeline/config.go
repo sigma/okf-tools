@@ -13,6 +13,7 @@ package pipeline
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/sigma/okf-tools/internal/areas"
 	"github.com/sigma/okf-tools/internal/schema"
@@ -47,6 +48,16 @@ type Config struct {
 	// OutDir is the output directory the filesystem/export backend (the dry-run
 	// mode) writes its exported tree under. Empty means the backend's own default.
 	OutDir string
+	// NotionInterval is the minimum spacing between two Notion WRITES, and the rate
+	// the read bucket refills at (sigma/okf-tools#134). It is the operator's lever on
+	// a run that is pacing-bound — the only remedy for a mirror whose traffic pattern
+	// the default does not suit.
+	//
+	// It is a POINTER because "unset" and "zero" are different answers and the
+	// backend's contract gives zero a meaning: nil leaves notion.DefaultInterval in
+	// place, while a non-positive value disables pacing outright. Collapsing the two
+	// would make `--interval 0` silently pace at the default.
+	NotionInterval *time.Duration
 }
 
 // LoadOptions parameterizes LoadConfig — the resolved flag/env inputs. Paths are

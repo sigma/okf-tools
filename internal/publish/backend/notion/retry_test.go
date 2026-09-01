@@ -359,11 +359,11 @@ func TestPropertyPatchRetriedOn5xx(t *testing.T) {
 
 // --- pacing -----------------------------------------------------------------
 
-// Pacing is global: successive requests are spaced by the interval regardless of
-// which page or route they target.
-func TestPacingIsGlobalAcrossRoutes(t *testing.T) {
+// Read pacing is global too — not per page. Reads burst, but they draw on one
+// shared bucket, so a run that reads N pages spends N tokens rather than one each.
+func TestReadBucketIsSharedAcrossRoutes(t *testing.T) {
 	interval := 100 * time.Millisecond
-	be, _, clock := newStub(t, []Option{WithInterval(interval)},
+	be, _, clock := newStub(t, []Option{WithInterval(interval), WithReadBurst(2)},
 		stubResp{status: http.StatusOK, body: `{}`},
 	)
 
@@ -374,15 +374,10 @@ func TestPacingIsGlobalAcrossRoutes(t *testing.T) {
 		}
 	}
 
-	// Three requests to three distinct pages: the first goes immediately, the two
-	// after it each wait one interval. Per-page pacing would have slept never.
-	if len(clock.slept) != 2 {
-		t.Fatalf("slept %d time(s), want 2: %v", len(clock.slept), clock.slept)
-	}
-	for i, d := range clock.slept {
-		if d != interval {
-			t.Errorf("sleep %d = %v, want %v", i, d, interval)
-		}
+	// Two tokens, three distinct pages: the third waits. A per-page bucket would
+	// have slept never.
+	if len(clock.slept) != 1 || clock.slept[0] != interval {
+		t.Errorf("slept %v, want one wait of %v — the bucket is shared, not per page", clock.slept, interval)
 	}
 }
 
@@ -472,5 +467,232 @@ func TestWriteBackIsPaced(t *testing.T) {
 	// Two PATCHes: the second one waits out the interval behind the first.
 	if len(clock.slept) != 1 || clock.slept[0] != interval {
 		t.Errorf("slept = %v, want [%v] — write-back must be paced too", clock.slept, interval)
+	}
+}
+
+// --- read/write pacing split (#134) -----------------------------------------
+
+// totalSlept sums a virtual clock's sleeps — the simulated wall time a run spent
+// waiting at the admission gate.
+func totalSlept(c *fakeClock) time.Duration {
+	var sum time.Duration
+	for _, d := range c.slept {
+		sum += d
+	}
+	return sum
+}
+
+// The headline property of #134: read-only traffic is admitted from a burstable
+// bucket rather than serialized at the write interval, so N reads cost materially
+// less simulated time than N writes under the identical configuration.
+func TestReadsCostLessThanWrites(t *testing.T) {
+	const n = 14
+	interval := 100 * time.Millisecond
+	ctx := context.Background()
+
+	reader, _, readClock := newStub(t, []Option{WithInterval(interval)}, stubResp{status: http.StatusOK, body: `{}`})
+	for i := 0; i < n; i++ {
+		if err := reader.do(ctx, http.MethodGet, "/blocks/x/children", nil, nil); err != nil {
+			t.Fatalf("read %d: %v", i, err)
+		}
+	}
+
+	writer, _, writeClock := newStub(t, []Option{WithInterval(interval)}, stubResp{status: http.StatusOK, body: `{}`})
+	for i := 0; i < n; i++ {
+		if err := writer.do(ctx, http.MethodPatch, "/pages/x", nil, nil); err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+	}
+
+	readTime, writeTime := totalSlept(readClock), totalSlept(writeClock)
+	if readTime >= writeTime {
+		t.Errorf("%d reads waited %v, %d writes waited %v — reads must not pay the write pacing",
+			n, readTime, n, writeTime)
+	}
+	// The burst is free: only the reads beyond the bucket's capacity wait at all.
+	if got, want := len(readClock.slept), n-DefaultReadBurst; got != want {
+		t.Errorf("reads slept %d time(s), want %d (burst of %d admitted immediately): %v",
+			got, want, DefaultReadBurst, readClock.slept)
+	}
+}
+
+// Write pacing is untouched by the split: successive writes are still spaced by
+// the interval regardless of which route they target.
+func TestWritesStillPacedAcrossRoutes(t *testing.T) {
+	interval := 100 * time.Millisecond
+	be, _, clock := newStub(t, []Option{WithInterval(interval)}, stubResp{status: http.StatusOK, body: `{}`})
+
+	ctx := context.Background()
+	for _, path := range []string{"/pages/a", "/pages/b", "/blocks/c"} {
+		if err := be.do(ctx, http.MethodPatch, path, nil, nil); err != nil {
+			t.Fatalf("do %s: %v", path, err)
+		}
+	}
+	if len(clock.slept) != 2 {
+		t.Fatalf("slept %d time(s), want 2: %v", len(clock.slept), clock.slept)
+	}
+	for i, d := range clock.slept {
+		if d != interval {
+			t.Errorf("sleep %d = %v, want %v", i, d, interval)
+		}
+	}
+}
+
+// Once its burst is spent, the read bucket refills at the sustained rate the
+// interval names — reads are cheaper than writes, not unlimited.
+func TestReadBucketRefillsAtTheSustainedRate(t *testing.T) {
+	interval := 100 * time.Millisecond
+	be, _, clock := newStub(t, []Option{WithInterval(interval)}, stubResp{status: http.StatusOK, body: `{}`})
+
+	ctx := context.Background()
+	for i := 0; i < DefaultReadBurst+3; i++ {
+		if err := be.do(ctx, http.MethodGet, "/pages/x", nil, nil); err != nil {
+			t.Fatalf("read %d: %v", i, err)
+		}
+	}
+	if len(clock.slept) != 3 {
+		t.Fatalf("slept %d time(s), want 3: %v", len(clock.slept), clock.slept)
+	}
+	for i, d := range clock.slept {
+		if d != interval {
+			t.Errorf("post-burst sleep %d = %v, want the sustained interval %v", i, d, interval)
+		}
+	}
+}
+
+// The classifier reads the request, not a caller's say-so: the data-source query
+// is a read in POST's clothing, and its cursor pages burst like any other read.
+func TestDataSourceQueryIsAdmittedAsARead(t *testing.T) {
+	interval := 100 * time.Millisecond
+	be, _, clock := newStub(t, []Option{WithInterval(interval)}, stubResp{status: http.StatusOK, body: `{}`})
+
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		if err := be.do(ctx, http.MethodPost, "/data_sources/ds1/query", queryReq{PageSize: 100}, nil); err != nil {
+			t.Fatalf("query %d: %v", i, err)
+		}
+	}
+	if len(clock.slept) != 0 {
+		t.Errorf("the paginated scan query must burst, slept %v", clock.slept)
+	}
+}
+
+// The classifier fails CLOSED: a route it does not recognize is paced as a write,
+// so a call added later is never silently promoted to the cheap policy.
+func TestUnknownRouteIsPacedAsAWrite(t *testing.T) {
+	interval := 100 * time.Millisecond
+	ctx := context.Background()
+
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodPost, "/pages"},                  // the create — a write
+		{http.MethodDelete, "/blocks/x"},             // the archive — a write
+		{http.MethodPost, "/data_sources/ds1/embed"}, // not a route this client knows
+		{http.MethodPut, "/pages/x"},                 // not a method this client uses
+	} {
+		be, _, clock := newStub(t, []Option{WithInterval(interval)}, stubResp{status: http.StatusOK, body: `{}`})
+		for i := 0; i < 2; i++ {
+			if err := be.do(ctx, tc.method, tc.path, nil, nil); err != nil {
+				t.Fatalf("%s %s: %v", tc.method, tc.path, err)
+			}
+		}
+		if len(clock.slept) != 1 || (len(clock.slept) == 1 && clock.slept[0] != interval) {
+			t.Errorf("%s %s: slept %v, want one wait of %v — unknown routes pace as writes",
+				tc.method, tc.path, clock.slept, interval)
+		}
+	}
+}
+
+// --- request accounting (#134) ----------------------------------------------
+
+// The run's request count includes every attempt, and a retried 429 is counted as
+// throttling — the two numbers that tell "slow because throttled" from "slow
+// because it issued thousands of requests".
+func TestRequestStatsCountAttemptsAndRetries(t *testing.T) {
+	be, _, _ := newStub(t, nil,
+		stubResp{status: http.StatusTooManyRequests, body: `{}`},
+		stubResp{status: http.StatusServiceUnavailable, body: `{}`},
+		stubResp{status: http.StatusOK, body: `{}`},
+	)
+
+	if err := be.do(context.Background(), http.MethodGet, "/pages/x", nil, nil); err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	got := be.RequestStats()
+	want := publish.RequestStats{Requests: 3, Throttled: 1, Transient: 1}
+	if got != want {
+		t.Errorf("stats = %+v, want %+v", got, want)
+	}
+}
+
+// A backend that issued nothing reports zeros rather than nothing.
+func TestRequestStatsStartAtZero(t *testing.T) {
+	be, _, _ := newStub(t, nil, stubResp{status: http.StatusOK, body: `{}`})
+	if got := (be.RequestStats()); got != (publish.RequestStats{}) {
+		t.Errorf("stats = %+v, want zeros", got)
+	}
+}
+
+// The reported request count is the truth, not an estimate: it equals what the
+// server actually received across a whole publish — retried attempts included.
+func TestRequestStatsMatchWhatTheServerReceived(t *testing.T) {
+	f := newFakeNotion()
+	f.throttle = 3 // the run's first three requests come back 429
+	clock := newFakeClock()
+	be := newServer(t, f, withClock(clock.now, clock.doSleep), WithLogger(func(string, ...any) {}))
+
+	g := &graph.Graph{Ops: []*graph.Op{
+		createOp("node:a.md"), propsOp("node:a.md"),
+		contentOpBlocks("node:a.md", publish.Block{Content: para(txt("Hello"))}),
+	}}
+	dag := optimize.Optimize(g, be, be)
+	if _, err := transport.New(be).Run(context.Background(), dag, publish.NewCurrentState(nil, nil, nil)); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	got := be.RequestStats()
+	f.mu.Lock()
+	received := f.received
+	f.mu.Unlock()
+
+	if got.Requests != received {
+		t.Errorf("reported %d request(s), server received %d", got.Requests, received)
+	}
+	if got.Requests == 0 {
+		t.Fatal("a publish reported zero requests")
+	}
+	if got.Throttled != 3 {
+		t.Errorf("throttled = %d, want the 3 injected 429s", got.Throttled)
+	}
+	if got.Transient != 0 {
+		t.Errorf("transient = %d, want 0 — the fake served no 5xx", got.Transient)
+	}
+}
+
+// WithReadBurst carries WithInterval's contract: a non-positive value disables the
+// policy it configures — here, read pacing — rather than clamping to some minimum.
+func TestNonPositiveReadBurstDisablesReadPacing(t *testing.T) {
+	interval := 100 * time.Millisecond
+	be, _, clock := newStub(t, []Option{WithInterval(interval), WithReadBurst(0)},
+		stubResp{status: http.StatusOK, body: `{}`},
+	)
+
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		if err := be.do(ctx, http.MethodGet, "/pages/x", nil, nil); err != nil {
+			t.Fatalf("read %d: %v", i, err)
+		}
+	}
+	if len(clock.slept) != 0 {
+		t.Errorf("read burst 0 should disable read pacing, slept %v", clock.slept)
+	}
+	// Writes are untouched by it: the two policies are configured independently.
+	if err := be.do(ctx, http.MethodPatch, "/pages/x", nil, nil); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := be.do(ctx, http.MethodPatch, "/pages/x", nil, nil); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if len(clock.slept) != 1 || clock.slept[0] != interval {
+		t.Errorf("writes slept %v, want one wait of %v", clock.slept, interval)
 	}
 }
