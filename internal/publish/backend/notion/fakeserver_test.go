@@ -26,9 +26,25 @@ type fakeNotion struct {
 	// GET /blocks/{id}/children can echo them for anchor mapping.
 	children map[string][]string
 
+	// blocks maps a page id to the child blocks the CLIENT actually wrote, each
+	// carrying its minted id. Serving these back is what makes a write-then-read
+	// round trip honest: a hand-seeded live block can have a shape the executor could
+	// never produce, and a scan keyed on that shape passes here while failing against
+	// every real mirror (sigma/okf-tools#138).
+	//
+	// SECOND in the read precedence (after liveBlocks, before the id-only children
+	// echo), so a test that seeds canned blocks for a page still gets them.
+	blocks map[string][]map[string]any
+
 	// liveBlocks maps a page id to the canned live block objects GET
 	// /blocks/{id}/children serves the ScanRecompute walk (full block objects, not
-	// just ids). When set for a page it takes precedence over children.
+	// just ids), for a page no test actually published.
+	//
+	// It is FIRST in the precedence a read follows — liveBlocks, then blocks, then
+	// children — which is a hazard worth naming: a canned shape outranks what was
+	// really written, and a scan keyed on a shape the executor cannot produce then
+	// passes here while failing on every live mirror (#138). Prefer publishing
+	// through the executor and letting `blocks` answer.
 	liveBlocks map[string][]map[string]any
 
 	// pageProps maps a page id to the canned properties GET /pages/{id} serves the
@@ -82,6 +98,7 @@ type recordedReq struct {
 func newFakeNotion() *fakeNotion {
 	return &fakeNotion{
 		children:   map[string][]string{},
+		blocks:     map[string][]map[string]any{},
 		liveBlocks: map[string][]map[string]any{},
 		pageProps:  map[string]map[string]any{},
 		dsProps:    map[string]map[string]any{},
@@ -225,12 +242,24 @@ func (f *fakeNotion) createPage(w http.ResponseWriter, r *http.Request) {
 	pageID := fmt.Sprintf("page-%d", f.seq)
 	var childIDs []string
 	if ch, ok := body["children"].([]any); ok {
-		for range ch {
+		for _, raw := range ch {
 			f.seq++
-			childIDs = append(childIDs, fmt.Sprintf("block-%d", f.seq))
+			id := fmt.Sprintf("block-%d", f.seq)
+			childIDs = append(childIDs, id)
+			f.blocks[pageID] = append(f.blocks[pageID], storedBlock(id, raw))
 		}
 	}
 	f.children[pageID] = childIDs
+	// A top-level create is a data-source row, so the next query must return it —
+	// with the properties the create carried (its `path`, #135).
+	if !childPage {
+		props, _ := body["properties"].(map[string]any)
+		stored := map[string]any{}
+		for name, v := range props {
+			stored[name] = writtenProp(v)
+		}
+		f.rows = append(f.rows, row(pageID, stored))
+	}
 	if childPage {
 		f.childPages[pageID] = true
 	}
@@ -356,6 +385,7 @@ func (f *fakeNotion) getChildren(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	f.mu.Lock()
 	live, hasLive := f.liveBlocks[id]
+	written := f.blocks[id]
 	ids := f.children[id]
 	f.mu.Unlock()
 
@@ -369,11 +399,32 @@ func (f *fakeNotion) getChildren(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Blocks this fake actually received are served as they were written — the round
+	// trip a hand-seeded liveBlocks entry cannot stand in for (#138).
+	if len(written) > 0 {
+		results := make([]map[string]any, len(written))
+		copy(results, written)
+		writeJSON(w, map[string]any{"results": results, "has_more": false})
+		return
+	}
+
 	results := make([]map[string]any, 0, len(ids))
 	for _, id := range ids {
 		results = append(results, map[string]any{"id": id})
 	}
 	writeJSON(w, map[string]any{"results": results, "has_more": false})
+}
+
+// storedBlock is one written child block as the server will serve it back: the
+// payload the client sent, plus the id the server minted for it.
+func storedBlock(id string, raw any) map[string]any {
+	out := map[string]any{"id": id}
+	if body, ok := raw.(map[string]any); ok {
+		for k, v := range body {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 func (f *fakeNotion) appendChildren(w http.ResponseWriter, r *http.Request) {
@@ -383,12 +434,13 @@ func (f *fakeNotion) appendChildren(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	var results []map[string]any
 	if ch, ok := body["children"].([]any); ok {
-		for range ch {
+		for _, raw := range ch {
 			f.seq++
 			id := fmt.Sprintf("block-%d", f.seq)
 			// The appended blocks join the page's child list, so a follow-up GET (or a
 			// content replacement's clear) sees the page as the workspace really holds it.
 			f.children[pageID] = append(f.children[pageID], id)
+			f.blocks[pageID] = append(f.blocks[pageID], storedBlock(id, raw))
 			results = append(results, map[string]any{"id": id})
 		}
 	}
@@ -413,6 +465,12 @@ func (f *fakeNotion) deleteBlock(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		f.children[page] = kept
+	}
+	// The block leaves the workspace, so a later read must not serve it: a content
+	// replacement's clear is what mints NEW ids, and a scan that still saw the old
+	// ones would never notice a recorded anchor had gone stale (#138).
+	for page, blocks := range f.blocks {
+		f.blocks[page] = slices.DeleteFunc(blocks, func(b map[string]any) bool { return b["id"] == id })
 	}
 	f.mu.Unlock()
 
@@ -538,21 +596,6 @@ func paraLive(id, text string) map[string]any {
 		"type": "paragraph",
 		"paragraph": map[string]any{
 			"rich_text": []any{map[string]any{"plain_text": text}},
-		},
-	}
-}
-
-// boldLive builds a canned live paragraph whose leading run is bold — a glossary
-// anchor host, whose term the recompute slugifies into an anchor name.
-func boldLive(id, term string) map[string]any {
-	return map[string]any{
-		"id":   id,
-		"type": "paragraph",
-		"paragraph": map[string]any{
-			"rich_text": []any{map[string]any{
-				"plain_text":  term,
-				"annotations": map[string]any{"bold": true},
-			}},
 		},
 	}
 }

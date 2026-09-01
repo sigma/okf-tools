@@ -72,10 +72,12 @@ func TestScanRecomputeDetectsLiveDrift(t *testing.T) {
 	}
 }
 
-// TestScanRecomputeSelfHealsSubpageAndAnchor is the acceptance property: a stored
-// subpage id and a stored anchor id that have gone stale are re-derived from the
-// live walk, while ScanStored keeps returning the stale values.
-func TestScanRecomputeSelfHealsSubpageAndAnchor(t *testing.T) {
+// TestScanRecomputeSelfHealsSubpageAndFlagsStaleAnchors is the acceptance property:
+// a stored subpage id that has gone stale is re-derived from the live walk, while a
+// stored anchor id that has gone stale is DETECTED — it cannot be re-derived, since
+// a live block carries nothing naming the anchor it hosts, so the repair is to make
+// the host re-assert (#138). ScanStored keeps returning both stale values.
+func TestScanRecomputeSelfHealsSubpageAndFlagsStaleAnchors(t *testing.T) {
 	f := newFakeNotion()
 	f.rows = []map[string]any{
 		row("page-root", map[string]any{
@@ -99,7 +101,9 @@ func TestScanRecomputeSelfHealsSubpageAndAnchor(t *testing.T) {
 		childPageLive("fresh-sub", "Sub Page"),
 	}
 	f.liveBlocks["fresh-sub"] = []map[string]any{paraLive("sub-1", "sub body")}
-	f.liveBlocks["page-g"] = []map[string]any{boldLive("fresh-block", "Root KEK")}
+	// The glossary's recorded anchor points at a block that is no longer live: the
+	// page holds a fresh one after a replacement the previous run never recorded.
+	f.liveBlocks["page-g"] = []map[string]any{paraLive("fresh-block", "Root KEK: the root key-encryption key.")}
 	be := newServer(t, f)
 
 	// ScanStored returns the stale ids straight from the columns.
@@ -122,8 +126,15 @@ func TestScanRecomputeSelfHealsSubpageAndAnchor(t *testing.T) {
 	if id, ok := rec.NodeID("node:docs/adr/sub.md"); !ok || id != "fresh-sub" {
 		t.Errorf("recompute subpage id = %q,%v, want fresh-sub (self-healed)", id, ok)
 	}
-	if id, ok := rec.AnchorID("glossary/root-kek"); !ok || id != "fresh-block" {
-		t.Errorf("recompute anchor id = %q,%v, want fresh-block (self-healed)", id, ok)
+	// The stale anchor is NOT seeded — a page citing it must wait for the host to be
+	// re-asserted rather than resolve to a block that is about to be replaced...
+	if id, ok := rec.AnchorID("glossary/root-kek"); ok {
+		t.Errorf("recompute seeded the stale anchor id %q; a dangling map must not be trusted", id)
+	}
+	// ...and the host reports no content hash, so change detection cannot conclude
+	// "unchanged" and re-asserts it, which is what re-mints the map.
+	if h, ok := rec.ContentHash("node:CONTEXT.md"); ok {
+		t.Errorf("host with a dangling anchor map reported hash %q; it must withhold it", h)
 	}
 	// The top-level node id still resolves, and the walk reached the subpage.
 	if id, _ := rec.NodeID("node:index.md"); id != "page-root" {

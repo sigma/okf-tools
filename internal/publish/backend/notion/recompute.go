@@ -4,12 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"strings"
 
-	"github.com/sigma/okf-tools/internal/areas"
-	"github.com/sigma/okf-tools/internal/bundle"
 	"github.com/sigma/okf-tools/internal/publish"
 )
 
@@ -135,22 +134,80 @@ func (b *Backend) scanRecompute(ctx context.Context) (*publish.CurrentState, err
 			}
 		}
 
-		// Anchors: a row that carries an anchors column is the glossary-role row;
-		// re-derive its anchor map from the live blocks (bold-lead terms), healing a
-		// stale block id. The anchor name uses the shared bundle.Slug so it matches
-		// exactly what Generation minted from source.
-		if plainText(row.Properties["anchors"]) != "" {
-			for _, blk := range blocks {
-				if blk.boldLead == "" {
-					continue
-				}
-				name := publish.AnchorName(areas.RoleGlossary + "/" + bundle.Slug(blk.boldLead))
-				anchorIDs[name] = publish.BackendID(blk.id)
-			}
+		// Anchors: a row carrying an anchors column is the glossary-role row. Its
+		// recorded map is the seed — the same one ScanStored reads — but here it is
+		// VALIDATED against the page's live children before being trusted, which is the
+		// drift detection this mode exists for (#138).
+		//
+		// It is not re-derived from live content. A live block carries no marker naming
+		// the anchor it hosts: the mirror stores no emphasis (the executor writes plain
+		// text spans), so there is nothing on the page to key a name to. An earlier
+		// attempt keyed on a leading bold run, which no published block has ever
+		// carried — so the map came back empty on every mirror and every anchor
+		// citation in the corpus went unresolvable.
+		dangling, err := seedRecordedAnchors(row, blocks, anchorIDs)
+		if err != nil {
+			return nil, err
+		}
+		if dangling {
+			// Withhold the live hash computed above. Change detection cannot confirm
+			// "unchanged" without one, so it re-asserts this host — and re-asserting is
+			// the one path that re-mints and re-records the anchor map.
+			delete(hashes, node)
 		}
 	}
 
 	return publish.NewCurrentStateWithProps(nodeIDs, hashes, propHashes, anchorIDs), nil
+}
+
+// seedRecordedAnchors seeds a glossary row's recorded anchor map into anchorIDs and
+// reports whether that map is DANGLING — the caller's cue to withhold the host's
+// content hash so the host re-asserts.
+//
+// An anchor is dangling when the block id recorded for it is no longer a child of
+// the host page: the state an interrupted run leaves, since a content assertion
+// replaces a page's children and so mints new ids (#130) while the record of the old
+// ones survives a write-back that never ran (#135).
+//
+// A dangling map suppresses the WHOLE seed for that host, not just the dead entries.
+// Re-asserting replaces every block on the page, so seeding the survivors would let
+// a citing page resolve to a block that is about to be deleted — precisely the
+// corruption being repaired. Suppressed, the citing page has no seeded id, so it
+// waits on the host's re-assertion and takes the fresh ones.
+//
+// The trade this makes: if the host is NOT re-asserted in the same run — it fell out
+// of publish scope, say — a citing page's anchor ref resolves to nothing and the run
+// stops with "transactions cannot proceed" instead of proceeding. That is the better
+// failure. The alternative is a run that succeeds while minting mentions of blocks it
+// then deletes, which is how the mirror got here. The ordinary path does not hit it:
+// withholding the hash guarantees the host re-asserts, which is what
+// TestRecomputeReassertsAHostWithDanglingAnchors drives end to end.
+//
+// Validation is against the host's DIRECT children, which is where every anchor it
+// hosts lives: the executor writes a node's body as a flat list of child blocks and
+// reports hosted anchors per child, so an anchor id is always one of them. A nested
+// block could never be matched here and would read as permanently dangling.
+func seedRecordedAnchors(row queryRow, blocks []liveBlock, anchorIDs map[publish.AnchorName]publish.BackendID) (dangling bool, err error) {
+	raw := plainText(row.Properties["anchors"])
+	if raw == "" {
+		return false, nil
+	}
+	recorded := map[publish.AnchorName]publish.BackendID{}
+	if err := readAnchors(raw, recorded); err != nil {
+		return false, err
+	}
+
+	live := make(map[string]bool, len(blocks))
+	for _, blk := range blocks {
+		live[blk.id] = true
+	}
+	for _, id := range recorded {
+		if !live[string(id)] {
+			return true, nil
+		}
+	}
+	maps.Copy(anchorIDs, recorded)
+	return false, nil
 }
 
 // subtreeIndexes builds the reverse lookups the live child_page walk matches
@@ -184,16 +241,19 @@ func storedSubtree(raw, rowID string) (map[string]subtreeEntry, error) {
 	return sub, nil
 }
 
-// liveBlock is the sliver of a live Notion block ScanRecompute needs: its id and
-// type, whether it is a child_page (and that page's title, the subpath key), the
-// concatenated plain text of its rich_text, and the leading bold run's text (the
-// glossary anchor term, "" when the block does not lead with bold).
+// liveBlock is the sliver of a live Notion block ScanRecompute needs: its id (which
+// a recorded anchor is validated against), its type, whether it is a child_page (and
+// that page's title, the subpath key), and the concatenated plain text of its
+// rich_text (the content fingerprint).
+//
+// It deliberately carries no emphasis. The mirror stores none — the executor writes
+// plain text spans — so a field for it could only ever be empty, and a scan keyed on
+// it silently reconstructs nothing (#138).
 type liveBlock struct {
 	id             string
 	typ            string
 	childPageTitle string
 	text           string
-	boldLead       string
 }
 
 // listLiveBlocks drains the paginated GET /blocks/{id}/children for one page,
@@ -258,9 +318,8 @@ type blockEnvelope struct {
 }
 
 // annotatedRun is one rich-text span ScanRecompute reads: its type (to fold a
-// page mention to the ref placeholder, matching the source side), its plain text
-// and any external link URL (folded into the content fingerprint), and the one
-// annotation the glossary self-heal needs (bold, to spot an anchor's leading term).
+// page mention to the ref placeholder, matching the source side) and its plain text
+// with any external link URL, both folded into the content fingerprint.
 type annotatedRun struct {
 	Type      string `json:"type"`
 	PlainText string `json:"plain_text"`
@@ -270,9 +329,6 @@ type annotatedRun struct {
 			URL string `json:"url"`
 		} `json:"link"`
 	} `json:"text"`
-	Annotations struct {
-		Bold bool `json:"bold"`
-	} `json:"annotations"`
 }
 
 // richTextHolder is the `{ "rich_text": [...] }` shape every text-bearing Notion
@@ -289,7 +345,7 @@ type tableRowHolder struct {
 
 // parseLiveBlock decodes one raw block: its envelope, then — for a text-bearing
 // block — the rich_text under its type key, from which it derives the block's plain
-// text and any leading bold term. A child_page block carries its title instead.
+// text. A child_page block carries its title instead.
 func parseLiveBlock(raw json.RawMessage) (liveBlock, error) {
 	var env blockEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
@@ -324,9 +380,6 @@ func parseLiveBlock(raw json.RawMessage) (liveBlock, error) {
 			var holder richTextHolder
 			if err := json.Unmarshal(body, &holder); err == nil {
 				lb.text = liveCanonRunsText(holder.RichText)
-				if len(holder.RichText) > 0 && holder.RichText[0].Annotations.Bold {
-					lb.boldLead = runText(holder.RichText[0])
-				}
 			}
 		}
 	}
