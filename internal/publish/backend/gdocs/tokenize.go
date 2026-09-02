@@ -2,7 +2,6 @@ package gdocs
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/sigma/okf-tools/internal/publish"
 	"github.com/sigma/okf-tools/internal/publish/graph"
@@ -24,6 +23,23 @@ const maxRequestsPerBatch = 200
 func (b *Backend) Tokenize(doc publish.Document) []publish.AtomicUnit {
 	units := make([]publish.AtomicUnit, 0, len(doc.Blocks))
 	for _, blk := range doc.Blocks {
+		// A table's inline content lives per-cell, so its refs come from the cells
+		// rather than from a flat run list.
+		if bc, ok := blk.Content.(graph.BlockContent); ok && bc.Kind == graph.Table {
+			rows, refs := graph.TableRunsOf(bc)
+			u := publish.AtomicUnit{
+				Payload: contentBlock{kind: graph.Table, rows: rows, anchors: blk.Anchors},
+				Cost:    1,
+				Group:   doc.Group,
+				Refs:    refs,
+				Anchors: blk.Anchors,
+			}
+			if len(refs) == 0 && len(blk.Refs) > 0 {
+				u.Refs = append(u.Refs, blk.Refs...)
+			}
+			units = append(units, u)
+			continue
+		}
 		kind, level, _, runs, hadInlineRefs := graph.RunsOf(blk.Content)
 		u := publish.AtomicUnit{
 			Payload: contentBlock{kind: kind, level: level, runs: runs, anchors: blk.Anchors},
@@ -73,13 +89,7 @@ type contentBlock struct {
 	level   int
 	runs    []publish.Run
 	anchors []publish.AnchorName
-}
-
-// renderProps flattens a node's properties into the leading text of its tab.
-func renderProps(props map[string]any, keys []string) string {
-	var sb strings.Builder
-	for _, k := range keys {
-		fmt.Fprintf(&sb, "%s: %v\n", k, props[k])
-	}
-	return sb.String()
+	// rows carries a table's cells, header row first; set only when kind is Table,
+	// in which case runs is empty.
+	rows [][][]publish.Run
 }

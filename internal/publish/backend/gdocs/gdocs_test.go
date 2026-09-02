@@ -46,8 +46,8 @@ func testBundle() map[string]string {
 	return map[string]string{
 		"okf.toml":   "[glossary]\nenabled = true\nfiles = [\"CONTEXT.md\"]\n",
 		"index.md":   "---\nokf_version: \"0.1\"\ntitle: Index\ntype: index\n---\n\n# Index\n\n- [Alpha](/alpha.md)\n- [Beta](/beta.md)\n",
-		"CONTEXT.md": "---\nokf_version: \"0.1\"\ntitle: Context\ntype: context\n---\n\n# Glossary\n\n**Widget** — a thing.\n",
-		"alpha.md":   "---\nokf_version: \"0.1\"\ntitle: Alpha\ntype: concept\n---\n\n# Alpha\n\nAlpha links to [Beta](/beta.md) and cites a **Widget**.\n",
+		"CONTEXT.md": "---\nokf_version: \"0.1\"\ntitle: Context\ntype: context\n---\n\n# Keys\n\n- **Widget**: a small thing.\n- **Sprocket**: a toothed thing.\n",
+		"alpha.md":   "---\nokf_version: \"0.1\"\ntitle: Alpha\ntype: concept\n---\n\n# Alpha\n\nAlpha links to [Beta](/beta.md) and cites a [Widget](/CONTEXT.md#widget).\n",
 		"beta.md":    "---\nokf_version: \"0.1\"\ntitle: Beta\ntype: concept\n---\n\n# Beta\n\nBeta stands alone.\n",
 	}
 }
@@ -92,17 +92,42 @@ func TestPublishCreatesATabPerPage(t *testing.T) {
 	t.Logf("tabs: %v", titles)
 	t.Logf("txns=%d requests=%d batchUpdates=%d", res.TxnCount, res.Stats.Requests, fake.batchUpdates)
 
-	for _, want := range []string{"index.md", "alpha.md", "beta.md", "CONTEXT.md"} {
+	// Titles come from frontmatter, not the path (#155).
+	for _, want := range []string{"Index", "Alpha", "Beta", "Context"} {
 		if !containsStr(titles, want) {
-			t.Errorf("no tab for %s (got %v)", want, titles)
+			t.Errorf("no tab titled %q (got %v)", want, titles)
 		}
 	}
-	if body := fake.tabBody(docID, "alpha.md"); !strings.Contains(body, "Alpha links to") {
+	// The document's default tab is ADOPTED by the first page rather than left
+	// beside the real content.
+	if containsStr(titles, "Tab 1") {
+		t.Errorf("the default tab survived into published output: %v", titles)
+	}
+	if len(titles) != 4 {
+		t.Errorf("want one tab per page (4), got %d: %v", len(titles), titles)
+	}
+
+	body := fake.tabBody(docID, "Alpha")
+	if !strings.Contains(body, "Alpha links to") {
 		t.Errorf("alpha tab body missing content: %q", body)
+	}
+	// A Ref run carries no text of its own, so the backend supplies the label.
+	if !strings.Contains(body, "beta") || !strings.Contains(body, "widget") {
+		t.Errorf("cross-reference lost its label: %q", body)
+	}
+	// Frontmatter is rendered as leading content, since a tab has no property surface.
+	if !strings.Contains(body, "title: Alpha") {
+		t.Errorf("properties not rendered into the tab: %q", body)
+	}
+	// Every tab carries its identity marker, re-asserted by the write.
+	if got := fake.namedRangesOf(docID, "Alpha"); !containsStr(got, "okf:alpha.md") {
+		t.Errorf("identity named range missing: %v", got)
 	}
 	if fake.untabbedWrites != 0 {
 		t.Errorf("%d write(s) omitted a tabId and silently hit the first tab", fake.untabbedWrites)
 	}
+	t.Logf("anchors: %v", res.Anchors)
+	assertCrossReferences(t, fake, docID)
 	if !res.Metered {
 		t.Error("backend did not report RequestStats")
 	}
@@ -173,6 +198,35 @@ func TestProvisionIsIdempotent(t *testing.T) {
 	}
 	if again.DocumentID() != first {
 		t.Errorf("provision created a second document: %s != %s", again.DocumentID(), first)
+	}
+}
+
+// assertCrossReferences checks what a reference actually TARGETS, which the
+// rendered text cannot show: a page link must address the target tab, and a
+// glossary citation must address a heading inside the glossary tab — the
+// two-pass write's whole purpose.
+func assertCrossReferences(t *testing.T, fake *fakeGoogle, docID string) {
+	t.Helper()
+	betaTab := fake.tabIDOf(docID, "Beta")
+	glossaryTab := fake.tabIDOf(docID, "Context")
+
+	var sawTabLink, sawHeadingLink bool
+	for _, link := range fake.linksOf(docID, "Alpha") {
+		if id, ok := link["tabId"].(string); ok && id == betaTab {
+			sawTabLink = true
+		}
+		if h, ok := link["heading"].(map[string]any); ok {
+			if h["tabId"] == glossaryTab && h["id"] != "" {
+				sawHeadingLink = true
+			}
+		}
+	}
+	if !sawTabLink {
+		t.Errorf("the link to Beta did not target its tab (%s): %v", betaTab, fake.linksOf(docID, "Alpha"))
+	}
+	if !sawHeadingLink {
+		t.Errorf("the Widget citation did not target a heading in the glossary tab (%s): %v",
+			glossaryTab, fake.linksOf(docID, "Alpha"))
 	}
 }
 

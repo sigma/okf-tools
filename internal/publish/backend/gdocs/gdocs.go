@@ -23,6 +23,7 @@ package gdocs
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -49,6 +50,19 @@ type Backend struct {
 	tabs map[string]string
 	// hashes is the sidecar's stored per-node state, seeded by Scan.
 	hashes map[string]nodeState
+	// titles maps a claimed tab title to the node that claimed it, so a collision
+	// can be disambiguated rather than producing two identically named tabs.
+	titles map[string]string
+	// pending accumulates a node's rendered parts ACROSS the transactions of one
+	// run. The optimizer splits a node's create, properties and content into
+	// separate transactions, and every write here replaces a tab's whole body — so
+	// without accumulation the content write would wipe the properties written a
+	// moment earlier. Keyed by bundle-relative path.
+	pending map[string]*pendingTab
+	// adoptable is the document's default tab, which Docs creates with every new
+	// document. The first published page adopts it instead of adding a tab beside
+	// it; empty once claimed or once the document has real content.
+	adoptable string
 }
 
 // Config is the backend's construction input. Endpoints default to the real
@@ -74,6 +88,11 @@ type Config struct {
 	DocsEndpoint  string
 	DriveEndpoint string
 	IAMEndpoint   string
+	// DryRunWriter, when set, makes Execute DUMP the batchUpdate requests it would
+	// issue instead of issuing them. The interesting failure mode here is "did I
+	// build the right batchUpdate", which the filesystem export cannot show.
+	DryRunWriter io.Writer
+
 	// HTTPClient overrides the authenticated transport. Tests pass an unauthenticated
 	// client aimed at an httptest server; production leaves it nil.
 	HTTPClient *http.Client
@@ -115,10 +134,12 @@ func New(ctx context.Context, cfg Config) (*Backend, error) {
 		hc = oauth2.NewClient(ctx, ts)
 	}
 	return &Backend{
-		cfg:    cfg,
-		c:      &client{http: hc, docs: cfg.DocsEndpoint, drive: cfg.DriveEndpoint},
-		tabs:   map[string]string{},
-		hashes: map[string]nodeState{},
+		cfg:     cfg,
+		c:       &client{http: hc, docs: cfg.DocsEndpoint, drive: cfg.DriveEndpoint},
+		tabs:    map[string]string{},
+		hashes:  map[string]nodeState{},
+		titles:  map[string]string{},
+		pending: map[string]*pendingTab{},
 	}, nil
 }
 
@@ -135,6 +156,12 @@ func (b *Backend) DocumentID() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.docID
+}
+
+// pendingTab is one node's accumulated body for this run.
+type pendingTab struct {
+	props  []setProps
+	blocks []contentBlock
 }
 
 // selectionKey is the identity stamped into appProperties: bundle-qualified so

@@ -259,12 +259,24 @@ type documentTab struct {
 	TabProperties tabProperties `json:"tabProperties"`
 	DocumentTab   struct {
 		Body struct {
-			Content []struct {
-				EndIndex int `json:"endIndex"`
-			} `json:"content"`
+			Content []structuralElement `json:"content"`
 		} `json:"body"`
 	} `json:"documentTab"`
 	ChildTabs []documentTab `json:"childTabs,omitempty"`
+}
+
+// structuralElement is one element of a tab's body. Only the paragraph style is
+// read: headingId is the anchor target the second pass harvests, and it is
+// output-only, which is the whole reason that pass exists (#150).
+type structuralElement struct {
+	StartIndex int `json:"startIndex"`
+	EndIndex   int `json:"endIndex"`
+	Paragraph  *struct {
+		ParagraphStyle struct {
+			HeadingID      string `json:"headingId"`
+			NamedStyleType string `json:"namedStyleType"`
+		} `json:"paragraphStyle"`
+	} `json:"paragraph,omitempty"`
 }
 
 type document struct {

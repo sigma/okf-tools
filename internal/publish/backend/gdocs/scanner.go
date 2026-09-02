@@ -67,6 +67,12 @@ func (b *Backend) Scan(ctx context.Context, _ backend.ScanMode) (*publish.Curren
 			propHashes[id] = ns.PropHash
 		}
 	}
+	// A document Docs just created already holds one empty default tab. If no node
+	// claims a tab yet, the first page adopts that one rather than leaving a stray
+	// "Tab 1" beside the real content.
+	if len(nodeIDs) == 0 && len(doc.Tabs) > 0 {
+		b.adoptable = doc.Tabs[0].TabProperties.TabID
+	}
 	b.mu.Unlock()
 
 	// Anchors are not reconstructed yet: the placeholder tokenizer hosts none, and
