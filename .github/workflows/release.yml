@@ -117,6 +117,27 @@ jobs:
           fi
           sed -i -E 's/^([[:space:]]*OKFPUB_VERSION: ")[^"]*(")/\1'"$VERSION"'\2/' "$f"
 
+      - name: Stamp the setup ref into the okf-lint action
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+        run: |
+          set -euo pipefail
+          f="actions/okf-lint/action.yml"
+          if [ ! -f "$f" ]; then
+            echo "note: $f not present yet; skipping the setup-ref stamp."
+            exit 0
+          fi
+          # okf-lint installs okftool by referencing the sibling setup action, and a
+          # `uses:` ref cannot be an expression — so it is stamped here, marked by the
+          # OKF_SETUP_REF comment above it. Without this, okf-lint@vX.Y.Z would install
+          # whatever the floating @vN resolves to, which breaks the lockstep guarantee
+          # the setup actions make (#46).
+          n="$(grep -cE '^[[:space:]]*uses: sigma/okf-tools/actions/setup-okftool@v[0-9.]+$' "$f" || true)"
+          if [ "$n" != "1" ]; then
+            echo "::error::expected exactly one setup-okftool ref in $f, found $n"; exit 1
+          fi
+          sed -i -E 's|^([[:space:]]*uses: sigma/okf-tools/actions/setup-okftool@)v[0-9.]+$|\1'"$TAG"'|' "$f"
+
       - name: Commit the bump and force-move the tags
         env:
           TAG: ${{ steps.v.outputs.tag }}
@@ -128,6 +149,7 @@ jobs:
           git add flake.nix
           [ -f actions/setup-okftool/action.yml ] && git add actions/setup-okftool/action.yml || true
           [ -f actions/setup-okfpub/action.yml ] && git add actions/setup-okfpub/action.yml || true
+          [ -f actions/okf-lint/action.yml ] && git add actions/okf-lint/action.yml || true
           if git diff --cached --quiet; then
             echo "::error::version bump for $TAG produced no changes (already released at this version?)"; exit 1
           fi
