@@ -1,0 +1,89 @@
+name: okf-lint
+description: Lint an OKF bundle and surface the findings on the pull request.
+
+# Consumed as:
+#   - uses: actions/checkout@v4
+#   - uses: sigma/okf-tools/actions/okf-lint@v0
+#     with:
+#       bundle: docs
+#
+# A composite action rather than a reusable workflow, so it composes into a job the
+# consumer already has — a bundle repo is checking out anyway, and a reusable
+# workflow would spawn a second job with a second checkout. It also keeps
+# everything this repo ships for CI under actions/, referenced one way.
+#
+# Publishing deliberately has no equivalent: its auth, triggers and branch filters
+# differ per consumer, and a wrapper would hide the parts they must understand.
+# See docs/ci.md.
+
+inputs:
+  bundle:
+    description: Bundle root to lint, relative to the workspace.
+    required: false
+    default: "."
+  fail-on:
+    description: "Exit non-zero at this severity or above: error | warning."
+    required: false
+    default: error
+  sarif:
+    description: >-
+      Upload findings to GitHub code scanning so they annotate the pull request.
+      Requires the calling job to grant security-events: write, and — on a PRIVATE
+      repository — GitHub Advanced Security. Set false where neither holds; the
+      lint gate itself is unaffected.
+    required: false
+    default: "true"
+  category:
+    description: Code-scanning category, to keep several bundles' findings apart.
+    required: false
+    default: okftool
+
+outputs:
+  sarif-file:
+    description: Path to the generated SARIF file, when sarif was enabled.
+    value: ${{ steps.sarif.outputs.file }}
+
+runs:
+  using: composite
+  steps:
+    # Install only when okftool is not already on PATH, so a job that ran
+    # setup-okftool itself (to pin an exact version, or to lint several bundles
+    # without re-downloading) is not made to download it twice.
+    - id: probe
+      shell: bash
+      run: |
+        if command -v okftool >/dev/null 2>&1; then
+          echo "present=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "present=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    # OKF_SETUP_REF: the release workflow rewrites this ref alongside the version
+    # markers, so okf-lint@vX.Y.Z installs the okftool released at that same tag.
+    - if: steps.probe.outputs.present != 'true'
+      uses: sigma/okf-tools/actions/setup-okftool@v0
+
+    # Findings first, gate second: generating SARIF before the gate means the
+    # annotations exist even when the gate fails, which is when a reviewer most
+    # wants them. --exit-zero keeps this step from pre-empting the gate's verdict.
+    - id: sarif
+      if: ${{ inputs.sarif == 'true' }}
+      shell: bash
+      run: |
+        file="${RUNNER_TEMP}/okftool.sarif"
+        okftool lint --bundle "${{ inputs.bundle }}" --format sarif --exit-zero > "$file"
+        echo "file=$file" >> "$GITHUB_OUTPUT"
+
+    - if: ${{ inputs.sarif == 'true' }}
+      # Never fatal. Code scanning is unavailable on a private repository without
+      # GitHub Advanced Security, and a bundle that lints clean must not go red
+      # because its findings could not be uploaded.
+      continue-on-error: true
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ steps.sarif.outputs.file }}
+        category: ${{ inputs.category }}
+
+    - name: Lint
+      shell: bash
+      run: okftool lint --bundle "${{ inputs.bundle }}" --fail-on "${{ inputs.fail-on }}"

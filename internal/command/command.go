@@ -55,7 +55,9 @@ func validateFormat(format string, allowed ...string) error {
 func registerGlobals(fs *pflag.FlagSet, g *globals) {
 	fs.StringVar(&g.bundle, "bundle", "", "bundle root directory (default: auto-discover)")
 	fs.StringVar(&g.config, "config", "", "config file (default: okf.toml at bundle root)")
-	fs.StringVar(&g.format, "format", "human", "output format: human|json")
+	// lint accepts sarif too (see lint.go's validateFormat); naming it here keeps
+	// --help from hiding the one format CI actually wants.
+	fs.StringVar(&g.format, "format", "human", "output format: human|json (lint also: sarif)")
 }
 
 // loadBundle discovers and loads the bundle, seeding discovery from the first

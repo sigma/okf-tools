@@ -63,7 +63,9 @@ or on `PATH` inside the dev shell.
 ### In CI (without Nix)
 
 Downstream GitHub Actions workflows can install `okftool` without Nix using the
-`setup-okftool` action from this repo. It downloads the matching released binary
+`setup-okftool` action from this repo. For the full CI story — the
+`okf-lint` action, SARIF annotations, publishing, troubleshooting — see
+[`docs/ci.md`](docs/ci.md). It downloads the matching released binary
 (verifying its SHA-256 checksum) and puts `okftool` on `PATH`; later steps just
 run `okftool`:
 
@@ -198,7 +200,9 @@ token-creator grant, the shared drive, and a verification write.
 
 ### In CI (without Nix)
 
-`setup-okfpub` mirrors `setup-okftool`, with the same tag-pinning rules:
+`setup-okfpub` mirrors `setup-okftool`, with the same tag-pinning rules.
+[`docs/ci.md`](docs/ci.md) covers the rest: auth setup for both backends,
+dry-run-on-PR, scheduled drift sweeps, and the errors worth recognising.
 
 ```yaml
 jobs:
@@ -262,6 +266,9 @@ mint a token for this provider.
 
 ## Reference
 
+- [`docs/ci.md`](docs/ci.md) — **using okf-tools from CI**: installing the CLIs,
+  the `okf-lint` action, publishing to Notion and Google Docs (including the
+  Google auth setup), operational patterns, and a troubleshooting table.
 - [`docs/DESIGN.md`](docs/DESIGN.md) — architecture, CLI surface, bundle/link
   model, workflow integration, roadmap, open questions.
 - [`docs/RULES.md`](docs/RULES.md) — the canonical rule catalog (IDs, categories,
