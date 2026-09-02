@@ -14,6 +14,7 @@ import (
 
 	"github.com/sigma/okf-tools/internal/bundle"
 	"github.com/sigma/okf-tools/internal/publish/backend/gdocs"
+	"github.com/sigma/okf-tools/internal/publish/graph"
 	"github.com/sigma/okf-tools/internal/publish/pipeline"
 )
 
@@ -372,4 +373,61 @@ func containsStr(hay []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// TestBannerRidesEveryTab pins the placement decision (#164): the disclaimer is
+// per tab, exactly as it is per page on Notion, and carries that page's own
+// source deep-link.
+func TestBannerRidesEveryTab(t *testing.T) {
+	fake := newFakeGoogle(t)
+	srv := fake.server()
+	defer srv.Close()
+
+	be := newBackend(t, srv.URL)
+	b := loadBundle(t, testBundle())
+
+	if _, err := pipeline.Run(context.Background(), be, b,
+		pipeline.WithBanner(&graph.Banner{
+			Text:    "Generated — edit the source.",
+			BaseURL: "https://github.com/sigma/okf-tools",
+			Ref:     "main",
+		})); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	docID := be.DocumentID()
+
+	for _, title := range []string{"Alpha", "Beta", "Index", "Context"} {
+		body := fake.tabBody(docID, title)
+		if !strings.Contains(body, "Generated — edit the source.") {
+			t.Errorf("%s: no banner in the tab body: %q", title, body)
+		}
+	}
+	// The link is per PAGE, not per document: Alpha's banner points at alpha.md.
+	var sawAlphaSource bool
+	for _, link := range fake.linksOf(docID, "Alpha") {
+		if url, ok := link["url"].(string); ok &&
+			url == "https://github.com/sigma/okf-tools/edit/main/alpha.md" {
+			sawAlphaSource = true
+		}
+	}
+	if !sawAlphaSource {
+		t.Errorf("Alpha's banner does not link to its own source: %v", fake.linksOf(docID, "Alpha"))
+	}
+	// The banner is block-0: the tab must OPEN with it, not with frontmatter.
+	if got := firstLine(fake.tabBody(docID, "Alpha")); !strings.Contains(got, "Generated") {
+		t.Errorf("the tab does not open with the banner, it opens with %q", got)
+	}
+	// Properties trail as a metadata footer, still present so a frontmatter change
+	// remains visible.
+	if !strings.Contains(fake.tabBody(docID, "Alpha"), "title: Alpha") {
+		t.Error("the property footer is missing")
+	}
+	t.Logf("Alpha tab opens with: %q", firstLine(fake.tabBody(docID, "Alpha")))
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
