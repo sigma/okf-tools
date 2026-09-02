@@ -23,6 +23,8 @@ type options struct {
 	// hashes the realized block-0 quote), so Generate must not double-fold the
 	// banner into the hash the way it does for the default ContentHash.
 	customHasher bool
+	// selection, when set, narrows this run to the pages it reports true for.
+	selection func(rel string) bool
 }
 
 // Recomputer is an OPTIONAL backend role: a backend whose live scan can
@@ -60,6 +62,21 @@ func WithHasher(fn func(*bundle.Doc) publish.Hash) Option {
 // default) injects nothing, leaving generation unchanged. The banner's source-repo
 // coordinates are resolved by the bins (internal/publish/source) and passed in as
 // data, so the planner stays environment-free.
+// WithSelection narrows the publish to the pages a selection contains — the
+// generation-side half of `--select` (sigma/okf-tools#161).
+//
+// It sits HERE rather than in bundle.PublishDocs because a selection is a
+// property of one RUN, not of the bundle: the same bundle is published as several
+// documents in a fan-out, each with a different scope, while PublishDocs encodes
+// the bundle's own permanent export scope. Cross-links still resolve against the
+// whole tree (bundle.Load), so a link out of the selection is a resolved link to
+// a page this run simply does not emit ops for.
+//
+// Unset publishes everything PublishDocs returns, so the Notion path is untouched.
+func WithSelection(contains func(rel string) bool) Option {
+	return func(o *options) { o.selection = contains }
+}
+
 func WithBanner(bn *Banner) Option {
 	return func(o *options) { o.banner = bn }
 }
@@ -101,6 +118,16 @@ func Generate(ctx context.Context, b *bundle.Bundle, cs *publish.CurrentState, o
 	// bundle has no areas registry and PublishDocs returns every doc, so behaviour
 	// there is unchanged.
 	docs := b.PublishDocs()
+	scope := newSelectionScope(o.selection, o.banner)
+	if scope != nil {
+		kept := docs[:0:0]
+		for _, d := range docs {
+			if scope.includes(d.Rel) {
+				kept = append(kept, d)
+			}
+		}
+		docs = kept
+	}
 
 	// Concurrent per-page diff → ops. Results are slotted by index so op order is
 	// deterministic (docs preserves b.Docs' rel sort) regardless of goroutine
@@ -115,7 +142,7 @@ func Generate(ctx context.Context, b *bundle.Bundle, cs *publish.CurrentState, o
 			if ctx.Err() != nil {
 				return
 			}
-			results[i] = diffDoc(d, cs, &o, src)
+			results[i] = diffDoc(d, cs, &o, src, scope)
 		}(i, d)
 	}
 	wg.Wait()
@@ -240,14 +267,14 @@ func repairUnhostedAnchors(results []docOps, cs *publish.CurrentState) {
 //	unchanged        → nothing (hash-skip)
 //
 // (Vanished nodes have no source and are handled by orphanOps.)
-func diffDoc(d *bundle.Doc, cs *publish.CurrentState, o *options, src *hierarchy) docOps {
+func diffDoc(d *bundle.Doc, cs *publish.CurrentState, o *options, src *hierarchy, scope *selectionScope) docOps {
 	node := publish.NodeRef(d.Rel)
 	parent := src.parent(d.Rel)
 	owner := src.owner(d.Rel)
 	hash := o.hash(d)
 	propHash := PropertyHash(d)
 	title := d.Title()
-	doc, refs, anchors := buildDocument(d, o.banner)
+	doc, refs, anchors := buildDocument(d, o.banner, scope)
 	// Stamp the parent, both expected hashes, and title on every op (not just the
 	// create) so publish-time write-back can route and record a touched node — new
 	// or re-asserted — and stamp both hash columns from whichever arm survives.

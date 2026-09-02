@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/sigma/okf-tools/internal/bundle"
 	"github.com/sigma/okf-tools/internal/publish/backend"
@@ -54,7 +55,9 @@ func main() {
 // (sigma/ideas#172, "Out of Scope").
 func runCmd(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
-	backendName := fs.String("backend", string(pipeline.BackendNotion), "publishing backend: notion|fake|fs")
+	backendName := fs.String("backend", string(pipeline.BackendNotion), "publishing backend: notion|gdocs|fake|fs")
+	var selections stringList
+	fs.Var(&selections, "select", "publish only this area or path as one document; repeatable (gdocs). Omitted: one document per area")
 	bundleDir := fs.String("bundle", ".", "bundle root (or a dir to search upward from)")
 	configPath := fs.String("config", "", "okf.toml path (default: discovered)")
 	areasPath := fs.String("areas", "", "areas.json path (default: <root>/areas.json if present)")
@@ -145,13 +148,81 @@ func runCmd(args []string) error {
 			src.BaseURL, src.Ref, prefixLabel(src.Prefix))
 	}
 
+	// Every backend except gdocs publishes the whole bundle as one destination, so
+	// they run once with no selection. Only the document backend fans out.
+	if kind != pipeline.BackendGDocs {
+		if len(selections) > 0 {
+			return fmt.Errorf("--select applies to the %s backend only", pipeline.BackendGDocs)
+		}
+		return runOnce(ctx, be, b, kind, runOpts)
+	}
+	return runFanOut(ctx, cfg, b, kind, selections, runOpts)
+}
+
+// runOnce publishes one destination and prints its summary.
+func runOnce(ctx context.Context, be backend.Backend, b *bundle.Bundle, kind pipeline.BackendKind, runOpts []pipeline.Option) error {
 	res, err := pipeline.Run(ctx, be, b, runOpts...)
 	if err != nil {
 		return err
 	}
+	printResult(kind, "", res)
+	return nil
+}
 
-	fmt.Printf("okfpub: published %d node(s), %d anchor(s) in %d transaction(s) via %s backend\n",
-		len(res.Nodes), len(res.Anchors), res.TxnCount, kind)
+// runFanOut publishes each selection as its own document.
+//
+// It is BEST-EFFORT, not fail-fast: one broken area must not stop four healthy
+// ones from updating, and all-or-nothing is not available anyway since Docs has
+// no cross-file transaction. A failed document simply leaves its own state
+// unupdated; the run exits non-zero with a per-selection summary (#151).
+func runFanOut(ctx context.Context, cfg *pipeline.Config, b *bundle.Bundle, kind pipeline.BackendKind, requested []string, runOpts []pipeline.Option) error {
+	plan, err := pipeline.ResolveSelections(b, requested)
+	if err != nil {
+		return err
+	}
+	for _, w := range plan.Warnings {
+		fmt.Printf("okfpub: warning: %s\n", w)
+	}
+	if plan.Unclaimed > 0 {
+		fmt.Printf("okfpub: %d publishable page(s) belong to no declared area and were not published\n",
+			plan.Unclaimed)
+	}
+	if len(plan.Selections) == 0 {
+		return fmt.Errorf("no selection to publish")
+	}
+
+	var failed int
+	for _, sel := range plan.Selections {
+		cfg.GDocsSelection = sel.Name
+		be, err := pipeline.SelectBackend(ctx, kind, cfg, filepath.Base(b.Root))
+		if err != nil {
+			return err
+		}
+		opts := append(append([]pipeline.Option(nil), runOpts...),
+			pipeline.WithSelection(sel.Contains))
+		res, err := pipeline.Run(ctx, be, b, opts...)
+		if err != nil {
+			failed++
+			fmt.Printf("okfpub: %s: FAILED: %v\n", sel.Name, err)
+			continue
+		}
+		printResult(kind, sel.Name, res)
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d of %d selection(s) failed", failed, len(plan.Selections))
+	}
+	return nil
+}
+
+// printResult renders one destination's summary, labelled by selection when a run
+// published more than one.
+func printResult(kind pipeline.BackendKind, selection string, res *pipeline.Result) {
+	label := ""
+	if selection != "" {
+		label = selection + ": "
+	}
+	fmt.Printf("okfpub: %spublished %d node(s), %d anchor(s) in %d transaction(s) via %s backend\n",
+		label, len(res.Nodes), len(res.Anchors), res.TxnCount, kind)
 	// The traffic line is what makes a slow run diagnosable without a debugger: a
 	// run whose request count dwarfs its transaction count is doing per-request work
 	// nobody planned, and one whose retries dominate is throttled. Printed for every
@@ -166,6 +237,16 @@ func runCmd(args []string) error {
 	if res.Reclaimed > 0 {
 		fmt.Printf("okfpub: reclaimed %d unrecorded row(s) left by an earlier interrupted run\n", res.Reclaimed)
 	}
+}
+
+// stringList collects a repeatable string flag. okfpub uses the standard flag
+// package, which has no repeatable-string type of its own.
+type stringList []string
+
+func (s *stringList) String() string { return strings.Join(*s, ",") }
+
+func (s *stringList) Set(v string) error {
+	*s = append(*s, v)
 	return nil
 }
 
@@ -223,6 +304,8 @@ Run flags:
   --out      fs/export output dir   (default: okfpub-export)
   --dry-run  export to the filesystem instead of publishing (implies --backend fs)
   --recompute                       full live-block scan (true drift + self-heal)
+  --select <area|path>              publish only this area or path as one document;
+                                    repeatable (gdocs). Omitted: one document per area
   --interval  minimum spacing between Notion writes (default 350ms; 0 or less disables)
 
 Environment:
