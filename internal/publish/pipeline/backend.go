@@ -74,6 +74,7 @@ func SelectBackend(ctx context.Context, kind BackendKind, cfg *Config, bundleNam
 			DriveID:       cfg.GDriveID,
 			Bundle:        bundleName,
 			Selection:     cfg.GDocsSelection,
+			DryRunWriter:  cfg.GDocsDryRun,
 		})
 	case BackendFake:
 		return fake.New(), nil

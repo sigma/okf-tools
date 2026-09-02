@@ -431,3 +431,48 @@ func firstLine(s string) string {
 	}
 	return s
 }
+
+// TestDryRunTouchesNothing pins the promise --dry-run makes: no document, no
+// sidecar, no tab, no write of any kind — while still showing the caller the
+// requests a real run would issue.
+func TestDryRunTouchesNothing(t *testing.T) {
+	fake := newFakeGoogle(t)
+	srv := fake.server()
+	defer srv.Close()
+
+	var dump strings.Builder
+	be, err := gdocs.New(context.Background(), gdocs.Config{
+		DriveID: testDriveID, Bundle: "testbundle", Selection: "concepts",
+		DocsEndpoint: srv.URL, DriveEndpoint: srv.URL, HTTPClient: &http.Client{},
+		DryRunWriter: &dump,
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	b := loadBundle(t, testBundle())
+
+	res, err := pipeline.Run(context.Background(), be, b)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	// The destination is untouched: Provision is find-only, so no Drive file exists.
+	if len(fake.files) != 0 {
+		t.Errorf("a dry run created %d Drive file(s)", len(fake.files))
+	}
+	if fake.batchUpdates != 0 {
+		t.Errorf("a dry run issued %d batchUpdate(s)", fake.batchUpdates)
+	}
+
+	// It still planned a real publish, and showed it.
+	if res.TxnCount == 0 {
+		t.Error("a dry run planned no transactions")
+	}
+	out := dump.String()
+	for _, want := range []string{"would create a document", "addDocumentTab", "insertText", "createNamedRange"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the dump does not mention %q", want)
+		}
+	}
+	t.Logf("dump is %d bytes, %d transaction(s) planned", len(out), res.TxnCount)
+}

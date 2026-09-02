@@ -63,7 +63,7 @@ func runCmd(args []string) error {
 	areasPath := fs.String("areas", "", "areas.json path (default: <root>/areas.json if present)")
 	schemaPath := fs.String("schema", "", "schema.json path (default: <root>/schema.json if present)")
 	outDir := fs.String("out", "", "output dir for the fs/export backend (default: "+pipeline.DefaultOutDir+")")
-	dryRun := fs.Bool("dry-run", false, "export to the filesystem instead of publishing (implies --backend fs)")
+	dryRun := fs.Bool("dry-run", false, "publish nothing: with --backend gdocs, dump the API writes that would be issued; otherwise export to the filesystem (implies --backend fs)")
 	recompute := fs.Bool("recompute", false, "opt into the full live-block scan (true drift + subpage/anchor self-heal); default is the cheap steady-state scan")
 	interval := fs.Duration("interval", notion.DefaultInterval, "minimum spacing between Notion writes (reads burst ahead of it); zero or less disables pacing")
 	if err := fs.Parse(args); err != nil {
@@ -95,11 +95,19 @@ func runCmd(args []string) error {
 
 	ctx := context.Background()
 
-	// --dry-run is sugar for --backend fs: export to the filesystem instead of
-	// touching a live workspace.
+	// --dry-run means "publish nothing", which two backends express differently. For
+	// a document destination the interesting question is "did I build the right
+	// batchUpdate", which an exported Markdown tree cannot answer — so the writes are
+	// dumped instead, and Provision goes find-only so no empty document is left
+	// behind. Every other backend keeps the original meaning: export to the
+	// filesystem rather than touch a live workspace.
 	kind := pipeline.BackendKind(*backendName)
 	if *dryRun {
-		kind = pipeline.BackendFS
+		if kind == pipeline.BackendGDocs {
+			cfg.GDocsDryRun = os.Stdout
+		} else {
+			kind = pipeline.BackendFS
+		}
 	}
 	be, err := pipeline.SelectBackend(ctx, kind, cfg, filepath.Base(b.Root))
 	if err != nil {
@@ -302,7 +310,8 @@ Run flags:
   --areas    areas.json path        (default: <root>/areas.json if present)
   --schema   schema.json path       (default: <root>/schema.json if present)
   --out      fs/export output dir   (default: okfpub-export)
-  --dry-run  export to the filesystem instead of publishing (implies --backend fs)
+  --dry-run  publish nothing. With --backend gdocs, dump the API writes that
+             would be issued; otherwise export to the filesystem (--backend fs)
   --recompute                       full live-block scan (true drift + self-heal)
   --select <area|path>              publish only this area or path as one document;
                                     repeatable (gdocs). Omitted: one document per area

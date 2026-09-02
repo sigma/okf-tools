@@ -60,6 +60,9 @@ type Backend struct {
 	// without accumulation the content write would wipe the properties written a
 	// moment earlier. Keyed by bundle-relative path.
 	pending map[string]*pendingTab
+	// missing records that a dry run found no destination, so reads are skipped and
+	// the dump shows what a first publish would do.
+	missing bool
 	// adoptable is the document's default tab, which Docs creates with every new
 	// document. The first published page adopts it instead of adding a tab beside
 	// it; empty once claimed or once the document has real content.
@@ -89,9 +92,12 @@ type Config struct {
 	DocsEndpoint  string
 	DriveEndpoint string
 	IAMEndpoint   string
-	// DryRunWriter, when set, makes Execute DUMP the batchUpdate requests it would
-	// issue instead of issuing them. The interesting failure mode here is "did I
-	// build the right batchUpdate", which the filesystem export cannot show.
+	// DryRunWriter, when set, makes every WRITE dump its payload here instead of
+	// issuing it — including the Drive creates in Provision, so a dry run really
+	// does leave the destination untouched rather than only skipping content.
+	//
+	// The interesting failure mode for this backend is "did I build the right
+	// batchUpdate", which a rendered Markdown tree cannot show.
 	DryRunWriter io.Writer
 
 	// HTTPClient overrides the authenticated transport. Tests pass an unauthenticated
@@ -142,7 +148,7 @@ func New(ctx context.Context, cfg Config) (*Backend, error) {
 	}
 	return &Backend{
 		cfg:     cfg,
-		c:       &client{http: hc, docs: cfg.DocsEndpoint, drive: cfg.DriveEndpoint},
+		c:       &client{http: hc, docs: cfg.DocsEndpoint, drive: cfg.DriveEndpoint, dry: cfg.DryRunWriter},
 		tabs:    map[string]string{},
 		hashes:  map[string]nodeState{},
 		titles:  map[string]string{},

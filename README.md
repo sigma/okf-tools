@@ -8,8 +8,8 @@ Tooling for authoring and maintaining [Open Knowledge Format](https://github.com
 Two Go CLIs and a Nix flake:
 
 - [**`okftool`**](#okftool) — lints, formats, and scaffolds OKF bundles.
-- [**`okfpub`**](#okfpub) — publishes a bundle to a backend (Notion, or the
-  filesystem for dry runs).
+- [**`okfpub`**](#okfpub) — publishes a bundle to a backend (Notion, Google Docs,
+  or the filesystem for dry runs).
 - a **dev shell** bundling [`qmd`](https://github.com/firefly-engineering/toolbox)
   (local hybrid search over markdown), with both CLIs on `PATH`.
 
@@ -94,7 +94,8 @@ built: the Claude Code hook wiring (a consuming-bundle artifact).
 
 ## `okfpub`
 
-Publishes an OKF bundle to a backend, mirroring each page's content, its
+Publishes an OKF bundle to a backend — Notion, or [Google Docs](#publishing-to-google-docs)
+— mirroring each page's content, its
 frontmatter-derived properties, and its cross-references — concept links become
 real links between published pages, and glossary-term citations resolve to
 in-page anchors. Change detection is hash-based, so a re-run touches only the
@@ -108,13 +109,15 @@ okfpub version       # print the version
 Run flags:
 
 ```
---backend  notion|fake|fs   (default notion)
+--backend  notion|gdocs|fake|fs   (default notion)
 --bundle   bundle root      (default ".")
 --config   okf.toml path    (default: discovered)
 --areas    areas.json path  (default: <root>/areas.json if present)
 --schema   schema.json path (default: <root>/schema.json if present)
 --out      fs/export output dir   (default: okfpub-export)
---dry-run  export to the filesystem instead of publishing (implies --backend fs)
+--select   area or path to publish as one document; repeatable (gdocs)
+--dry-run  publish nothing: dump the API writes (gdocs) or export to the
+           filesystem (implies --backend fs otherwise)
 --recompute                 full live-block scan (true drift + self-heal)
 ```
 
@@ -149,6 +152,50 @@ Published pages carry a disclaimer banner linking back to the source file — on
 default, configurable in `okf.toml` (see
 [`docs/okf.example.toml`](docs/okf.example.toml)).
 
+### Publishing to Google Docs
+
+`--backend gdocs` publishes a bundle to a **Google Doc**: one tab per page, in one
+document per selection, inside a Google **shared drive**.
+
+```
+okfpub run --backend gdocs                          # one document per area
+okfpub run --backend gdocs --select concepts        # just that area
+okfpub run --backend gdocs --select concepts --select adr
+okfpub run --backend gdocs --dry-run                # dump the API writes, touch nothing
+```
+
+`--select` names an **area key** from `areas.json` or a bundle-relative path, and is
+repeatable. Omitting it fans out to one document per declared area; a bundle with no
+`areas.json` publishes as a single whole-bundle document. The glossary area is appended
+to every document as a trailing tab — so citations resolve inside the document — rather
+than being published as a document of its own. Pages that no area claims are reported
+and skipped. A failed document does not stop its siblings: the run publishes what it
+can, prints a per-selection summary, and exits non-zero.
+
+Each document is found again by a hidden Drive property, not by its title, so renaming
+it in the UI is safe. Tabs are flat, titled from frontmatter, and an area's `README.md`
+opens its document.
+
+```
+GDRIVE_FOLDER_ID       the SHARED DRIVE to publish into
+GDOCS_IMPERSONATE_SA   the service account to impersonate
+```
+
+> **It must be a shared drive, not a folder in My Drive.** A service account has no
+> storage quota and cannot own files, so publishing into a My Drive folder fails at
+> write time with a misleading `403 storageQuotaExceeded`.
+
+**There is no key file.** Google organizations enforce
+`constraints/iam.managed.disableServiceAccountKeyCreation` by default, so no
+service-account JSON key can be created. `okfpub` instead impersonates the service
+account using whatever Application Default Credentials the environment already has — a
+developer's `gcloud auth application-default login`, or a Workload Identity Federation
+credential in CI. Both are short-lived, and neither is a secret to store.
+
+[`scripts/provision-gdocs.sh`](scripts/provision-gdocs.sh) walks the one-time setup:
+the Cloud project, the Docs/Drive/IAM-Credentials APIs, the service account and its
+token-creator grant, the shared drive, and a verification write.
+
 ### In CI (without Nix)
 
 `setup-okfpub` mirrors `setup-okftool`, with the same tag-pinning rules:
@@ -165,6 +212,53 @@ jobs:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DB_ID: ${{ secrets.NOTION_DB_ID }}
 ```
+
+For the Google Docs backend there is **no secret to store**: CI authenticates with
+GitHub's OIDC token, exchanges it for short-lived Google credentials, and `okfpub`
+impersonates the service account from there.
+
+```yaml
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write          # required to mint the OIDC token
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/<NUM>/locations/global/workloadIdentityPools/<POOL>/providers/<PROVIDER>
+          service_account: okfpub-gdocs@<PROJECT>.iam.gserviceaccount.com
+      - uses: sigma/okf-tools/actions/setup-okfpub@v0
+      - run: okfpub run --backend gdocs --bundle path/to/bundle
+        env:
+          GDRIVE_FOLDER_ID: ${{ vars.GDRIVE_FOLDER_ID }}
+          GDOCS_IMPERSONATE_SA: okfpub-gdocs@<PROJECT>.iam.gserviceaccount.com
+```
+
+The provider and its binding are created once, per consuming repo:
+
+```bash
+PROJECT=<your-project>; REPO=<owner>/<repo>
+SA="okfpub-gdocs@${PROJECT}.iam.gserviceaccount.com"
+
+gcloud iam workload-identity-pools create github --project "$PROJECT" --location global
+
+gcloud iam workload-identity-pools providers create-oidc github --project "$PROJECT" \
+  --location global --workload-identity-pool github \
+  --issuer-uri https://token.actions.githubusercontent.com \
+  --attribute-mapping "google.subject=assertion.sub,attribute.repository=assertion.repository" \
+  --attribute-condition "assertion.repository == '${REPO}'"   # scope it to ONE repo
+
+NUM=$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')
+gcloud iam service-accounts add-iam-policy-binding "$SA" --project "$PROJECT" \
+  --role roles/iam.workloadIdentityUser \
+  --member "principalSet://iam.googleapis.com/projects/${NUM}/locations/global/workloadIdentityPools/github/attributes/repository/${REPO}"
+```
+
+The `--attribute-condition` is load-bearing: without it, **any** GitHub repository can
+mint a token for this provider.
 
 ## Reference
 

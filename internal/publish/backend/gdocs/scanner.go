@@ -18,8 +18,13 @@ import (
 // would be a lie with a cost.
 func (b *Backend) Scan(ctx context.Context, _ backend.ScanMode) (*publish.CurrentState, error) {
 	b.mu.Lock()
-	docID := b.docID
+	docID, missing := b.docID, b.missing
 	b.mu.Unlock()
+	if missing {
+		// A dry run against a destination that does not exist yet: nothing to read,
+		// and the dump should show a first publish.
+		return publish.NewCurrentState(nil, nil, nil), nil
+	}
 	if docID == "" {
 		// Not provisioned (the pipeline calls Provision first, so this is a test or a
 		// fresh destination): nothing exists yet.

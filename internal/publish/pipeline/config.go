@@ -12,6 +12,7 @@ package pipeline
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -75,6 +76,11 @@ type Config struct {
 	// GDriveID is the shared drive the Google Docs backend publishes into
 	// (GDRIVE_FOLDER_ID).
 	GDriveID string
+	// GDocsDryRun, when set, makes the Google Docs backend dump the writes it would
+	// perform to this writer instead of issuing them — including the Drive creates
+	// in Provision, so --dry-run leaves the destination genuinely untouched rather
+	// than only skipping content.
+	GDocsDryRun io.Writer
 	// GDocsSelection is the area or path being published as one document; empty
 	// means the whole bundle. The repeatable flag and the per-area fan-out land in
 	// #161 — this carries the single-selection case the backend needs today.
