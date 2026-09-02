@@ -58,6 +58,17 @@ func (b *Backend) Provision(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("gdocs: provision: find document: %w", err)
 	}
+	// A dry run that CREATED the destination would leave an empty document behind —
+	// the opposite of what the flag promises. Provision is therefore find-only here,
+	// and the scan reports an empty destination so the dump shows a first publish.
+	if doc == nil && b.cfg.DryRunWriter != nil {
+		b.mu.Lock()
+		b.docID, b.stateID, b.missing = "would-create-document", "", true
+		b.mu.Unlock()
+		fmt.Fprintf(b.cfg.DryRunWriter, "would create a document for selection %q in drive %s\n",
+			key, b.cfg.DriveID)
+		return nil
+	}
 	if doc == nil {
 		doc, err = b.c.createFile(ctx, driveFile{
 			Name:          b.docTitle(),
@@ -99,6 +110,9 @@ func (b *Backend) readState(ctx context.Context) (sidecar, error) {
 	if b.stateID == "" {
 		return s, nil
 	}
+	if b.missing {
+		return s, nil
+	}
 	raw, err := b.c.downloadFile(ctx, b.stateID)
 	if err != nil {
 		var he *http.Response
@@ -122,6 +136,9 @@ func (b *Backend) readState(ctx context.Context) (sidecar, error) {
 // hash-skip. It merges rather than replaces: a run touches only some nodes, and
 // the untouched ones must keep their state.
 func (b *Backend) WriteBack(ctx context.Context, prov publish.Provenance) error {
+	if b.cfg.DryRunWriter != nil {
+		return nil // a dry run records nothing; there is nothing it wrote
+	}
 	if len(prov.Nodes) == 0 {
 		return nil // an unchanged run writes nothing — the near-noop property
 	}

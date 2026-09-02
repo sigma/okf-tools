@@ -2,7 +2,6 @@ package gdocs
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"path"
 	"strings"
@@ -128,12 +127,21 @@ func (b *Backend) Execute(ctx context.Context, txn publish.Transaction, r backen
 	// reading the document back after the write. This is the carve-out #152
 	// accepted, and it is confined to tabs that actually host anchors.
 	if len(body.anchorStarts) > 0 {
-		ids, err := b.harvestHeadings(ctx, docID, tabID, body.anchorStarts)
-		if err != nil {
-			return res, err
-		}
-		for name, headingID := range ids {
-			res.Anchors[name] = anchorID(tabID, headingID)
+		if b.cfg.DryRunWriter != nil {
+			// A dry run has nothing to read back, but the anchors must still RESOLVE:
+			// the transport gates every citing transaction on them, so leaving them
+			// out would stall the plan and the dump would show only part of the run.
+			for name := range body.anchorStarts {
+				res.Anchors[name] = anchorID(tabID, "would-create-heading")
+			}
+		} else {
+			ids, err := b.harvestHeadings(ctx, docID, tabID, body.anchorStarts)
+			if err != nil {
+				return res, err
+			}
+			for name, headingID := range ids {
+				res.Anchors[name] = anchorID(tabID, headingID)
+			}
 		}
 	}
 	return res, nil
@@ -147,12 +155,18 @@ func (b *Backend) Execute(ctx context.Context, txn publish.Transaction, r backen
 // span it covers is deleted outright, and Google's own sample re-creates it after
 // every rewrite (#158). Re-asserting makes the undocumented case moot.
 func (b *Backend) writeTab(ctx context.Context, docID, tabID, rel string, body rendered) error {
-	end, err := b.tabEndIndex(ctx, docID, tabID)
-	if err != nil {
-		return err
+	end := 0
+	if b.cfg.DryRunWriter == nil {
+		// A dry run against a tab that may not exist cannot read its length, and does
+		// not need to: the dump shows the rewrite it would perform.
+		var err error
+		if end, err = b.tabEndIndex(ctx, docID, tabID); err != nil {
+			return err
+		}
 	}
 
 	var requests []map[string]any
+	var err error
 
 	// deleteNamedRange defaults to ALL TABS when tabsCriteria is omitted (#158), so
 	// omitting it here would strip every other page's identity marker.
@@ -187,9 +201,6 @@ func (b *Backend) writeTab(ctx context.Context, docID, tabID, rel string, body r
 		})
 	}
 
-	if b.cfg.DryRunWriter != nil {
-		return b.dumpRequests(docID, tabID, rel, requests)
-	}
 	_, err = b.c.batchUpdate(ctx, docID, requests)
 	return err
 }
@@ -403,26 +414,6 @@ func disambiguate(title, rel string, taken map[string]string) string {
 		return title
 	}
 	return path.Base(dir) + " / " + title
-}
-
-// dumpRequests writes the requests a run WOULD issue instead of issuing them.
-//
-// The interesting failure mode for this backend is "did I build the right
-// batchUpdate", which an exported Markdown tree says nothing about — so the
-// Docs-specific dry run dumps request payloads rather than rendered content.
-func (b *Backend) dumpRequests(docID, tabID, rel string, requests []map[string]any) error {
-	payload := map[string]any{
-		"documentId": docID,
-		"tabId":      tabID,
-		"node":       rel,
-		"requests":   requests,
-	}
-	raw, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		return err
-	}
-	_, err = b.cfg.DryRunWriter.Write(append(raw, '\n'))
-	return err
 }
 
 // tabIDFromReply digs the minted tabId out of an addDocumentTab reply.

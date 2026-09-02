@@ -10,6 +10,13 @@ human/JSON/SARIF output, a per-package test suite, CI, and flake
 `package`/`app`/`devShell`/`checks`. Still open: Claude Code hook wiring (M5). This document and [RULES.md](RULES.md) remain
 the canonical spec.
 
+> **Google Docs export.** The `okfpub` Google Docs backend was designed and built
+> through a wayfinder map — [sigma/okf-tools#146](https://github.com/sigma/okf-tools/issues/146)
+> — whose child tickets hold the decisions and the evidence behind them (the seam
+> fit, keyless auth, flat tabs, where change-detection state lives, the selection
+> model). That map is the design record for it; this document is not duplicated into
+> a summary that would drift from it.
+
 ## What this is
 
 `okf-tools` provides **`okftool`**, a small, deterministic CLI for authoring and

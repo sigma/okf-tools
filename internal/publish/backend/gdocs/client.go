@@ -30,6 +30,13 @@ type client struct {
 	http  *http.Client
 	docs  string
 	drive string
+	// dry, when set, makes every WRITE dump its payload here instead of issuing
+	// it. Reads still happen: a dry run against a live document should diff against
+	// what is really there, and reading mutates nothing.
+	dry io.Writer
+	// synth counts synthetic ids handed back for writes that never happened, so a
+	// dry run's request stream stays internally consistent.
+	synth int
 
 	mu    sync.Mutex
 	stats publish.RequestStats
@@ -144,6 +151,34 @@ func apiError(method, url string, code int, raw []byte) error {
 	return fmt.Errorf("gdocs: %s %s: %d %s%s", method, url, code, msg, hint)
 }
 
+// dumpBatch renders the requests a run WOULD issue and returns plausible replies,
+// so the caller's own bookkeeping (a minted tabId, say) stays consistent for the
+// rest of the dry run.
+func (c *client) dumpBatch(docID string, requests []map[string]any) ([]map[string]any, error) {
+	payload, err := json.MarshalIndent(map[string]any{
+		"documentId": docID,
+		"requests":   requests,
+	}, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := c.dry.Write(append(payload, '\n')); err != nil {
+		return nil, err
+	}
+	replies := make([]map[string]any, 0, len(requests))
+	for _, req := range requests {
+		if _, ok := req["addDocumentTab"]; ok {
+			c.synth++
+			replies = append(replies, map[string]any{"addDocumentTab": map[string]any{
+				"tabProperties": map[string]any{"tabId": fmt.Sprintf("would-create-t.%d", c.synth)},
+			}})
+			continue
+		}
+		replies = append(replies, map[string]any{})
+	}
+	return replies, nil
+}
+
 // --- Drive ------------------------------------------------------------------
 
 // driveFile is the subset of a Drive file this backend reads.
@@ -191,6 +226,12 @@ func (c *client) findByAppProperty(ctx context.Context, driveID, key, value stri
 // createFile creates a file in the shared drive. supportsAllDrives is required
 // on EVERY shared-drive call, not just this one.
 func (c *client) createFile(ctx context.Context, f driveFile) (*driveFile, error) {
+	if c.dry != nil {
+		c.synth++
+		id := fmt.Sprintf("would-create-file-%d", c.synth)
+		fmt.Fprintf(c.dry, "would create %s %q in %v\n", f.MimeType, f.Name, f.Parents)
+		return &driveFile{ID: id, Name: f.Name, AppProperties: f.AppProperties}, nil
+	}
 	u := fmt.Sprintf("%s/drive/v3/files?supportsAllDrives=true&fields=id,name,appProperties", c.drive)
 	var out driveFile
 	if err := c.do(ctx, http.MethodPost, u, f, &out); err != nil {
@@ -224,6 +265,10 @@ func (c *client) downloadFile(ctx context.Context, id string) ([]byte, error) {
 
 // uploadFile replaces a file's content via the media upload endpoint.
 func (c *client) uploadFile(ctx context.Context, id string, content []byte) error {
+	if c.dry != nil {
+		fmt.Fprintf(c.dry, "would write %d byte(s) of state to %s\n", len(content), id)
+		return nil
+	}
 	u := fmt.Sprintf("%s/upload/drive/v3/files/%s?uploadType=media&supportsAllDrives=true", c.drive, id)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, u, bytes.NewReader(content))
 	if err != nil {
@@ -304,6 +349,9 @@ func (c *client) getDocument(ctx context.Context, id string) (*document, error) 
 func (c *client) batchUpdate(ctx context.Context, id string, requests []map[string]any) ([]map[string]any, error) {
 	if len(requests) == 0 {
 		return nil, nil
+	}
+	if c.dry != nil {
+		return c.dumpBatch(id, requests)
 	}
 	u := fmt.Sprintf("%s/v1/documents/%s:batchUpdate", c.docs, id)
 	var out struct {
