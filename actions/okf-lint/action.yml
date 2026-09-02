@@ -61,7 +61,7 @@ runs:
     # OKF_SETUP_REF: the release workflow rewrites this ref alongside the version
     # markers, so okf-lint@vX.Y.Z installs the okftool released at that same tag.
     - if: steps.probe.outputs.present != 'true'
-      uses: sigma/okf-tools/actions/setup-okftool@v0
+      uses: sigma/okf-tools/actions/setup-okftool@v0.5.0
 
     # Findings first, gate second: generating SARIF before the gate means the
     # annotations exist even when the gate fails, which is when a reviewer most
