@@ -48,14 +48,6 @@ func renderTab(blocks []contentBlock, props []setProps, r backend.Resolver) (ren
 	out := rendered{anchorStarts: map[publish.AnchorName]int{}}
 	var sb strings.Builder
 
-	// Properties lead the tab as plain text. A tab has no property surface of its
-	// own — the carve-out from #152 — so frontmatter is rendered rather than asserted.
-	for _, p := range props {
-		for _, k := range sortedKeys(p.props) {
-			fmt.Fprintf(&sb, "%s: %v\n", k, p.props[k])
-		}
-	}
-
 	for _, blk := range blocks {
 		start := u16(sb.String())
 		text, styles, err := renderBlockText(blk, start, r)
@@ -68,6 +60,20 @@ func renderTab(blocks []contentBlock, props []setProps, r backend.Resolver) (ren
 			out.anchorStarts[a] = start
 		}
 	}
+	// Properties TRAIL the content as a metadata footer. A tab has no property
+	// surface of its own — the carve-out from #152 — so frontmatter is rendered
+	// rather than asserted; but rendering it first made every tab open with
+	// "okf_version: 0.1" instead of its banner and its own heading, which
+	// contradicts the block-0 placement the banner decision fixed (#164).
+	//
+	// The carve-out survives: a frontmatter change still produces visible content,
+	// so it still re-publishes rather than being silently invisible.
+	for _, p := range props {
+		for _, k := range sortedKeys(p.props) {
+			fmt.Fprintf(&sb, "%s: %v\n", k, p.props[k])
+		}
+	}
+
 	out.text = sb.String()
 	return out, nil
 }
