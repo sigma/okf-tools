@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -99,29 +100,29 @@ func TestLoadConfigRejectsMalformed(t *testing.T) {
 // TestSelectBackend: fake needs no creds; notion requires both and is refused
 // without them; an unknown kind errors.
 func TestSelectBackend(t *testing.T) {
-	if _, err := SelectBackend(BackendFake, &Config{}); err != nil {
+	if _, err := SelectBackend(context.Background(), BackendFake, &Config{}, "bundle"); err != nil {
 		t.Errorf("fake backend needs no credentials: %v", err)
 	}
 
 	// The fs/export backend needs no credentials either — it targets the filesystem.
-	if _, err := SelectBackend(BackendFS, &Config{OutDir: t.TempDir()}); err != nil {
+	if _, err := SelectBackend(context.Background(), BackendFS, &Config{OutDir: t.TempDir()}, "bundle"); err != nil {
 		t.Errorf("fs backend needs no credentials: %v", err)
 	}
-	if _, err := SelectBackend(BackendFS, &Config{}); err != nil {
+	if _, err := SelectBackend(context.Background(), BackendFS, &Config{}, "bundle"); err != nil {
 		t.Errorf("fs backend should default its out dir when none is given: %v", err)
 	}
 
-	if _, err := SelectBackend(BackendNotion, &Config{NotionDBID: "ds"}); err == nil {
+	if _, err := SelectBackend(context.Background(), BackendNotion, &Config{NotionDBID: "ds"}, "bundle"); err == nil {
 		t.Error("notion without a token should be refused")
 	}
-	if _, err := SelectBackend(BackendNotion, &Config{NotionToken: "tok"}); err == nil {
+	if _, err := SelectBackend(context.Background(), BackendNotion, &Config{NotionToken: "tok"}, "bundle"); err == nil {
 		t.Error("notion without a db id should be refused")
 	}
-	if _, err := SelectBackend(BackendNotion, &Config{NotionToken: "tok", NotionDBID: "ds"}); err != nil {
+	if _, err := SelectBackend(context.Background(), BackendNotion, &Config{NotionToken: "tok", NotionDBID: "ds"}, "bundle"); err != nil {
 		t.Errorf("notion with both credentials should build: %v", err)
 	}
 
-	if _, err := SelectBackend(BackendKind("bogus"), &Config{}); err == nil {
+	if _, err := SelectBackend(context.Background(), BackendKind("bogus"), &Config{}, "bundle"); err == nil {
 		t.Error("unknown backend kind should error")
 	}
 }

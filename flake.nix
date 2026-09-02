@@ -26,7 +26,7 @@
 
       # Recomputed with `nix build .#okftool` (copy the hash from the mismatch).
       # One Go module, so every derivation below vendors identically.
-      vendorHash = "sha256-A5fl7XTNNcQciOj1M5U+ZUuB4doXSinHv2vkcbeFgO0=";
+      vendorHash = "sha256-AGDTSFPGKejYrrAYAb+YFupbRY6xxci1esST4nxnwLs=";
 
       # mkGo builds one derivation out of this module. subPackages scopes both the
       # build and the checkPhase, so a binary package installs only its own command

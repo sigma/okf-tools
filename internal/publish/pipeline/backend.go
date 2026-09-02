@@ -1,12 +1,14 @@
 package pipeline
 
 import (
+	"context"
 	"fmt"
 	"time"
 
 	"github.com/sigma/okf-tools/internal/publish/backend"
 	"github.com/sigma/okf-tools/internal/publish/backend/fake"
 	"github.com/sigma/okf-tools/internal/publish/backend/fs"
+	"github.com/sigma/okf-tools/internal/publish/backend/gdocs"
 	"github.com/sigma/okf-tools/internal/publish/backend/notion"
 )
 
@@ -22,6 +24,11 @@ const (
 	// BackendFake is the fully in-memory fake backend — the primary test harness,
 	// needing no credentials and touching no network.
 	BackendFake BackendKind = "fake"
+	// BackendGDocs is the Google Docs backend: one document per selection, one tab
+	// per page, in a shared drive. It needs GDRIVE_FOLDER_ID and, in practice,
+	// GDOCS_IMPERSONATE_SA; credentials come from the ambient environment rather
+	// than a key file.
+	BackendGDocs BackendKind = "gdocs"
 	// BackendFS is the filesystem/export backend — okfpub's dry-run / export mode.
 	// It writes the bundle as a tree of files under Config.OutDir instead of
 	// touching a live workspace, needing no credentials and no network.
@@ -39,7 +46,7 @@ const DefaultOutDir = "okfpub-export"
 //
 // SelectBackend never contacts the network: notion.New only builds a client aimed
 // at the API; the first request happens later, inside Run's Scan/Execute.
-func SelectBackend(kind BackendKind, cfg *Config) (backend.Backend, error) {
+func SelectBackend(ctx context.Context, kind BackendKind, cfg *Config, bundleName string) (backend.Backend, error) {
 	switch kind {
 	case BackendNotion:
 		if cfg.NotionToken == "" {
@@ -57,6 +64,17 @@ func SelectBackend(kind BackendKind, cfg *Config) (backend.Backend, error) {
 			opts = append(opts, notion.WithInterval(d))
 		}
 		return notion.New(opts...), nil
+	case BackendGDocs:
+		if cfg.GDriveID == "" {
+			return nil, fmt.Errorf("backend %q requires %s (a SHARED drive id, not a My Drive folder)",
+				BackendGDocs, EnvGDriveID)
+		}
+		return gdocs.New(ctx, gdocs.Config{
+			ImpersonateSA: cfg.GDocsImpersonate,
+			DriveID:       cfg.GDriveID,
+			Bundle:        bundleName,
+			Selection:     cfg.GDocsSelection,
+		})
 	case BackendFake:
 		return fake.New(), nil
 	case BackendFS:
@@ -66,7 +84,8 @@ func SelectBackend(kind BackendKind, cfg *Config) (backend.Backend, error) {
 		}
 		return fs.New(fs.WithRoot(out)), nil
 	default:
-		return nil, fmt.Errorf("unknown backend %q (want %q, %q or %q)", kind, BackendNotion, BackendFake, BackendFS)
+		return nil, fmt.Errorf("unknown backend %q (want %q, %q, %q or %q)",
+			kind, BackendNotion, BackendGDocs, BackendFake, BackendFS)
 	}
 }
 

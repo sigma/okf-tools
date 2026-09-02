@@ -5,18 +5,16 @@ import (
 	"github.com/sigma/okf-tools/internal/publish/backend"
 )
 
-// NewBin opens a request accumulator capped at maxRequests.
+// NewBin opens a fresh request accumulator.
 func (b *Backend) NewBin() backend.Bin { return &bin{} }
 
-// bin accumulates units until their combined request cost exceeds maxRequests.
+// bin accumulates one transaction's worth of units, bounded by request count.
 //
-// FIGHT (the Group ceiling is the wrong axis). A batchUpdate is document-wide: one
-// call can carry requests for EVERY tab, and with the binding quota at 60 writes
-// per minute per user, fusing across nodes is exactly what this backend wants. But
-// GroupKey is an ANTI-BUNDLING key — units of different Groups may never share a
-// transaction — and Group is the node. So the seam forces one batchUpdate per
-// node, which is the opposite of the optimum here. Notion needed per-page grouping
-// because its write endpoint IS per-page; Docs' is per-document.
+// The Group partition the optimizer applies means one bin per NODE, so a
+// document-wide batchUpdate is never assembled. That was measured and accepted:
+// the extra calls come from cycle-breaking (a link needs its target's minted
+// tabId), not from the partition, and Group also carries in-order execution,
+// incremental write-back and cycle-break granularity (#156).
 type bin struct {
 	group    publish.GroupKey
 	hasGroup bool
@@ -24,6 +22,7 @@ type bin struct {
 	units    []unit
 }
 
+// unit is an accumulated AtomicUnit reduced to what Execute needs.
 type unit struct {
 	payload publish.BackendBlock
 	refs    []publish.SymbolicID
@@ -32,7 +31,7 @@ type unit struct {
 
 func (bn *bin) Add(u publish.AtomicUnit) bool {
 	c, _ := u.Cost.(int)
-	if len(bn.units) > 0 && bn.cost+c > maxRequests {
+	if len(bn.units) > 0 && bn.cost+c > maxRequestsPerBatch {
 		return false
 	}
 	if !bn.hasGroup {
@@ -47,7 +46,7 @@ func (bn *bin) Build() publish.Transaction {
 	return &Transaction{group: bn.group, units: bn.units}
 }
 
-// Transaction is one sealed batchUpdate.
+// Transaction is one sealed batchUpdate's worth of work.
 type Transaction struct {
 	group publish.GroupKey
 	units []unit

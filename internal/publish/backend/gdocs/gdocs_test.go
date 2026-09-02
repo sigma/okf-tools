@@ -1,11 +1,12 @@
-// External test package: it drives the WHOLE pipeline (Generation → Optimization
-// → Transport) against the prototype Google Docs backend, offline, exactly as the
-// fs backend's suite does. The point is not to assert a rendering — it is to find
-// out whether the seam carries a document-shaped destination at all.
+// External test package: it drives the WHOLE pipeline (Provision → Scan →
+// Generation → Optimization → Transport → WriteBack) against the Google Docs
+// backend, offline, through an httptest stand-in for Drive and Docs. That is the
+// same discipline the Notion and filesystem backends are held to.
 package gdocs_test
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,10 +14,10 @@ import (
 
 	"github.com/sigma/okf-tools/internal/bundle"
 	"github.com/sigma/okf-tools/internal/publish/backend/gdocs"
-	"github.com/sigma/okf-tools/internal/publish/graph"
-	"github.com/sigma/okf-tools/internal/publish/optimize"
-	"github.com/sigma/okf-tools/internal/publish/transport"
+	"github.com/sigma/okf-tools/internal/publish/pipeline"
 )
+
+const testDriveID = "0ADRIVE"
 
 func loadBundle(t *testing.T, files map[string]string) *bundle.Bundle {
 	t.Helper()
@@ -41,9 +42,7 @@ func loadBundle(t *testing.T, files map[string]string) *bundle.Bundle {
 	return b
 }
 
-// protoBundle exercises the three edge causes the pipeline must sequence: a
-// parent-before-child index, a cross-page link, and a glossary anchor citation.
-func protoBundle() map[string]string {
+func testBundle() map[string]string {
 	return map[string]string{
 		"okf.toml":   "[glossary]\nenabled = true\nfiles = [\"CONTEXT.md\"]\n",
 		"index.md":   "---\nokf_version: \"0.1\"\ntitle: Index\ntype: index\n---\n\n# Index\n\n- [Alpha](/alpha.md)\n- [Beta](/beta.md)\n",
@@ -53,68 +52,135 @@ func protoBundle() map[string]string {
 	}
 }
 
-func run(t *testing.T, be *gdocs.Backend, b *bundle.Bundle) int {
+// newBackend wires a backend at the fake server with no credentials: the
+// transport override bypasses the impersonation path entirely, so the suite
+// needs no Google account and touches no network.
+func newBackend(t *testing.T, srv string) *gdocs.Backend {
 	t.Helper()
+	be, err := gdocs.New(context.Background(), gdocs.Config{
+		DriveID:       testDriveID,
+		Bundle:        "testbundle",
+		Selection:     "concepts",
+		DocsEndpoint:  srv,
+		DriveEndpoint: srv,
+		HTTPClient:    &http.Client{},
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	return be
+}
+
+func TestPublishCreatesATabPerPage(t *testing.T) {
+	fake := newFakeGoogle(t)
+	srv := fake.server()
+	defer srv.Close()
+
+	be := newBackend(t, srv.URL)
+	b := loadBundle(t, testBundle())
+
+	res, err := pipeline.Run(context.Background(), be, b)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	docID := be.DocumentID()
+	if docID == "" {
+		t.Fatal("provision did not resolve a document")
+	}
+
+	titles := fake.tabTitles(docID)
+	t.Logf("tabs: %v", titles)
+	t.Logf("txns=%d requests=%d batchUpdates=%d", res.TxnCount, res.Stats.Requests, fake.batchUpdates)
+
+	for _, want := range []string{"index.md", "alpha.md", "beta.md", "CONTEXT.md"} {
+		if !containsStr(titles, want) {
+			t.Errorf("no tab for %s (got %v)", want, titles)
+		}
+	}
+	if body := fake.tabBody(docID, "alpha.md"); !strings.Contains(body, "Alpha links to") {
+		t.Errorf("alpha tab body missing content: %q", body)
+	}
+	if fake.untabbedWrites != 0 {
+		t.Errorf("%d write(s) omitted a tabId and silently hit the first tab", fake.untabbedWrites)
+	}
+	if !res.Metered {
+		t.Error("backend did not report RequestStats")
+	}
+	if res.Stats.Requests == 0 {
+		t.Error("RequestStats counted no requests")
+	}
+	if sc := fake.sidecar(); !strings.Contains(sc, "alpha.md") || !strings.Contains(sc, "propHash") {
+		t.Errorf("sidecar missing per-node state: %s", sc)
+	}
+}
+
+// TestRerunIsANoop is the property the whole change-detection design rests on: a
+// second publish of unchanged source must touch nothing.
+func TestRerunIsANoop(t *testing.T) {
+	fake := newFakeGoogle(t)
+	srv := fake.server()
+	defer srv.Close()
+
+	b := loadBundle(t, testBundle())
+
+	first := newBackend(t, srv.URL)
+	if _, err := pipeline.Run(context.Background(), first, b); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	docID := first.DocumentID()
+	before := fake.batchUpdates
+	tabsBefore := len(fake.tabTitles(docID))
+
+	// A fresh backend, as a second CLI invocation would be: everything it knows
+	// comes from the drive and the sidecar.
+	second := newBackend(t, srv.URL)
+	res, err := pipeline.Run(context.Background(), second, b)
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+
+	t.Logf("second run: txns=%d batchUpdates %d -> %d", res.TxnCount, before, fake.batchUpdates)
+	if res.TxnCount != 0 {
+		t.Errorf("unchanged re-run emitted %d transaction(s), want 0", res.TxnCount)
+	}
+	if fake.batchUpdates != before {
+		t.Errorf("unchanged re-run issued %d batchUpdate(s)", fake.batchUpdates-before)
+	}
+	if got := len(fake.tabTitles(docID)); got != tabsBefore {
+		t.Errorf("re-run changed the tab count: %d -> %d", tabsBefore, got)
+	}
+	if second.DocumentID() != docID {
+		t.Errorf("re-run did not find the same document: %s != %s", second.DocumentID(), docID)
+	}
+}
+
+// TestProvisionIsIdempotent checks the Provisioner contract directly.
+func TestProvisionIsIdempotent(t *testing.T) {
+	fake := newFakeGoogle(t)
+	srv := fake.server()
+	defer srv.Close()
+
+	be := newBackend(t, srv.URL)
 	ctx := context.Background()
-	scan, err := be.Scan(ctx, 0)
-	if err != nil {
-		t.Fatalf("scan: %v", err)
+	if err := be.Provision(ctx); err != nil {
+		t.Fatalf("provision: %v", err)
 	}
-	g, err := graph.Generate(ctx, b, scan)
-	if err != nil {
-		t.Fatalf("generate: %v", err)
-	}
-	dag := optimize.Optimize(g, be, be)
-	if _, err := transport.New(be).Run(ctx, dag, scan); err != nil {
-		t.Fatalf("transport: %v", err)
-	}
-	return len(dag.Txns)
-}
+	first := be.DocumentID()
 
-// TestPipelineDrivesGoogleDocsShape is the load-bearing question: does the
-// existing pipeline drive a document-of-tabs backend end to end?
-func TestPipelineDrivesGoogleDocsShape(t *testing.T) {
-	b := loadBundle(t, protoBundle())
-	be := gdocs.New()
-
-	txns := run(t, be, b)
-	batch, gets, tabs := be.Stats()
-	t.Logf("first run: %d transactions, %d batchUpdates, %d gets, %d tabs", txns, batch, gets, tabs)
-	t.Logf("document:\n%s", be.Dump())
-	if len(be.Overflow()) > 0 {
-		t.Logf("write-back overflow: %v", be.Overflow())
+	again := newBackend(t, srv.URL)
+	if err := again.Provision(ctx); err != nil {
+		t.Fatalf("re-provision: %v", err)
 	}
-
-	if tabs != 4 {
-		t.Errorf("want a tab per page (4), got %d", tabs)
-	}
-	if !strings.Contains(be.Dump(), "<link ") {
-		t.Error("no cross-reference resolved to a tab link")
-	}
-	// #155: tabs are flat — no tab carries a parent — yet the index tab still shows
-	// the hierarchy as links to its children.
-	if strings.Contains(be.Dump(), `parent="t.`) {
-		t.Error("flat tabs expected, but a tab carries a parentTabId")
+	if again.DocumentID() != first {
+		t.Errorf("provision created a second document: %s != %s", again.DocumentID(), first)
 	}
 }
 
-// TestRerunIsNearNoop checks the property the whole change-detection design rests
-// on: an unchanged second run should touch nothing.
-func TestRerunIsNearNoop(t *testing.T) {
-	b := loadBundle(t, protoBundle())
-	be := gdocs.New()
-	run(t, be, b)
-	before, _, _ := be.Stats()
-	t.Logf("appProperties after run 1: %v", be.Props())
-	t.Logf("overflow after run 1: %v", be.Overflow())
-
-	second := run(t, be, b)
-	after, _, tabs := be.Stats()
-	t.Logf("second run: %d transactions, batchUpdates %d -> %d, %d tabs", second, before, after, tabs)
-	if second != 0 {
-		t.Errorf("unchanged re-run should emit no transactions, got %d", second)
+func containsStr(hay []string, needle string) bool {
+	for _, s := range hay {
+		if s == needle {
+			return true
+		}
 	}
-	if tabs != 4 {
-		t.Errorf("re-run duplicated tabs: %d", tabs)
-	}
+	return false
 }

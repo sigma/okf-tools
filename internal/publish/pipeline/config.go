@@ -25,6 +25,17 @@ import (
 const (
 	EnvNotionToken = "NOTION_TOKEN"
 	EnvNotionDBID  = "NOTION_DB_ID"
+	// EnvGDocsImpersonate names the service account the Google Docs backend
+	// impersonates. There is deliberately no key-file variable: newer Google
+	// organizations forbid service-account keys outright, so the identity is
+	// reached from ambient credentials (a developer's gcloud login, or Workload
+	// Identity Federation in CI) rather than carried as a secret
+	// (sigma/okf-tools#154).
+	EnvGDocsImpersonate = "GDOCS_IMPERSONATE_SA"
+	// EnvGDriveID names the SHARED DRIVE the document lives in. It must be a shared
+	// drive: a service account has no storage quota and cannot own files, so a My
+	// Drive folder fails at write time with a misleading 403 (#149).
+	EnvGDriveID = "GDRIVE_FOLDER_ID"
 )
 
 // Config is the resolved okfpub config surface: the repo-root areas.json and
@@ -58,6 +69,16 @@ type Config struct {
 	// place, while a non-positive value disables pacing outright. Collapsing the two
 	// would make `--interval 0` silently pace at the default.
 	NotionInterval *time.Duration
+	// GDocsImpersonate is the service account the Google Docs backend impersonates
+	// (GDOCS_IMPERSONATE_SA).
+	GDocsImpersonate string
+	// GDriveID is the shared drive the Google Docs backend publishes into
+	// (GDRIVE_FOLDER_ID).
+	GDriveID string
+	// GDocsSelection is the area or path being published as one document; empty
+	// means the whole bundle. The repeatable flag and the per-area fan-out land in
+	// #161 — this carries the single-selection case the backend needs today.
+	GDocsSelection string
 }
 
 // LoadOptions parameterizes LoadConfig — the resolved flag/env inputs. Paths are
@@ -93,8 +114,10 @@ func LoadConfig(o LoadOptions) (*Config, error) {
 	}
 
 	cfg := &Config{
-		NotionToken: firstNonEmpty(o.Token, getenv(EnvNotionToken)),
-		NotionDBID:  firstNonEmpty(o.DBID, getenv(EnvNotionDBID)),
+		NotionToken:      firstNonEmpty(o.Token, getenv(EnvNotionToken)),
+		NotionDBID:       firstNonEmpty(o.DBID, getenv(EnvNotionDBID)),
+		GDocsImpersonate: getenv(EnvGDocsImpersonate),
+		GDriveID:         getenv(EnvGDriveID),
 	}
 
 	if o.AreasPath != "" {

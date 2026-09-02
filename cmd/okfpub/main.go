@@ -90,13 +90,15 @@ func runCmd(args []string) error {
 	cfg.OutDir = *outDir
 	cfg.NotionInterval = interval
 
+	ctx := context.Background()
+
 	// --dry-run is sugar for --backend fs: export to the filesystem instead of
 	// touching a live workspace.
 	kind := pipeline.BackendKind(*backendName)
 	if *dryRun {
 		kind = pipeline.BackendFS
 	}
-	be, err := pipeline.SelectBackend(kind, cfg)
+	be, err := pipeline.SelectBackend(ctx, kind, cfg, filepath.Base(b.Root))
 	if err != nil {
 		return err
 	}
@@ -143,7 +145,7 @@ func runCmd(args []string) error {
 			src.BaseURL, src.Ref, prefixLabel(src.Prefix))
 	}
 
-	res, err := pipeline.Run(context.Background(), be, b, runOpts...)
+	res, err := pipeline.Run(ctx, be, b, runOpts...)
 	if err != nil {
 		return err
 	}
