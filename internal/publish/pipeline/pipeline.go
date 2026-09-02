@@ -48,8 +48,9 @@ type Result struct {
 type Option func(*options)
 
 type options struct {
-	scanMode backend.ScanMode
-	banner   *graph.Banner
+	scanMode  backend.ScanMode
+	banner    *graph.Banner
+	selection func(rel string) bool
 }
 
 // WithBanner threads a resolved generated-page disclaimer banner into Generation,
@@ -67,6 +68,13 @@ func WithBanner(bn *graph.Banner) Option {
 // steady-state default) or backend.ScanRecompute (the opt-in full live-block walk
 // for true drift detection and subpage/anchor self-healing). Steady-state publishes
 // leave it unset; a scheduled/periodic drift sweep opts into recompute.
+// WithSelection narrows this run to the pages a selection contains, so one
+// bundle can publish as several documents. Unset publishes everything, leaving
+// every existing backend's behaviour unchanged.
+func WithSelection(contains func(rel string) bool) Option {
+	return func(o *options) { o.selection = contains }
+}
+
 func WithScanMode(mode backend.ScanMode) Option {
 	return func(o *options) { o.scanMode = mode }
 }
@@ -101,6 +109,9 @@ func Run(ctx context.Context, be backend.Backend, b *bundle.Bundle, opts ...Opti
 	var genOpts []graph.Option
 	if o.banner != nil {
 		genOpts = append(genOpts, graph.WithBanner(o.banner))
+	}
+	if o.selection != nil {
+		genOpts = append(genOpts, graph.WithSelection(o.selection))
 	}
 	// A backend that reconstructs a matching content hash from its live scan supplies
 	// a source-side hasher so change detection compares like against like. Without it

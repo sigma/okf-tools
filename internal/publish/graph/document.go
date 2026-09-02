@@ -131,7 +131,7 @@ func anchorName(slug string) publish.AnchorName {
 // citation, dangling) stays plain text — no Ref, no edge. Classification reuses
 // the bundle's own resolution (d.Resolved), matched to AST link nodes by identity
 // via resolveByNode, so generation never re-implements link parsing.
-func buildDocument(d *bundle.Doc, banner *Banner) (doc *publish.Document, refs []publish.SymbolicID, anchors []publish.AnchorName) {
+func buildDocument(d *bundle.Doc, banner *Banner, scope *selectionScope) (doc *publish.Document, refs []publish.SymbolicID, anchors []publish.AnchorName) {
 	group := publish.GroupKey(publish.NodeRef(d.Rel))
 	doc = &publish.Document{Group: group}
 
@@ -150,6 +150,7 @@ func buildDocument(d *bundle.Doc, banner *Banner) (doc *publish.Document, refs [
 			src:      body,
 			lm:       parser.NewLineMapper(body, d.BodyStartLine),
 			resolved: resolveByNode(root, d),
+			scope:    scope,
 		}
 		b.walk(root, 0)
 		doc.Blocks = append(doc.Blocks, b.blocks...)
@@ -171,7 +172,7 @@ func buildDocument(d *bundle.Doc, banner *Banner) (doc *publish.Document, refs [
 // WithHasher round-trip contract (see hash.go). Refs and anchors are irrelevant to
 // a content fingerprint and dropped; only the ordered blocks matter.
 func ProjectDocument(d *bundle.Doc, bn *Banner) publish.Document {
-	doc, _, _ := buildDocument(d, bn)
+	doc, _, _ := buildDocument(d, bn, nil)
 	return *doc
 }
 
@@ -186,6 +187,10 @@ type docBuilder struct {
 	blocks   []publish.Block
 	refs     []publish.SymbolicID
 	resolved map[ast.Node]*bundle.ResolvedLink
+	// scope, when set, narrows this run to a selection; a reference leaving it
+	// cannot be a late-bound Ref, because nothing in this run will ever create the
+	// node it points at.
+	scope *selectionScope
 }
 
 // resolveByNode zips the link-like nodes of root, in depth-first order, against
@@ -419,6 +424,18 @@ func (b *docBuilder) inlinesOf(n ast.Node) (inlines []Inline, refs []publish.Sym
 				// image inside a linked image) simply sits unread in the map.
 				rl := b.resolved[c]
 				if id, ok := refOf(rl); ok {
+					// A cross-reference whose target is outside the selection is
+					// DEMOTED to an ordinary link at the repo source, per #151. It
+					// must not stay a Ref: the transport gates a transaction on its
+					// Refs resolving, and a node this run never publishes never
+					// resolves — which deadlocks the drain rather than degrading
+					// the link.
+					if text, url, demoted := b.scope.demote(id, rl); demoted {
+						if text != "" {
+							inlines = append(inlines, Inline{Text: text, URL: url})
+						}
+						break
+					}
 					inlines = append(inlines, Inline{Ref: &Ref{ID: id}})
 					refs = append(refs, id)
 				} else if rl != nil && rl.Text != "" {

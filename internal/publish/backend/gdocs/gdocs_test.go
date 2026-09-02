@@ -230,6 +230,64 @@ func assertCrossReferences(t *testing.T, fake *fakeGoogle, docID string) {
 	}
 }
 
+// TestSelectionNarrowsTheDocument drives a real fan-out slice end to end: a
+// selection publishes only its own pages plus the glossary, and each selection
+// gets its OWN document, found by its own identity key.
+func TestSelectionNarrowsTheDocument(t *testing.T) {
+	fake := newFakeGoogle(t)
+	srv := fake.server()
+	defer srv.Close()
+
+	b := loadBundle(t, testBundle())
+	be, err := gdocs.New(context.Background(), gdocs.Config{
+		DriveID: testDriveID, Bundle: "testbundle", Selection: "alpha-only",
+		DocsEndpoint: srv.URL, DriveEndpoint: srv.URL, HTTPClient: &http.Client{},
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+
+	only := map[string]bool{"alpha.md": true, "CONTEXT.md": true}
+	res, err := pipeline.Run(context.Background(), be, b,
+		pipeline.WithSelection(func(rel string) bool { return only[rel] }))
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	titles := fake.tabTitles(be.DocumentID())
+	t.Logf("selection tabs: %v (txns=%d)", titles, res.TxnCount)
+
+	if containsStr(titles, "Beta") || containsStr(titles, "Index") {
+		t.Errorf("pages outside the selection were published: %v", titles)
+	}
+	for _, want := range []string{"Alpha", "Context"} {
+		if !containsStr(titles, want) {
+			t.Errorf("selection missing %q: %v", want, titles)
+		}
+	}
+
+	// The link to Beta is DEMOTED, not dropped and not left dangling: its text
+	// survives, and it targets no tab (there is no Beta tab in this document).
+	body := fake.tabBody(be.DocumentID(), "Alpha")
+	if !strings.Contains(body, "Beta") && !strings.Contains(body, "beta") {
+		t.Errorf("the out-of-selection reference lost its text: %q", body)
+	}
+	for _, link := range fake.linksOf(be.DocumentID(), "Alpha") {
+		if _, ok := link["tabId"]; ok {
+			t.Errorf("a reference outside the selection still targets a tab: %v", link)
+		}
+	}
+	// The glossary citation still resolves, because the glossary is in scope.
+	var sawHeading bool
+	for _, link := range fake.linksOf(be.DocumentID(), "Alpha") {
+		if _, ok := link["heading"]; ok {
+			sawHeading = true
+		}
+	}
+	if !sawHeading {
+		t.Error("the glossary citation should still resolve inside a narrowed document")
+	}
+}
+
 func containsStr(hay []string, needle string) bool {
 	for _, s := range hay {
 		if s == needle {
