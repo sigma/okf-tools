@@ -8,198 +8,234 @@ import (
 
 	"github.com/sigma/okf-tools/internal/publish"
 	"github.com/sigma/okf-tools/internal/publish/backend"
-	"github.com/sigma/okf-tools/internal/publish/graph"
 )
 
-// Execute applies one sealed transaction to the fake document.
+// Execute applies one sealed transaction as a batchUpdate against the
+// destination document, resolving late-bound Refs as it renders.
 //
-// It models the real API's three-phase shape for any transaction that both hosts
-// anchors and links to them:
-//
-//  1. batchUpdate — insert the content, links to own anchors left unresolved;
-//  2. documents.get — harvest the READ-ONLY headingIds the insert produced;
-//  3. batchUpdate — apply the links now that their targets have ids.
-//
-// FIGHT (resolve-then-write is not atomic here). The seam's contract is that the
-// transport gates a transaction on its Refs and the backend performs "one atomic
-// resolve-then-write". Notion can honour that because POST /pages RETURNS the
-// block ids it minted. The Docs batchUpdate reply carries no headingId —
-// ParagraphStyle.headingId is documented read-only — so the id of an anchor this
-// very transaction hosts cannot be known until a subsequent read. A backend that
-// hosts and cites an anchor in one transaction must therefore write twice.
-func (b *Backend) Execute(_ context.Context, txn publish.Transaction, r backend.Resolver) (publish.ExecResult, error) {
+// The unit of work is a TAB, so a transaction touches exactly one node: create
+// its tab, replace its content, or delete it.
+func (b *Backend) Execute(ctx context.Context, txn publish.Transaction, r backend.Resolver) (publish.ExecResult, error) {
 	t, ok := txn.(*Transaction)
 	if !ok {
-		return publish.ExecResult{}, fmt.Errorf("gdocs: foreign transaction %T", txn)
+		return publish.ExecResult{}, fmt.Errorf("gdocs: foreign transaction type %T", txn)
 	}
+	rel, err := relOf(t.group)
+	if err != nil {
+		return publish.ExecResult{}, err
+	}
+
+	b.mu.Lock()
+	docID := b.docID
+	tabID := b.tabs[rel]
+	b.mu.Unlock()
+	if docID == "" {
+		return publish.ExecResult{}, fmt.Errorf("gdocs: execute before provision")
+	}
+
 	res := publish.ExecResult{
 		Nodes:   map[publish.SymbolicID]publish.BackendID{},
 		Anchors: map[publish.AnchorName]publish.BackendID{},
 	}
-	rel := publish.SymbolicID(t.group).Rel()
-
-	// Phase 1: the writes that establish structure and content.
-	b.svc.batchUpdates++
-	tb := b.tabFor(rel)
 
 	var (
-		hosted     []publish.AnchorName
-		deferred   []int // indexes into tb.body needing a second pass
-		wantsLocal bool
+		body     strings.Builder
+		hosted   []publish.AnchorName
+		hasWrite bool
 	)
 
 	for _, u := range t.units {
 		switch p := u.payload.(type) {
 		case createTab:
-			// A create is an AddDocumentTabRequest; the tabId comes back server-minted.
-			tb = b.mint(rel, u.refs, r)
-			res.Nodes[p.node] = publish.BackendID(tb.id)
+			id, err := b.createTab(ctx, docID, rel)
+			if err != nil {
+				return res, err
+			}
+			tabID = id
+			res.Nodes[p.node] = publish.BackendID(id)
+
+		case deleteTab:
+			if tabID == "" {
+				continue // nothing to remove; a scan that saw no tab already dropped it
+			}
+			if err := b.deleteTab(ctx, docID, tabID); err != nil {
+				return res, err
+			}
+			b.mu.Lock()
+			delete(b.tabs, rel)
+			b.mu.Unlock()
+			return res, nil
 
 		case setProps:
-			// Properties become content: a leading key/value block.
 			keys := make([]string, 0, len(p.props))
 			for k := range p.props {
 				keys = append(keys, k)
 			}
 			sort.Strings(keys)
-			var sb strings.Builder
-			sb.WriteString("[props]")
-			for _, k := range keys {
-				fmt.Fprintf(&sb, " %s=%v", k, p.props[k])
-			}
-			tb.body = append(tb.body, sb.String())
-
-		case deleteTab:
-			b.drop(rel)
-			return res, nil
+			body.WriteString(renderProps(p.props, keys))
+			hasWrite = true
 
 		case contentBlock:
-			line, unresolved := b.render(p, r)
-			tb.body = append(tb.body, line)
-			if unresolved {
-				deferred = append(deferred, len(tb.body)-1)
-				wantsLocal = true
+			line, err := renderBlock(p, r)
+			if err != nil {
+				return res, err
 			}
-			for _, a := range p.anchors {
-				hosted = append(hosted, a)
-				// The heading id is NOT available from the write. It is minted by the
-				// service and only observable on a subsequent read.
-				b.svc.nextHeading++
-				tb.headingIDs[a] = fmt.Sprintf("h.%d", b.svc.nextHeading)
-			}
+			body.WriteString(line)
+			hosted = append(hosted, p.anchors...)
+			hasWrite = true
 		}
 	}
 
-	// Phase 2: read back the ids the write produced (documents.get). This
-	// round-trip exists solely because headingId is read-only.
-	if len(hosted) > 0 {
-		b.svc.gets++
-		for _, a := range hosted {
-			res.Anchors[a] = publish.BackendID(tb.headingIDs[a])
-		}
+	if !hasWrite {
+		return res, nil
+	}
+	if tabID == "" {
+		return res, fmt.Errorf("gdocs: no tab for %s; a create must precede its content", rel)
+	}
+	if err := b.replaceTabContent(ctx, docID, tabID, body.String()); err != nil {
+		return res, err
 	}
 
-	// Phase 3: a second write applying links whose targets this transaction hosted.
-	if wantsLocal {
-		b.svc.batchUpdates++
-		local := map[publish.SymbolicID]publish.BackendID{}
-		for a, id := range tb.headingIDs {
-			local[publish.AnchorRef(a)] = publish.BackendID(id)
-		}
-		rr := backend.WithOverlay(r, local)
-		for _, i := range deferred {
-			tb.body[i] = strings.ReplaceAll(tb.body[i], "<<unresolved>>", "")
-			_ = rr
-		}
+	// Every anchor this tab hosts resolves to the tab itself. That is deliberately
+	// coarse: a real anchor resolves to a heading id, which is read-only and needs
+	// the second read-then-write pass (#152), and that lands with the real
+	// tokenizer (#160). Reporting the tab keeps every reference RESOLVABLE in the
+	// meantime rather than failing the transport's readiness gate.
+	for _, a := range hosted {
+		res.Anchors[a] = publish.BackendID(tabID)
 	}
 	return res, nil
 }
 
-// tabFor returns the tab backing a node path, or nil when it has none yet.
-func (b *Backend) tabFor(rel string) *tab {
-	if id, ok := b.pathToTab[rel]; ok {
-		return b.svc.tabByID(id)
+// createTab adds a tab and returns its server-minted id.
+//
+// parentTabId is deliberately never set: tabs are flat (#155). The parent Ref the
+// optimizer stamped on this unit is still consumed by the transport's readiness
+// gate, so ordering is unaffected.
+func (b *Backend) createTab(ctx context.Context, docID, rel string) (string, error) {
+	replies, err := b.c.batchUpdate(ctx, docID, []map[string]any{
+		{"addDocumentTab": map[string]any{
+			"tabProperties": map[string]any{"title": rel},
+		}},
+	})
+	if err != nil {
+		return "", fmt.Errorf("gdocs: create tab for %s: %w", rel, err)
 	}
-	return nil
+	id := tabIDFromReply(replies)
+	if id == "" {
+		return "", fmt.Errorf("gdocs: create tab for %s: reply carried no tabId", rel)
+	}
+	b.mu.Lock()
+	b.tabs[rel] = id
+	b.mu.Unlock()
+	return id, nil
 }
 
-// mint creates the tab for a node.
+// deleteTab removes a tab. It CASCADES to child tabs, which is safe here only
+// because tabs are flat.
+func (b *Backend) deleteTab(ctx context.Context, docID, tabID string) error {
+	_, err := b.c.batchUpdate(ctx, docID, []map[string]any{
+		{"deleteTab": map[string]any{"tabId": tabID}},
+	})
+	return err
+}
+
+// replaceTabContent empties a tab and writes text into it.
 //
-// FIGHT (CreateNode is not "create a node"). The parent Ref a create carries
-// resolves to the PARENT TAB's id, which is what parentTabId wants — so nesting
-// works. But a Docs tab has no independent existence: it is a slot in one file,
-// and the file itself must already exist (created via Drive, not Docs). So the
-// backend needs a document-level bootstrap that the seam has no op for; the
-// closest fit is the optional Provisioner role, which is where this prototype
-// would put it.
-func (b *Backend) mint(rel string, refs []publish.SymbolicID, r backend.Resolver) *tab {
-	// FLAT TABS (#155): the parent Ref is still consumed — the transport gates on it,
-	// so the create still waits for its parent — but it is NOT written to
-	// parentTabId. The hierarchy stays visible through the index page's links.
-	for _, ref := range refs {
-		if _, isAnchor := ref.AnchorName(); isAnchor {
+// Both requests carry an explicit tabId. That is not optional politeness: an
+// omitted tabId silently targets the FIRST tab of the document (#147), so a
+// missing one here would quietly overwrite the wrong page.
+func (b *Backend) replaceTabContent(ctx context.Context, docID, tabID, text string) error {
+	end, err := b.tabEndIndex(ctx, docID, tabID)
+	if err != nil {
+		return err
+	}
+	var requests []map[string]any
+	// A body's final newline cannot be deleted, so the range stops one short of it.
+	if end > 2 {
+		requests = append(requests, map[string]any{
+			"deleteContentRange": map[string]any{
+				"range": map[string]any{"tabId": tabID, "startIndex": 1, "endIndex": end - 1},
+			},
+		})
+	}
+	requests = append(requests, map[string]any{
+		"insertText": map[string]any{
+			"endOfSegmentLocation": map[string]any{"tabId": tabID},
+			"text":                 text,
+		},
+	})
+	_, err = b.c.batchUpdate(ctx, docID, requests)
+	return err
+}
+
+// tabEndIndex reports the end index of a tab's body content.
+func (b *Backend) tabEndIndex(ctx context.Context, docID, tabID string) (int, error) {
+	doc, err := b.c.getDocument(ctx, docID)
+	if err != nil {
+		return 0, err
+	}
+	var found int
+	var walk func([]documentTab)
+	walk = func(tabs []documentTab) {
+		for _, t := range tabs {
+			if t.TabProperties.TabID == tabID {
+				for _, el := range t.DocumentTab.Body.Content {
+					if el.EndIndex > found {
+						found = el.EndIndex
+					}
+				}
+			}
+			walk(t.ChildTabs)
+		}
+	}
+	walk(doc.Tabs)
+	return found, nil
+}
+
+// renderBlock renders one block to plain text, resolving every late-bound Ref.
+//
+// Resolution happens even though the rendering is plain: a Ref that cannot
+// resolve is a contract violation the transport's gate should have prevented, and
+// surfacing it here rather than silently dropping the reference is what keeps
+// #160's real link rendering an addition rather than a repair.
+func renderBlock(p contentBlock, r backend.Resolver) (string, error) {
+	resolved, err := backend.ResolveRuns(p.runs, r)
+	if err != nil {
+		return "", err
+	}
+	var sb strings.Builder
+	for _, rr := range resolved {
+		switch {
+		case rr.Run.Ref != "":
+			sb.WriteString(rr.Run.Text)
+		case rr.Run.Link != "":
+			sb.WriteString(rr.Run.Text)
+		default:
+			sb.WriteString(rr.Run.Text)
+		}
+	}
+	line := strings.TrimRight(sb.String(), "\n")
+	if line == "" {
+		return "", nil
+	}
+	return line + "\n", nil
+}
+
+// tabIDFromReply digs the minted tabId out of an addDocumentTab reply.
+func tabIDFromReply(replies []map[string]any) string {
+	for _, rep := range replies {
+		add, ok := rep["addDocumentTab"].(map[string]any)
+		if !ok {
 			continue
 		}
-		_, _ = r.Resolve(ref)
-	}
-	t := b.svc.addTab(rel, "")
-	b.pathToTab[rel] = t.id
-	// The find-or-create key: one appProperty per node.
-	//
-	// FIGHT (appProperties cannot hold per-node state). Drive allows 30 private
-	// properties per app at 124 bytes per key+value pair. A bundle with more than
-	// 30 pages therefore cannot store one property per tab at all.
-	b.svc.appProps["okf:"+rel] = t.id
-	return t
-}
-
-func (b *Backend) drop(rel string) {
-	id := b.pathToTab[rel]
-	out := b.svc.tabs[:0]
-	for _, t := range b.svc.tabs {
-		if t.id != id {
-			out = append(out, t)
+		props, ok := add["tabProperties"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if id, ok := props["tabId"].(string); ok {
+			return id
 		}
 	}
-	b.svc.tabs = out
-	delete(b.pathToTab, rel)
-	delete(b.svc.appProps, "okf:"+rel)
-}
-
-// render turns a content block into its rendered line, resolving refs it can and
-// reporting whether any ref had to be deferred to the second pass.
-func (b *Backend) render(p contentBlock, r backend.Resolver) (string, bool) {
-	var sb strings.Builder
-	switch graph.BlockKind(p.kind) {
-	case graph.Heading:
-		sb.WriteString(strings.Repeat("#", max(p.level, 1)) + " ")
-	case graph.ListItem:
-		sb.WriteString("- ")
-	case graph.CodeBlock:
-		sb.WriteString("[code] ")
-	}
-	deferred := false
-	for _, run := range p.runs {
-		switch {
-		case run.Ref != "":
-			if id, ok := r.Resolve(run.Ref); ok {
-				fmt.Fprintf(&sb, "<link %s>", id)
-			} else {
-				sb.WriteString("<<unresolved>>")
-				deferred = true
-			}
-		case run.Link != "":
-			fmt.Fprintf(&sb, "%s(%s)", run.Text, run.Link)
-		default:
-			sb.WriteString(run.Text)
-		}
-	}
-	return sb.String(), deferred
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
+	return ""
 }

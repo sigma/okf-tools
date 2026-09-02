@@ -291,7 +291,7 @@ func TestRunWithoutRequestReporterReportsZeroStats(t *testing.T) {
 // Notion backend that meters traffic, and an unset one leaves the default in place.
 func TestSelectBackendAcceptsAPacingInterval(t *testing.T) {
 	for _, d := range []*time.Duration{nil, ptr(0 * time.Second), ptr(50 * time.Millisecond), ptr(-1 * time.Second)} {
-		be, err := SelectBackend(BackendNotion, &Config{NotionToken: "tok", NotionDBID: "ds1", NotionInterval: d})
+		be, err := SelectBackend(context.Background(), BackendNotion, &Config{NotionToken: "tok", NotionDBID: "ds1", NotionInterval: d}, "bundle")
 		if err != nil {
 			t.Fatalf("SelectBackend(interval=%v): %v", d, err)
 		}

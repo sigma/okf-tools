@@ -2,24 +2,32 @@ package gdocs
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/sigma/okf-tools/internal/publish"
 	"github.com/sigma/okf-tools/internal/publish/graph"
 )
 
-// Tokenize breaks a document into one unit per block. Each unit is one
-// batchUpdate request (insertText, plus its styling request), so Cost is the
-// request count — the honest currency for a backend whose transaction is an
-// ordered request array.
+// maxRequestsPerBatch bounds one batchUpdate. The API documents no request-count
+// cap, so this is a self-imposed ceiling that keeps a single failed batch small
+// enough to reason about — the whole batch is atomic, so a huge one is
+// all-or-nothing over an entire document.
+const maxRequestsPerBatch = 200
+
+// Tokenize turns a document's blocks into units.
+//
+// This is the PLACEHOLDER tokenizer: every block becomes one plain paragraph, and
+// the construct→request mapping from #150 (headings, lists, tables, images,
+// inline styles, code shading) lands in #160. What is real here is the SHAPE —
+// one unit per block, cost in requests, the group as the affinity key, and Refs
+// and Anchors preserved so late binding and the anchor map survive.
 func (b *Backend) Tokenize(doc publish.Document) []publish.AtomicUnit {
 	units := make([]publish.AtomicUnit, 0, len(doc.Blocks))
 	for _, blk := range doc.Blocks {
 		kind, level, _, runs, hadInlineRefs := graph.RunsOf(blk.Content)
 		u := publish.AtomicUnit{
-			Payload: contentBlock{kind: int(kind), level: level, runs: runs, anchors: blk.Anchors},
-			// A heading costs 2 requests (insertText + updateParagraphStyle); a
-			// paragraph costs 1. Cost is per-backend, so this arithmetic stays here.
-			Cost:    costOf(kind),
+			Payload: contentBlock{kind: kind, level: level, runs: runs, anchors: blk.Anchors},
+			Cost:    1,
 			Group:   doc.Group,
 			Refs:    publish.RefsOf(runs),
 			Anchors: blk.Anchors,
@@ -32,27 +40,46 @@ func (b *Backend) Tokenize(doc publish.Document) []publish.AtomicUnit {
 	return units
 }
 
-func costOf(kind graph.BlockKind) int {
-	switch kind {
-	case graph.Heading, graph.CodeBlock, graph.Quote:
-		return 2 // insert + style
-	case graph.Table:
-		return 3 // insertTable + cell inserts + style
-	default:
-		return 1
-	}
-}
-
-// TokenizeOp mints the single unit for a non-content op.
+// TokenizeOp mints the single unit for a non-content op. The optimizer stamps the
+// unit's Group and Refs.
 func (b *Backend) TokenizeOp(op publish.NonContentOp) publish.AtomicUnit {
 	switch op.Kind {
 	case publish.CreateOp:
 		return publish.AtomicUnit{Payload: createTab{node: op.Node}, Cost: 1}
 	case publish.PropertiesOp:
+		// Properties have no home on a tab, so they are rendered as content — the
+		// carve-out from #152. The unit still exists so the op flows through one path.
 		return publish.AtomicUnit{Payload: setProps{node: op.Node, props: op.Props}, Cost: 1}
 	case publish.DeleteOp:
 		return publish.AtomicUnit{Payload: deleteTab{node: op.Node}, Cost: 1}
 	default:
 		panic(fmt.Sprintf("gdocs: unknown NonContentOpKind %d", op.Kind))
 	}
+}
+
+// --- payloads (opaque to the pipeline) --------------------------------------
+
+type createTab struct{ node publish.SymbolicID }
+
+type deleteTab struct{ node publish.SymbolicID }
+
+type setProps struct {
+	node  publish.SymbolicID
+	props map[string]any
+}
+
+type contentBlock struct {
+	kind    graph.BlockKind
+	level   int
+	runs    []publish.Run
+	anchors []publish.AnchorName
+}
+
+// renderProps flattens a node's properties into the leading text of its tab.
+func renderProps(props map[string]any, keys []string) string {
+	var sb strings.Builder
+	for _, k := range keys {
+		fmt.Fprintf(&sb, "%s: %v\n", k, props[k])
+	}
+	return sb.String()
 }
