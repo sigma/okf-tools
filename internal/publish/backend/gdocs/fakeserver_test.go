@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf16"
 )
 
 // fakeGoogle is an in-memory stand-in for the Drive and Docs APIs: enough of both
@@ -50,6 +51,20 @@ type fakeTab struct {
 	id    string
 	title string
 	body  string
+	// headings maps a paragraph start index to the headingId the server assigns.
+	// The real API mints these itself and exposes them as READ-ONLY, which is why
+	// the backend has to read the document back to learn them.
+	headings map[int]string
+	// links records every link applied to this tab's text, so a test can assert
+	// what a cross-reference actually targeted rather than trusting the text.
+	links []map[string]any
+	// namedRanges records identity markers by name, so a test can assert they are
+	// re-asserted on every rewrite rather than assumed to survive.
+	namedRanges map[string]bool
+}
+
+func newFakeTab(id, title string) *fakeTab {
+	return &fakeTab{id: id, title: title, headings: map[int]string{}, namedRanges: map[string]bool{}}
 }
 
 func newFakeGoogle(t *testing.T) *fakeGoogle {
@@ -93,7 +108,7 @@ func (f *fakeGoogle) driveFiles(w http.ResponseWriter, r *http.Request) {
 		file := &fakeFile{id: id, name: in.Name, mimeType: in.MimeType, parents: in.Parents, appProps: in.AppProperties}
 		f.files[id] = file
 		if in.MimeType == "application/vnd.google-apps.document" {
-			f.docs[id] = &fakeDoc{id: id, tabs: []*fakeTab{{id: "t.0", title: "Tab 1"}}}
+			f.docs[id] = &fakeDoc{id: id, tabs: []*fakeTab{newFakeTab("t.0", "Tab 1")}}
 		}
 		writeJSON(w, map[string]any{"id": id, "name": in.Name, "appProperties": in.AppProperties})
 		return
@@ -166,13 +181,19 @@ func (f *fakeGoogle) getDocument(w http.ResponseWriter, r *http.Request, id stri
 	}
 	tabs := make([]map[string]any, 0, len(doc.tabs))
 	for _, tab := range doc.tabs {
+		content := []map[string]any{{"endIndex": u16len(tab.body) + 2}}
+		for start, hid := range tab.headings {
+			content = append(content, map[string]any{
+				"startIndex": start,
+				"endIndex":   start + 1,
+				"paragraph": map[string]any{
+					"paragraphStyle": map[string]any{"headingId": hid, "namedStyleType": "HEADING_6"},
+				},
+			})
+		}
 		tabs = append(tabs, map[string]any{
 			"tabProperties": map[string]any{"tabId": tab.id, "title": tab.title},
-			"documentTab": map[string]any{
-				"body": map[string]any{
-					"content": []map[string]any{{"endIndex": len([]rune(tab.body)) + 2}},
-				},
-			},
+			"documentTab":   map[string]any{"body": map[string]any{"content": content}},
 		})
 	}
 	writeJSON(w, map[string]any{"documentId": id, "tabs": tabs})
@@ -198,7 +219,7 @@ func (f *fakeGoogle) batchUpdate(w http.ResponseWriter, r *http.Request, id stri
 		case req["addDocumentTab"] != nil:
 			props, _ := req["addDocumentTab"].(map[string]any)["tabProperties"].(map[string]any)
 			title, _ := props["title"].(string)
-			tab := &fakeTab{id: f.next("t."), title: title}
+			tab := newFakeTab(f.next("t."), title)
 			doc.tabs = append(doc.tabs, tab)
 			replies = append(replies, map[string]any{
 				"addDocumentTab": map[string]any{"tabProperties": map[string]any{"tabId": tab.id, "title": title}},
@@ -215,17 +236,89 @@ func (f *fakeGoogle) batchUpdate(w http.ResponseWriter, r *http.Request, id stri
 			doc.tabs = kept
 			replies = append(replies, map[string]any{})
 
+		case req["updateDocumentTabProperties"] != nil:
+			upd, _ := req["updateDocumentTabProperties"].(map[string]any)
+			props, _ := upd["tabProperties"].(map[string]any)
+			id, _ := props["tabId"].(string)
+			title, _ := props["title"].(string)
+			for _, tab := range doc.tabs {
+				if tab.id == id {
+					tab.title = title
+				}
+			}
+			replies = append(replies, map[string]any{})
+
+		case req["updateParagraphStyle"] != nil:
+			ups, _ := req["updateParagraphStyle"].(map[string]any)
+			rng, _ := ups["range"].(map[string]any)
+			style, _ := ups["paragraphStyle"].(map[string]any)
+			named, _ := style["namedStyleType"].(string)
+			tab := f.tabOf(doc, rng)
+			if tab != nil && strings.HasPrefix(named, "HEADING_") {
+				start := intOf(rng["startIndex"])
+				tab.headings[start] = f.next("h.")
+			}
+			replies = append(replies, map[string]any{})
+
+		case req["updateTextStyle"] != nil:
+			uts, _ := req["updateTextStyle"].(map[string]any)
+			rng, _ := uts["range"].(map[string]any)
+			style, _ := uts["textStyle"].(map[string]any)
+			if link, ok := style["link"].(map[string]any); ok {
+				if tab := f.tabOf(doc, rng); tab != nil {
+					tab.links = append(tab.links, link)
+				}
+			}
+			replies = append(replies, map[string]any{})
+
+		case req["createNamedRange"] != nil:
+			cnr, _ := req["createNamedRange"].(map[string]any)
+			name, _ := cnr["name"].(string)
+			rng, _ := cnr["range"].(map[string]any)
+			if tab := f.tabOf(doc, rng); tab != nil {
+				tab.namedRanges[name] = true
+			}
+			replies = append(replies, map[string]any{})
+
+		case req["deleteNamedRange"] != nil:
+			dnr, _ := req["deleteNamedRange"].(map[string]any)
+			name, _ := dnr["name"].(string)
+			crit, hasCrit := dnr["tabsCriteria"].(map[string]any)
+			if !hasCrit {
+				// The real API applies this to EVERY tab when tabsCriteria is omitted.
+				f.untabbedWrites++
+				for _, tab := range doc.tabs {
+					delete(tab.namedRanges, name)
+				}
+			} else {
+				ids, _ := crit["tabIds"].([]any)
+				for _, raw := range ids {
+					id, _ := raw.(string)
+					for _, tab := range doc.tabs {
+						if tab.id == id {
+							delete(tab.namedRanges, name)
+						}
+					}
+				}
+			}
+			replies = append(replies, map[string]any{})
+
 		case req["deleteContentRange"] != nil:
 			rng, _ := req["deleteContentRange"].(map[string]any)["range"].(map[string]any)
 			tab := f.tabOf(doc, rng)
 			if tab != nil {
 				tab.body = ""
+				tab.headings = map[int]string{}
+				tab.links = nil
 			}
 			replies = append(replies, map[string]any{})
 
 		case req["insertText"] != nil:
 			ins, _ := req["insertText"].(map[string]any)
 			loc, _ := ins["endOfSegmentLocation"].(map[string]any)
+			if loc == nil {
+				loc, _ = ins["location"].(map[string]any)
+			}
 			text, _ := ins["text"].(string)
 			tab := f.tabOf(doc, loc)
 			if tab != nil {
@@ -291,6 +384,58 @@ func (f *fakeGoogle) sidecar() string {
 	}
 	return ""
 }
+
+// linksOf reports the links applied to a tab's text, by title.
+func (f *fakeGoogle) linksOf(docID, title string) []map[string]any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, tab := range f.docs[docID].tabs {
+		if tab.title == title {
+			return tab.links
+		}
+	}
+	return nil
+}
+
+// tabIDOf reports a tab's id by title.
+func (f *fakeGoogle) tabIDOf(docID, title string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, tab := range f.docs[docID].tabs {
+		if tab.title == title {
+			return tab.id
+		}
+	}
+	return ""
+}
+
+// namedRangesOf reports a tab's identity markers, for assertions.
+func (f *fakeGoogle) namedRangesOf(docID, title string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, tab := range f.docs[docID].tabs {
+		if tab.title != title {
+			continue
+		}
+		for name := range tab.namedRanges {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func intOf(v any) int {
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	}
+	return 0
+}
+
+func u16len(s string) int { return len(utf16.Encode([]rune(s))) }
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
