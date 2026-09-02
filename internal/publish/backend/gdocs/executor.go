@@ -293,8 +293,15 @@ func (b *Backend) createTab(ctx context.Context, docID, rel, title string) (stri
 			b.cfg.Selection, maxTabs)
 	}
 
+	// An area's landing README opens its document. Placement is asserted rather
+	// than inherited: tabs are created in sorted-GroupKey order, so the overview
+	// would otherwise land wherever its path happens to sort (#163).
+	props := map[string]any{"title": title}
+	if b.isAreaRoot(rel) {
+		props["index"] = 0
+	}
 	replies, err := b.c.batchUpdate(ctx, docID, []map[string]any{
-		{"addDocumentTab": map[string]any{"tabProperties": map[string]any{"title": title}}},
+		{"addDocumentTab": map[string]any{"tabProperties": props}},
 	})
 	if err != nil {
 		return "", fmt.Errorf("gdocs: create tab for %s: %w", rel, err)
@@ -305,6 +312,21 @@ func (b *Backend) createTab(ctx context.Context, docID, rel, title string) (stri
 	}
 	b.recordTab(rel, id, title)
 	return id, nil
+}
+
+// isAreaRoot reports whether rel is the landing README of the area this document
+// publishes. The backend knows its own selection, which is the area's key or
+// path, so it can recognise the page without an areas.json of its own.
+func (b *Backend) isAreaRoot(rel string) bool {
+	if path.Base(rel) != "README.md" {
+		return false
+	}
+	sel := strings.Trim(b.cfg.Selection, "/")
+	if sel == "" || sel == "." {
+		// A whole-bundle document has no single area to open with.
+		return false
+	}
+	return path.Dir(rel) == sel
 }
 
 func (b *Backend) recordTab(rel, id, title string) {

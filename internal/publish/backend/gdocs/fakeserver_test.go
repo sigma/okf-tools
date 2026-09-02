@@ -220,7 +220,20 @@ func (f *fakeGoogle) batchUpdate(w http.ResponseWriter, r *http.Request, id stri
 			props, _ := req["addDocumentTab"].(map[string]any)["tabProperties"].(map[string]any)
 			title, _ := props["title"].(string)
 			tab := newFakeTab(f.next("t."), title)
-			doc.tabs = append(doc.tabs, tab)
+			// TabProperties.index places a tab explicitly; the real API shifts the
+			// tabs at and after it. Without honouring this, a test could not tell an
+			// asserted position from an accident of creation order.
+			if raw, ok := props["index"]; ok {
+				at := intOf(raw)
+				if at < 0 || at > len(doc.tabs) {
+					at = len(doc.tabs)
+				}
+				doc.tabs = append(doc.tabs, nil)
+				copy(doc.tabs[at+1:], doc.tabs[at:])
+				doc.tabs[at] = tab
+			} else {
+				doc.tabs = append(doc.tabs, tab)
+			}
 			replies = append(replies, map[string]any{
 				"addDocumentTab": map[string]any{"tabProperties": map[string]any{"tabId": tab.id, "title": title}},
 			})

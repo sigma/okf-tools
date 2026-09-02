@@ -73,3 +73,40 @@ func (s *selectionScope) demote(id publish.SymbolicID, rl *bundle.ResolvedLink) 
 	}
 	return text, url, true
 }
+
+// withAreaRoots splices each area's root README.md into the publish set, placed
+// immediately BEFORE the first page of its own directory so a document opens with
+// its area's overview.
+//
+// Position is not left to the path sort: "concepts/README.md" happens to sort
+// before "concepts/alpha.md" only because uppercase precedes lowercase, and it
+// would sort after "concepts/ADR-index.md". Relying on that accident means the
+// overview silently stops being first the day someone adds such a page
+// (sigma/okf-tools#163).
+func withAreaRoots(docs []*bundle.Doc, roots []*bundle.Doc) []*bundle.Doc {
+	if len(roots) == 0 {
+		return docs
+	}
+	byDir := make(map[string]*bundle.Doc, len(roots))
+	for _, r := range roots {
+		byDir[path.Dir(r.Rel)] = r
+	}
+
+	out := make([]*bundle.Doc, 0, len(docs)+len(roots))
+	placed := make(map[string]bool, len(roots))
+	for _, d := range docs {
+		dir := path.Dir(d.Rel)
+		if root, ok := byDir[dir]; ok && !placed[dir] {
+			out = append(out, root)
+			placed[dir] = true
+		}
+		out = append(out, d)
+	}
+	// An area whose only page IS its README has no page to precede, so append it.
+	for dir, root := range byDir {
+		if !placed[dir] {
+			out = append(out, root)
+		}
+	}
+	return out
+}

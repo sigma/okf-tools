@@ -25,6 +25,8 @@ type options struct {
 	customHasher bool
 	// selection, when set, narrows this run to the pages it reports true for.
 	selection func(rel string) bool
+	// areaRoots adds each area's root README.md back to the published node set.
+	areaRoots bool
 }
 
 // Recomputer is an OPTIONAL backend role: a backend whose live scan can
@@ -62,6 +64,29 @@ func WithHasher(fn func(*bundle.Doc) publish.Hash) Option {
 // default) injects nothing, leaving generation unchanged. The banner's source-repo
 // coordinates are resolved by the bins (internal/publish/source) and passed in as
 // data, so the planner stays environment-free.
+// AreaRootPublisher is an OPTIONAL backend role: a backend that publishes an
+// area's own root README.md implements it, and the pipeline threads WithAreaRoots
+// into Generation on its behalf.
+//
+// It exists because the exclusion it reverses is Notion-specific — an area maps to
+// the unified database, so its landing README is not a row in it — while a
+// document-shaped backend has no rows and wants that page as its first tab
+// (sigma/okf-tools#163). Like Recomputer, it is deliberately outside the
+// backend.Backend umbrella: a backend that does not implement it simply keeps the
+// existing scope, and the CLI never learns which backend it built.
+type AreaRootPublisher interface {
+	// PublishesAreaRoots reports whether an area's root README.md belongs in this
+	// backend's published node set.
+	PublishesAreaRoots() bool
+}
+
+// WithAreaRoots adds each area's own root README.md to the published node set,
+// hoisted ahead of the other pages of its area so a document opens with its
+// overview. Unset, the node set is exactly what bundle.PublishDocs returns.
+func WithAreaRoots() Option {
+	return func(o *options) { o.areaRoots = true }
+}
+
 // WithSelection narrows the publish to the pages a selection contains — the
 // generation-side half of `--select` (sigma/okf-tools#161).
 //
@@ -118,6 +143,9 @@ func Generate(ctx context.Context, b *bundle.Bundle, cs *publish.CurrentState, o
 	// bundle has no areas registry and PublishDocs returns every doc, so behaviour
 	// there is unchanged.
 	docs := b.PublishDocs()
+	if o.areaRoots {
+		docs = withAreaRoots(docs, b.AreaRootDocs())
+	}
 	scope := newSelectionScope(o.selection, o.banner)
 	if scope != nil {
 		kept := docs[:0:0]
