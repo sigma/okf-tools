@@ -119,6 +119,11 @@ func Run(ctx context.Context, be backend.Backend, b *bundle.Bundle, opts ...Opti
 	// run (#110). The hasher owns banner handling (it hashes the realized block-0), so
 	// it is threaded whether or not a banner is set, and for both scan modes so the
 	// stored hash stays consistent across them.
+	// A document-shaped backend publishes an area's landing README as its first tab;
+	// the row-shaped ones exclude it. The backend declares which it is (#163).
+	if ar, ok := be.(graph.AreaRootPublisher); ok && ar.PublishesAreaRoots() {
+		genOpts = append(genOpts, graph.WithAreaRoots())
+	}
 	if ch, ok := be.(graph.Recomputer); ok {
 		genOpts = append(genOpts, graph.WithHasher(ch.RecomputeContentHasher(o.banner)))
 	}

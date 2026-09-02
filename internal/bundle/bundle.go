@@ -330,6 +330,28 @@ func (b *Bundle) InPublishScope(rel string) bool {
 	return false
 }
 
+// AreaRootDocs returns the docs excluded from the publish scope for one reason
+// only: being an area's own root README.md.
+//
+// That exclusion is a NOTION fact, not an OKF one — an area maps to the unified
+// database, so its landing README is not a row in it. A document-shaped backend
+// has no rows, and an area's document should open with the area's overview, so it
+// asks for these back (sigma/okf-tools#163). Every other exclusion still applies:
+// a page outside every declared area is not returned here.
+func (b *Bundle) AreaRootDocs() []*Doc {
+	if b.Areas == nil {
+		return nil
+	}
+	var out []*Doc
+	for _, d := range b.Docs {
+		rel := normScope(d.Rel)
+		if path.Base(rel) == "README.md" && b.Areas.IsAreaRoot(path.Dir(rel)) {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
 // PublishDocs returns the subset of loaded Docs within the export scope (see
 // InPublishScope), preserving Docs' order. The full Docs slice stays intact for
 // link resolution; only the publish pipeline consumes this narrowed view.

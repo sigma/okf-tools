@@ -230,6 +230,83 @@ func assertCrossReferences(t *testing.T, fake *fakeGoogle, docID string) {
 	}
 }
 
+// areaBundle declares two areas plus a file-backed glossary, and gives the
+// concepts area a landing README — the page Notion excludes as "not a row".
+func areaBundle() map[string]string {
+	return map[string]string{
+		"okf.toml":   "[glossary]\nenabled = true\nfiles = [\"CONTEXT.md\"]\n",
+		"areas.json": `{"concepts":{"directory":"concepts","type":"Concept"},"glossary":{"file":"CONTEXT.md","type":"Context","role":"glossary"}}`,
+		"CONTEXT.md": "---\nokf_version: \"0.1\"\ntitle: Context\ntype: context\n---\n\n# Keys\n\n- **Widget**: a thing.\n",
+		// Sorts BEFORE README.md, so a correct result cannot come from the path order.
+		"concepts/ADR-index.md": "---\nokf_version: \"0.1\"\ntitle: ADR Index\ntype: concept\n---\n\n# ADR Index\n",
+		"concepts/README.md":    "---\nokf_version: \"0.1\"\ntitle: Concepts Overview\ntype: concept\n---\n\n# Concepts\n\nWhat this area covers.\n",
+		"concepts/alpha.md":     "---\nokf_version: \"0.1\"\ntitle: Alpha\ntype: concept\n---\n\n# Alpha\n",
+	}
+}
+
+// TestAreaRootOpensTheDocument: the area's landing README is published (Notion
+// excludes it) and is the FIRST tab, asserted rather than inherited from the path
+// sort — the fixture deliberately contains a page that sorts ahead of README.md.
+func TestAreaRootOpensTheDocument(t *testing.T) {
+	fake := newFakeGoogle(t)
+	srv := fake.server()
+	defer srv.Close()
+
+	b := loadBundle(t, areaBundle())
+	be, err := gdocs.New(context.Background(), gdocs.Config{
+		DriveID: testDriveID, Bundle: "testbundle", Selection: "concepts",
+		DocsEndpoint: srv.URL, DriveEndpoint: srv.URL, HTTPClient: &http.Client{},
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+
+	plan, err := pipeline.ResolveSelections(b, []string{"concepts"})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if _, err := pipeline.Run(context.Background(), be, b,
+		pipeline.WithSelection(plan.Selections[0].Contains)); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	titles := fake.tabTitles(be.DocumentID())
+	t.Logf("area document tabs: %v", titles)
+
+	if len(titles) == 0 || titles[0] != "Concepts Overview" {
+		t.Errorf("the area README must open the document, got %v", titles)
+	}
+	if !containsStr(titles, "ADR Index") || !containsStr(titles, "Alpha") {
+		t.Errorf("the area's other pages are missing: %v", titles)
+	}
+	// The glossary is appended to every selection.
+	if !containsStr(titles, "Context") {
+		t.Errorf("the glossary tab is missing: %v", titles)
+	}
+}
+
+// TestNotionScopeIsUnchanged: a backend that does NOT publish area roots still
+// gets the old node set, so this change cannot leak into the Notion mirror.
+func TestNotionScopeIsUnchanged(t *testing.T) {
+	b := loadBundle(t, areaBundle())
+	var found bool
+	for _, d := range b.PublishDocs() {
+		if d.Rel == "concepts/README.md" {
+			found = true
+		}
+	}
+	if found {
+		t.Error("bundle.PublishDocs must still exclude an area's landing README")
+	}
+	var roots []string
+	for _, d := range b.AreaRootDocs() {
+		roots = append(roots, d.Rel)
+	}
+	if len(roots) != 1 || roots[0] != "concepts/README.md" {
+		t.Errorf("AreaRootDocs should return exactly the area landing README, got %v", roots)
+	}
+}
+
 // TestSelectionNarrowsTheDocument drives a real fan-out slice end to end: a
 // selection publishes only its own pages plus the glossary, and each selection
 // gets its OWN document, found by its own identity key.

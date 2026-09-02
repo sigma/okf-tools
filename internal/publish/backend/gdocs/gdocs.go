@@ -32,6 +32,7 @@ import (
 
 	"github.com/sigma/okf-tools/internal/publish"
 	"github.com/sigma/okf-tools/internal/publish/backend"
+	"github.com/sigma/okf-tools/internal/publish/graph"
 )
 
 // Backend implements every publishing role against Google Docs and Drive.
@@ -107,7 +108,13 @@ var (
 	_ backend.Backend         = (*Backend)(nil)
 	_ backend.Provisioner     = (*Backend)(nil)
 	_ backend.RequestReporter = (*Backend)(nil)
+	_ graph.AreaRootPublisher = (*Backend)(nil)
 )
+
+// PublishesAreaRoots reports true: a document has no rows, so the reason Notion
+// excludes an area's landing README does not apply, and an area's document should
+// open with the area's own overview (#163).
+func (b *Backend) PublishesAreaRoots() bool { return true }
 
 // New builds a backend from cfg, wiring credentials unless a transport is
 // supplied. It performs no I/O: the first request happens inside Provision.
