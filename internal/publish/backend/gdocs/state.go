@@ -54,7 +54,16 @@ type sidecar struct {
 func (b *Backend) Provision(ctx context.Context) error {
 	key := b.selectionKey()
 
-	doc, err := b.c.findByAppProperty(ctx, b.cfg.DriveID, appPropKeyDoc, key)
+	// Resolving here rather than in New keeps New free of I/O, and this is the
+	// first request of the run either way. The fan-out builds one backend per
+	// area, so this costs one extra READ per selection — cheap against the 60
+	// writes per minute that actually bind (#156).
+	loc, err := b.c.resolveLocation(ctx, b.cfg.DriveID)
+	if err != nil {
+		return fmt.Errorf("gdocs: provision: resolve destination: %w", err)
+	}
+
+	doc, err := b.c.findByAppProperty(ctx, loc, appPropKeyDoc, key)
 	if err != nil {
 		return fmt.Errorf("gdocs: provision: find document: %w", err)
 	}
@@ -65,15 +74,15 @@ func (b *Backend) Provision(ctx context.Context) error {
 		b.mu.Lock()
 		b.docID, b.stateID, b.missing = "would-create-document", "", true
 		b.mu.Unlock()
-		fmt.Fprintf(b.cfg.DryRunWriter, "would create a document for selection %q in drive %s\n",
-			key, b.cfg.DriveID)
+		fmt.Fprintf(b.cfg.DryRunWriter,
+			"would create a document for selection %q in %s\n", key, loc)
 		return nil
 	}
 	if doc == nil {
 		doc, err = b.c.createFile(ctx, driveFile{
 			Name:          b.docTitle(),
 			MimeType:      mimeDoc,
-			Parents:       []string{b.cfg.DriveID},
+			Parents:       []string{loc.parent},
 			AppProperties: map[string]string{appPropKeyDoc: key},
 		})
 		if err != nil {
@@ -81,7 +90,7 @@ func (b *Backend) Provision(ctx context.Context) error {
 		}
 	}
 
-	state, err := b.c.findByAppProperty(ctx, b.cfg.DriveID, appPropKeyState, key)
+	state, err := b.c.findByAppProperty(ctx, loc, appPropKeyState, key)
 	if err != nil {
 		return fmt.Errorf("gdocs: provision: find state file: %w", err)
 	}
@@ -89,7 +98,7 @@ func (b *Backend) Provision(ctx context.Context) error {
 		state, err = b.c.createFile(ctx, driveFile{
 			Name:          b.stateFileName(),
 			MimeType:      mimeJSON,
-			Parents:       []string{b.cfg.DriveID},
+			Parents:       []string{loc.parent},
 			AppProperties: map[string]string{appPropKeyState: key},
 		})
 		if err != nil {

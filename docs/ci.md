@@ -236,8 +236,10 @@ gcloud iam service-accounts add-iam-policy-binding "$SA" --project "$PROJECT" \
 > not just yours — can mint a token for this provider and publish into your drive. This
 > fails open, silently, and nothing in a working pipeline will reveal it.
 
-The target **must be a shared drive**. A service account has no storage quota and cannot
-own files, so a folder in someone's My Drive fails at write time.
+The target **must be on a shared drive** — either the drive itself or a folder inside it.
+A service account has no storage quota and cannot own files, so a folder in someone's My
+Drive fails at write time. For a folder target, granting the service account **Content
+manager** on that folder is enough; it does not need membership of the drive.
 
 #### What a run produces
 
@@ -322,7 +324,8 @@ Errors whose message points away from the cause.
 |---|---|
 | Notion: `Could not find data source` or an empty publish | `NOTION_DB_ID` holds a **database** id copied from a URL, not a **data-source** id. See above. |
 | gdocs: `403 storageQuotaExceeded` | The target is not a shared drive. A service account has no storage and cannot own files, so a My Drive folder can never work — the quota is not "full", it does not exist. |
-| gdocs: `404` on a document or drive | The service account is not a member of the shared drive. Add it as **Content manager** (a `Contributor` can create and trash but not delete, which fails later in confusing ways). |
+| gdocs: `404` on a document or drive | The service account cannot see the destination. Add it as **Content manager** on the folder, or on the shared drive when publishing to its root (a `Contributor` can create and trash but not delete, which fails later in confusing ways). |
+| gdocs: `404 Shared drive not found` | `GDRIVE_FOLDER_ID` names something that is neither a shared drive nor a folder on one — a My Drive folder, or an id that no longer exists. |
 | gdocs: `ACCESS_TOKEN_SCOPE_INSUFFICIENT` | The credential carries `cloud-platform` but not Drive/Docs scope. Note `gcloud auth print-access-token --impersonate-service-account` **ignores `--scopes`**. |
 | gdocs: cannot mint a token for the service account | The CI principal lacks `roles/iam.workloadIdentityUser` on it, or `iamcredentials.googleapis.com` is not enabled on the project. |
 | gdocs: `Callers must accept Terms of Service` | The Google account has never opened the Cloud console. It is a one-time browser action; there is no CLI for it. |

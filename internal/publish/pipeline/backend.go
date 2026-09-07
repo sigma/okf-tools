@@ -25,9 +25,9 @@ const (
 	// needing no credentials and touching no network.
 	BackendFake BackendKind = "fake"
 	// BackendGDocs is the Google Docs backend: one document per selection, one tab
-	// per page, in a shared drive. It needs GDRIVE_FOLDER_ID and, in practice,
-	// GDOCS_IMPERSONATE_SA; credentials come from the ambient environment rather
-	// than a key file.
+	// per page, in a shared drive or a folder on one. It needs GDRIVE_FOLDER_ID
+	// and, in practice, GDOCS_IMPERSONATE_SA; credentials come from the ambient
+	// environment rather than a key file.
 	BackendGDocs BackendKind = "gdocs"
 	// BackendFS is the filesystem/export backend — okfpub's dry-run / export mode.
 	// It writes the bundle as a tree of files under Config.OutDir instead of
@@ -66,7 +66,7 @@ func SelectBackend(ctx context.Context, kind BackendKind, cfg *Config, bundleNam
 		return notion.New(opts...), nil
 	case BackendGDocs:
 		if cfg.GDriveID == "" {
-			return nil, fmt.Errorf("backend %q requires %s (a SHARED drive id, not a My Drive folder)",
+			return nil, fmt.Errorf("backend %q requires %s (a shared drive, or a folder on one — not a My Drive folder)",
 				BackendGDocs, EnvGDriveID)
 		}
 		return gdocs.New(ctx, gdocs.Config{
