@@ -97,7 +97,7 @@ func (b *Backend) Execute(ctx context.Context, txn publish.Transaction, r backen
 		b.mu.Lock()
 		taken := b.titles
 		b.mu.Unlock()
-		title := disambiguate(tabTitle(rel, propOps), rel, taken)
+		title := fitTabTitle(disambiguate(tabTitle(rel, propOps), rel, taken))
 		id, err := b.createTab(ctx, docID, rel, title)
 		if err != nil {
 			return res, err
@@ -618,6 +618,37 @@ func tabTitle(rel string, props []setProps) string {
 		}
 	}
 	return strings.TrimSuffix(path.Base(rel), ".md")
+}
+
+// maxTabTitle is the API's ceiling on a tab title, in characters. An over-long
+// title is rejected outright rather than truncated server-side, and batchUpdate
+// is atomic — so one long title used to fail its whole transaction, and the
+// selection with it (#178).
+const maxTabTitle = 50
+
+// fitTabTitle brings a title within the ceiling, marking it as shortened.
+//
+// A descriptive, sentence-shaped title is normal in an OKF bundle rather than a
+// tail case, so this fires often. It cuts to 49 characters plus an ellipsis
+// instead of a hard 50-character chop, because a bare chop mid-word reads as a
+// corrupted title rather than a deliberate one.
+//
+// Truncation is safe BECAUSE identity never runs through the title: a document
+// is found by its appProperties key and a tab by its named range (#151), and
+// nothing looks a tab up by title. Two titles truncating to the same string is
+// therefore cosmetic, not an identity collision, and needs no uniquing — the
+// same reason disambiguate is free to rewrite a title too.
+//
+// It runs AFTER disambiguate, whose directory prefix can itself push a title
+// over the ceiling.
+func fitTabTitle(title string) string {
+	r := []rune(title)
+	if len(r) <= maxTabTitle {
+		return title
+	}
+	// Counted in runes: the limit is expressed in characters, and titles are prose
+	// that may carry non-ASCII. Trailing space before the ellipsis reads as a typo.
+	return strings.TrimRight(string(r[:maxTabTitle-1]), " ") + "…"
 }
 
 // disambiguate qualifies a title with its parent directory when another page in

@@ -370,11 +370,20 @@ func (f *fakeGoogle) batchUpdate(w http.ResponseWriter, r *http.Request, id stri
 	}
 
 	replies := make([]map[string]any, 0, len(in.Requests))
-	for _, req := range in.Requests {
+	for i, req := range in.Requests {
 		switch {
 		case req["addDocumentTab"] != nil:
 			props, _ := req["addDocumentTab"].(map[string]any)["tabProperties"].(map[string]any)
 			title, _ := props["title"].(string)
+			if over := overLongTitle(title); over {
+				// The real API caps a tab title at 50 characters and rejects a longer
+				// one outright (#178). The batch is atomic, so one over-long title
+				// fails its whole transaction and the selection with it.
+				http.Error(w, fmt.Sprintf(
+					`{"error":{"message":"Invalid requests[%d].addDocumentTab: The tab title cannot be longer than %d characters."}}`,
+					i, maxTabTitle), http.StatusBadRequest)
+				return
+			}
 			tab := newFakeTab(f.next("t."), title)
 			// TabProperties.index places a tab explicitly; the real API shifts the
 			// tabs at and after it. Without honouring this, a test could not tell an
@@ -410,6 +419,15 @@ func (f *fakeGoogle) batchUpdate(w http.ResponseWriter, r *http.Request, id stri
 			props, _ := upd["tabProperties"].(map[string]any)
 			id, _ := props["tabId"].(string)
 			title, _ := props["title"].(string)
+			if overLongTitle(title) {
+				// Renaming the adopted default tab goes through this request, so the
+				// same cap applies here — the FIRST page of every document takes this
+				// path rather than addDocumentTab.
+				http.Error(w, fmt.Sprintf(
+					`{"error":{"message":"Invalid requests[%d].updateDocumentTabProperties: The tab title cannot be longer than %d characters."}}`,
+					i, maxTabTitle), http.StatusBadRequest)
+				return
+			}
 			for _, tab := range doc.tabs {
 				if tab.id == id {
 					tab.title = title
@@ -505,6 +523,14 @@ func (f *fakeGoogle) batchUpdate(w http.ResponseWriter, r *http.Request, id stri
 	}
 	writeJSON(w, map[string]any{"replies": replies})
 }
+
+// maxTabTitle is the tab-title ceiling the real API enforces (#178).
+const maxTabTitle = 50
+
+// overLongTitle reports whether a title exceeds the cap. Counted in RUNES: the
+// limit is expressed in characters, and a bundle's titles are prose that may
+// carry non-ASCII.
+func overLongTitle(title string) bool { return len([]rune(title)) > maxTabTitle }
 
 // firstAbsentNamedRange finds the first deleteNamedRange in a batch that names a
 // range no targeted tab carries. Deleting an absent name is a hard 400, NOT a
