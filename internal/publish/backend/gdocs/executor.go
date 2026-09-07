@@ -342,31 +342,44 @@ func (b *Backend) linkSelfRefs(ctx context.Context, docID, tabID string, cites [
 // span it covers is deleted outright, and Google's own sample re-creates it after
 // every rewrite (#158). Re-asserting makes the undocumented case moot.
 func (b *Backend) writeTab(ctx context.Context, docID, tabID, rel string, body rendered) error {
-	end := 0
-	if b.cfg.DryRunWriter == nil {
-		// A dry run against a tab that may not exist cannot read its length, and does
-		// not need to: the dump shows the rewrite it would perform.
+	// A dry run reads too — reading mutates nothing, and the dump should describe
+	// the requests a real run would issue against THIS destination. The one case
+	// it cannot read is a destination that does not exist yet, where there is no
+	// document to ask about and every tab is one the run would create.
+	b.mu.Lock()
+	missing := b.missing
+	b.mu.Unlock()
+
+	var state tabState
+	if !missing {
 		var err error
-		if end, err = b.tabEndIndex(ctx, docID, tabID); err != nil {
+		if state, err = b.readTabState(ctx, docID, tabID); err != nil {
 			return err
 		}
 	}
-
 	var requests []map[string]any
 	var err error
 
-	// deleteNamedRange defaults to ALL TABS when tabsCriteria is omitted (#158), so
-	// omitting it here would strip every other page's identity marker.
-	requests = append(requests, map[string]any{
-		"deleteNamedRange": map[string]any{
-			"name":         namedRangeFor(rel),
-			"tabsCriteria": map[string]any{"tabIds": []string{tabID}},
-		},
-	})
-	if end > 2 {
+	// Delete the identity marker only if it is THERE. Deleting an absent named
+	// range is a hard 400, not a no-op, and batchUpdate is atomic — so an
+	// unguarded delete failed every first publish into a fresh destination while
+	// every rewrite stayed green (#176). This is the same shape as the content
+	// guard below: touch what exists.
+	//
+	// tabsCriteria is not optional: deleteNamedRange defaults to ALL TABS when it
+	// is omitted (#158), which would strip every other page's marker.
+	if state.hasNamedRange(namedRangeFor(rel)) {
+		requests = append(requests, map[string]any{
+			"deleteNamedRange": map[string]any{
+				"name":         namedRangeFor(rel),
+				"tabsCriteria": map[string]any{"tabIds": []string{tabID}},
+			},
+		})
+	}
+	if state.end > 2 {
 		requests = append(requests, map[string]any{
 			"deleteContentRange": map[string]any{
-				"range": tabRange(tabID, 1, end-1),
+				"range": tabRange(tabID, 1, state.end-1),
 			},
 		})
 	}
@@ -550,28 +563,50 @@ func (b *Backend) deleteTab(ctx context.Context, docID, tabID string) error {
 	return err
 }
 
-// tabEndIndex reports the end index of a tab's body content.
-func (b *Backend) tabEndIndex(ctx context.Context, docID, tabID string) (int, error) {
+// tabState is what one document read tells writeTab about the tab it is about to
+// rewrite: where its content ends, and which named ranges it already carries.
+//
+// Both facts gate a delete, and both come from the SAME read — asking the API
+// again for the second one would cost a round trip per tab for information the
+// first response already carried (#176).
+type tabState struct {
+	// end is the end index of the tab's body content; 0 for a tab with no body.
+	end int
+	// namedRanges holds the names the tab carries, so a marker is deleted only if
+	// it is there to delete. It is nil for the unread cases — a fresh destination,
+	// or the zero value returned with an error — and a nil map reads as "carries
+	// nothing", which is exactly right for a tab that does not exist yet.
+	namedRanges map[string]bool
+}
+
+// hasNamedRange reports whether the tab already carries the named range.
+func (s tabState) hasNamedRange(name string) bool { return s.namedRanges[name] }
+
+// readTabState reads the document and reports the state of one tab.
+func (b *Backend) readTabState(ctx context.Context, docID, tabID string) (tabState, error) {
 	doc, err := b.c.getDocument(ctx, docID)
 	if err != nil {
-		return 0, err
+		return tabState{}, err
 	}
-	var found int
+	out := tabState{namedRanges: map[string]bool{}}
 	var walk func([]documentTab)
 	walk = func(tabs []documentTab) {
 		for _, t := range tabs {
 			if t.TabProperties.TabID == tabID {
 				for _, el := range t.DocumentTab.Body.Content {
-					if el.EndIndex > found {
-						found = el.EndIndex
+					if el.EndIndex > out.end {
+						out.end = el.EndIndex
 					}
+				}
+				for name := range t.DocumentTab.NamedRanges {
+					out.namedRanges[name] = true
 				}
 			}
 			walk(t.ChildTabs)
 		}
 	}
 	walk(doc.Tabs)
-	return found, nil
+	return out, nil
 }
 
 // tabTitle picks a tab's title: the frontmatter title where the run asserts one,

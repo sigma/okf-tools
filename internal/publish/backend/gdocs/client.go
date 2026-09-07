@@ -377,6 +377,10 @@ type documentTab struct {
 		Body struct {
 			Content []structuralElement `json:"content"`
 		} `json:"body"`
+		// NamedRanges is keyed by range NAME, which is all this backend needs: the
+		// identity marker either exists on this tab or it does not (#176). The
+		// values carry each range's spans and are deliberately not decoded.
+		NamedRanges map[string]json.RawMessage `json:"namedRanges,omitempty"`
 	} `json:"documentTab"`
 	ChildTabs []documentTab `json:"childTabs,omitempty"`
 }
