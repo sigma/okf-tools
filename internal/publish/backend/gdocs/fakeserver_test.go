@@ -97,9 +97,15 @@ type fakeTab struct {
 	// assert a link covers the RIGHT text — a link with a correct target over the
 	// wrong span is still a broken citation (#171).
 	spans []linkSpan
-	// namedRanges records identity markers by name, so a test can assert they are
-	// re-asserted on every rewrite rather than assumed to survive.
-	namedRanges map[string]bool
+	// namedRanges counts the ranges recorded under each name. Reading an absent
+	// name yields 0, which every caller here relies on.
+	//
+	// A COUNT, not a set: the real API lets several ranges share one name, which is
+	// exactly what a rewrite that re-asserts its marker without deleting the old
+	// one would produce. Modelling it as a set makes that duplicate
+	// unrepresentable, and a test asserting "the marker survived" then passes
+	// whether or not the delete happened (#176).
+	namedRanges map[string]int
 }
 
 // linkSpan is one link and the document-frame range it covers.
@@ -109,7 +115,7 @@ type linkSpan struct {
 }
 
 func newFakeTab(id, title string) *fakeTab {
-	return &fakeTab{id: id, title: title, headings: map[int]string{}, namedRanges: map[string]bool{}}
+	return &fakeTab{id: id, title: title, headings: map[int]string{}, namedRanges: map[string]int{}}
 }
 
 func newFakeGoogle(t *testing.T) *fakeGoogle {
@@ -315,9 +321,20 @@ func (f *fakeGoogle) getDocument(w http.ResponseWriter, r *http.Request, id stri
 				},
 			})
 		}
+		// Named ranges are served back keyed by NAME, which is the half of the real
+		// shape this backend reads: it asks only whether the marker exists, never
+		// where its spans are, so the value carries just the name (#176).
+		named := map[string]any{}
+		for name := range tab.namedRanges {
+			named[name] = map[string]any{"name": name}
+		}
+		docTab := map[string]any{"body": map[string]any{"content": content}}
+		if len(named) > 0 {
+			docTab["namedRanges"] = named
+		}
 		tabs = append(tabs, map[string]any{
 			"tabProperties": map[string]any{"tabId": tab.id, "title": tab.title},
-			"documentTab":   map[string]any{"body": map[string]any{"content": content}},
+			"documentTab":   docTab,
 		})
 	}
 	writeJSON(w, map[string]any{"documentId": id, "tabs": tabs})
@@ -338,6 +355,18 @@ func (f *fakeGoogle) batchUpdate(w http.ResponseWriter, r *http.Request, id stri
 	f.batchUpdates++
 	if onlyLinkStyles(in.Requests) {
 		f.patchBatches++
+	}
+
+	// Validate BEFORE mutating anything. batchUpdate is atomic: if any request is
+	// invalid the real API applies none of them, so rejecting mid-loop would leave
+	// this fake half-written where the real one would be untouched — and a test
+	// asserting "a failed batch writes nothing" would be asserting against a fake
+	// that does not behave that way (#176).
+	if i, name, ok := f.firstAbsentNamedRange(doc, in.Requests); !ok {
+		http.Error(w, fmt.Sprintf(
+			`{"error":{"message":"Invalid requests[%d].deleteNamedRange: No named range with name: %s"}}`,
+			i, name), http.StatusBadRequest)
+		return
 	}
 
 	replies := make([]map[string]any, 0, len(in.Requests))
@@ -418,7 +447,7 @@ func (f *fakeGoogle) batchUpdate(w http.ResponseWriter, r *http.Request, id stri
 			name, _ := cnr["name"].(string)
 			rng, _ := cnr["range"].(map[string]any)
 			if tab := f.tabOf(doc, rng); tab != nil {
-				tab.namedRanges[name] = true
+				tab.namedRanges[name]++
 			}
 			replies = append(replies, map[string]any{})
 
@@ -475,6 +504,47 @@ func (f *fakeGoogle) batchUpdate(w http.ResponseWriter, r *http.Request, id stri
 		}
 	}
 	writeJSON(w, map[string]any{"replies": replies})
+}
+
+// firstAbsentNamedRange finds the first deleteNamedRange in a batch that names a
+// range no targeted tab carries. Deleting an absent name is a hard 400, NOT a
+// silent no-op (#176) — which is why an unguarded delete broke every FIRST
+// publish while every rewrite stayed green.
+func (f *fakeGoogle) firstAbsentNamedRange(doc *fakeDoc, reqs []map[string]any) (int, string, bool) {
+	for i, req := range reqs {
+		dnr, ok := req["deleteNamedRange"].(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := dnr["name"].(string)
+		crit, _ := dnr["tabsCriteria"].(map[string]any)
+		if !f.hasNamedRange(doc, name, crit) {
+			return i, name, false
+		}
+	}
+	return 0, "", true
+}
+
+// hasNamedRange reports whether the name exists on any tab the request targets,
+// which is what the real API requires before it will delete one.
+func (f *fakeGoogle) hasNamedRange(doc *fakeDoc, name string, crit map[string]any) bool {
+	want := map[string]bool{}
+	if crit != nil {
+		ids, _ := crit["tabIds"].([]any)
+		for _, raw := range ids {
+			id, _ := raw.(string)
+			want[id] = true
+		}
+	}
+	for _, tab := range doc.tabs {
+		if len(want) > 0 && !want[tab.id] {
+			continue
+		}
+		if tab.namedRanges[name] > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // tabOf resolves the tab a request targets, recording the case where none was
@@ -562,8 +632,10 @@ func (f *fakeGoogle) namedRangesOf(docID, title string) []string {
 		if tab.title != title {
 			continue
 		}
-		for name := range tab.namedRanges {
-			out = append(out, name)
+		for name, n := range tab.namedRanges {
+			for i := 0; i < n; i++ {
+				out = append(out, name)
+			}
 		}
 	}
 	return out
