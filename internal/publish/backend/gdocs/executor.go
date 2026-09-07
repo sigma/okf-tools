@@ -85,6 +85,9 @@ func (b *Backend) Execute(ctx context.Context, txn publish.Transaction, r backen
 			}
 			b.mu.Lock()
 			delete(b.tabs, rel)
+			// Drop its remembered citations too, or a later re-link would style a
+			// range in a tab that no longer exists.
+			delete(b.citations, tabID)
 			b.mu.Unlock()
 		}
 		return res, nil
@@ -148,7 +151,7 @@ func (b *Backend) Execute(ctx context.Context, txn publish.Transaction, r backen
 			// the transport gates every citing transaction on them, so leaving them
 			// out would stall the plan and the dump would show only part of the run.
 			for name := range body.anchorStarts {
-				res.Anchors[name] = anchorID(tabID, dryRunHeadingID)
+				res.Anchors[name] = anchorID(tabID, b.nextDryRunHeadingID())
 			}
 		} else {
 			ids, err := b.harvestHeadings(ctx, docID, tabID, body.anchorStarts)
@@ -160,10 +163,131 @@ func (b *Backend) Execute(ctx context.Context, txn publish.Transaction, r backen
 			}
 		}
 	}
-	if err := b.linkSelfRefs(ctx, docID, tabID, body.selfLinks, res.Anchors); err != nil {
+	if err := b.linkSelfRefs(ctx, docID, tabID, body.citations, res.Anchors); err != nil {
+		return res, err
+	}
+	// This tab's own citations are re-rendered from scratch on every write, so the
+	// remembered set is REPLACED rather than extended: the previous write's ranges
+	// describe text that no longer exists.
+	b.rememberCitations(tabID, body.citations, res.Anchors)
+	if err := b.relinkMoved(ctx, docID, res.Anchors); err != nil {
 		return res, err
 	}
 	return res, nil
+}
+
+// rememberCitations records where this tab cites each anchor, so a later
+// re-minting of that anchor can be repaired without re-rendering (#171).
+//
+// A deferred citation is recorded too, with the target it was just linked to:
+// once its own tab is written, it is an ordinary citation that some future
+// rewrite of this same tab could strand.
+func (b *Backend) rememberCitations(tabID string, cites []anchorCitation,
+	hosted map[publish.AnchorName]publish.BackendID) {
+	placed := make([]anchorCitation, 0, len(cites))
+	for _, c := range cites {
+		if c.deferred() {
+			id, ok := hosted[c.name]
+			if !ok {
+				continue // never linked, so there is nothing to repair later
+			}
+			c.target = id
+		}
+		c.start, c.end = c.start+bodyBase, c.end+bodyBase
+		placed = append(placed, c)
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(placed) == 0 {
+		delete(b.citations, tabID)
+		return
+	}
+	b.citations[tabID] = placed
+}
+
+// relinkMoved repairs every remembered citation whose target has moved.
+//
+// A tab's body is rewritten in full on each of its transactions, which deletes
+// and re-inserts its paragraphs, so the server mints FRESH heading ids every time
+// (#150). Any link another tab was already given to an old id still renders — it
+// just goes nowhere. Re-styling the affected ranges is the repair; the text is
+// untouched, so no id moves again as a result.
+//
+// A run in which nothing moved issues no request at all, which is the common case
+// and keeps the 60-writes-per-minute budget (#156) intact.
+func (b *Backend) relinkMoved(ctx context.Context, docID string,
+	minted map[publish.AnchorName]publish.BackendID) error {
+	if len(minted) == 0 {
+		return nil
+	}
+
+	// These ranges do NOT go through shiftRequests: that shift converts a fresh
+	// render's relative offsets, and a remembered citation was shifted into the
+	// document's frame when it was recorded. tabRange still stamps the tab id,
+	// which is the half of shiftRequests that must never be skipped (#147).
+	//
+	// moved names the citations this batch repairs, so their remembered targets can
+	// be updated AFTER the write lands. Recording them up front would claim a
+	// repair that a failed batch never made, and the next harvest would see the
+	// citation as current and skip it forever.
+	type moved struct {
+		tab   string
+		index int
+		to    publish.BackendID
+	}
+
+	b.mu.Lock()
+	var requests []map[string]any
+	var repaired []moved
+	for tabID, cites := range b.citations {
+		for i, c := range cites {
+			now, ok := minted[c.name]
+			if !ok || now == c.target {
+				continue
+			}
+			hostTab, headingID, ok := splitAnchorID(now)
+			if !ok {
+				// The harvest matched no paragraph for this anchor, so there is no target
+				// to point at. Leaving the citation on its previous id is no worse than
+				// the state before this write, and the anchor's own gate reports it.
+				continue
+			}
+			requests = append(requests, map[string]any{"updateTextStyle": map[string]any{
+				"range":     tabRange(tabID, c.start, c.end),
+				"textStyle": map[string]any{"link": headingLink(hostTab, headingID)},
+				"fields":    "link",
+			}})
+			repaired = append(repaired, moved{tab: tabID, index: i, to: now})
+		}
+	}
+	b.mu.Unlock()
+
+	if len(requests) == 0 {
+		return nil
+	}
+	if _, err := b.c.batchUpdate(ctx, docID, requests); err != nil {
+		return err
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, m := range repaired {
+		if cites, ok := b.citations[m.tab]; ok && m.index < len(cites) {
+			cites[m.index].target = m.to
+		}
+	}
+	return nil
+}
+
+// nextDryRunHeadingID mints a distinct placeholder per dry-run write, so a
+// rewrite of the same tab looks like the re-minting it really is and the dump
+// plans the re-linking a real run would issue (#171).
+func (b *Backend) nextDryRunHeadingID() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.dryHeadingCount++
+	return fmt.Sprintf("%s-%d", dryRunHeadingID, b.dryHeadingCount)
 }
 
 // linkSelfRefs applies the link targets that could not exist during the write:
@@ -175,18 +299,18 @@ func (b *Backend) Execute(ctx context.Context, txn publish.Transaction, r backen
 // fresh headingIds and the ones just harvested go dead. Styling text that is
 // already in place cites the live ids.
 //
-// This holds WITHIN a tab. It does not fix the pre-existing cross-tab case: a
-// later transaction for the same node re-renders and rewrites the whole tab
-// (see Execute's merge of b.pending), re-minting its headingIds, and another
-// tab's link written before that rewrite is not re-patched. Self-links are,
-// because they are re-emitted from each render.
-func (b *Backend) linkSelfRefs(ctx context.Context, docID, tabID string, links []selfLink,
+// This is the same-tab half of the repair. A later transaction for the same node
+// re-renders and rewrites the whole tab (see Execute's merge of b.pending) and
+// re-mints its heading ids; self-citations survive that because they are
+// re-emitted from every render, and links other tabs hold are repaired by
+// relinkMoved (#171).
+func (b *Backend) linkSelfRefs(ctx context.Context, docID, tabID string, cites []anchorCitation,
 	anchors map[publish.AnchorName]publish.BackendID) error {
-	if len(links) == 0 {
-		return nil
-	}
-	requests := make([]map[string]any, 0, len(links))
-	for _, sl := range links {
+	var requests []map[string]any
+	for _, sl := range cites {
+		if !sl.deferred() {
+			continue // an ordinary citation; it linked during the write
+		}
 		id, ok := anchors[sl.name]
 		if !ok {
 			return fmt.Errorf("gdocs: anchor %s is hosted here but no heading was harvested for it", sl.name)
@@ -200,6 +324,9 @@ func (b *Backend) linkSelfRefs(ctx context.Context, docID, tabID string, links [
 			"textStyle": map[string]any{"link": headingLink(tabID, headingID)},
 			"fields":    "link",
 		}})
+	}
+	if len(requests) == 0 {
+		return nil
 	}
 	// The same relative-to-absolute shift the body's own styles go through, for the
 	// same reason: an untagged range silently applies to the FIRST tab (#147).

@@ -36,19 +36,34 @@ type rendered struct {
 	// anchorStarts maps an anchor to the relative start offset of its paragraph, so
 	// the read-back pass can match it to a headingId.
 	anchorStarts map[publish.AnchorName]int
-	// selfLinks are citations of anchors this same body hosts, whose link target
-	// cannot be known until after the write (#170). They carry no link style in the
-	// first batchUpdate; the executor applies one once the ids are harvested.
-	selfLinks []selfLink
+	// citations is every anchor this body cites, with the range its text occupies
+	// and the target in force when it was rendered. The executor needs both halves
+	// later: a DEFERRED citation has no target yet and is linked once the ids are
+	// harvested (#170), and a resolved one is remembered so it can be re-linked if
+	// its target is re-minted out from under it (#171).
+	citations []anchorCitation
 }
 
-// selfLink is one citation of an anchor hosted by the very body being written,
-// held as the range its text occupies so the target can be applied later.
-type selfLink struct {
-	name  publish.AnchorName
-	start int
-	end   int
+// anchorCitation is one citation of an anchor, held as the range its text
+// occupies so its link can be applied or re-applied without touching the text.
+//
+// A range outlives the id it points at, which is the whole point: heading ids are
+// minted per write and move, text does not.
+//
+// The range is in the RENDER's frame — relative to the start of the inserted
+// text — until the executor remembers it, which shifts it by bodyBase into the
+// document's frame. Both frames use UTF-16 code units.
+type anchorCitation struct {
+	name publish.AnchorName
+	// target is the anchor's id at render time, or empty when THIS body hosts the
+	// anchor and no id exists yet.
+	target     publish.BackendID
+	start, end int
 }
+
+// deferred reports whether this citation's target was unknowable at render time
+// because the body being rendered is the one that hosts it.
+func (c anchorCitation) deferred() bool { return c.target == "" }
 
 // deferredHeadingID is the placeholder an anchor resolves to while the
 // transaction that HOSTS it is the one being rendered.
@@ -64,6 +79,10 @@ const deferredHeadingID = "okf:deferred"
 // writes has nothing to read back, so a hosted anchor resolves to this instead
 // of to a harvested id. It reaches the DUMP, where naming it is the point,
 // whereas deferredHeadingID must never survive a render.
+//
+// It is a PREFIX, not a value: a real rewrite re-mints its heading ids (#171), so
+// a dump whose placeholder never changed would show a run with no re-linking in
+// it and understate what a real publish does.
 const dryRunHeadingID = "would-create-heading"
 
 // deferredAnchors is the transaction-local overlay: every anchor these blocks
@@ -98,13 +117,13 @@ func renderTab(blocks []contentBlock, props []setProps, r backend.Resolver) (ren
 
 	for _, blk := range blocks {
 		start := u16(sb.String())
-		text, styles, self, err := renderBlockText(blk, start, r)
+		text, styles, cites, err := renderBlockText(blk, start, r)
 		if err != nil {
 			return out, err
 		}
 		sb.WriteString(text)
 		out.styles = append(out.styles, styles...)
-		out.selfLinks = append(out.selfLinks, self...)
+		out.citations = append(out.citations, cites...)
 		for _, a := range blk.anchors {
 			out.anchorStarts[a] = start
 		}
@@ -129,7 +148,7 @@ func renderTab(blocks []contentBlock, props []setProps, r backend.Resolver) (ren
 
 // renderBlockText renders one block and the styling that decorates it. start is
 // the block's offset within the tab body.
-func renderBlockText(blk contentBlock, start int, r backend.Resolver) (string, []map[string]any, []selfLink, error) {
+func renderBlockText(blk contentBlock, start int, r backend.Resolver) (string, []map[string]any, []anchorCitation, error) {
 	// A table's content lives per-cell, not in runs.
 	if blk.kind == graph.Table {
 		return renderTableText(blk), nil, nil, nil
@@ -142,7 +161,7 @@ func renderBlockText(blk contentBlock, start int, r backend.Resolver) (string, [
 		prefix = strings.Repeat("\t", blk.level-1)
 	}
 
-	body, linkStyles, self, err := renderRuns(blk.runs, start+u16(prefix), r)
+	body, linkStyles, cites, err := renderRuns(blk.runs, start+u16(prefix), r)
 	if err != nil {
 		return "", nil, nil, err
 	}
@@ -186,27 +205,29 @@ func renderBlockText(blk contentBlock, start int, r backend.Resolver) (string, [
 			"indentStart": map[string]any{"magnitude": 36, "unit": "PT"},
 		}, "indentStart"))
 	}
-	return text, styles, self, nil
+	return text, styles, cites, nil
 }
 
 // renderRuns renders a block's inline runs and the link styling over them.
 //
 // A Ref run carries NO visible text — the label is the backend's to supply — so a
 // node reference shows its page name and an anchor reference its term.
-func renderRuns(runs []publish.Run, start int, r backend.Resolver) (string, []map[string]any, []selfLink, error) {
+func renderRuns(runs []publish.Run, start int, r backend.Resolver) (string, []map[string]any, []anchorCitation, error) {
 	resolved, err := backend.ResolveRuns(runs, r)
 	if err != nil {
 		return "", nil, nil, err
 	}
 	var sb strings.Builder
 	var styles []map[string]any
-	var self []selfLink
+	var cites []anchorCitation
 	at := start
 
 	for _, rr := range resolved {
 		text := rr.Run.Text
 		var link map[string]any
-		var deferred publish.AnchorName
+		// cited is set for an anchor citation, whose range is remembered whether or
+		// not a target exists yet.
+		var cited *anchorCitation
 
 		switch {
 		case rr.Run.Ref != "":
@@ -215,9 +236,10 @@ func renderRuns(runs []publish.Run, start int, r backend.Resolver) (string, []ma
 				tabID, headingID, ok := splitAnchorID(rr.RefID)
 				switch {
 				case ok && headingID == deferredHeadingID:
-					deferred = name
+					cited = &anchorCitation{name: name}
 				case ok:
 					link = headingLink(tabID, headingID)
+					cited = &anchorCitation{name: name, target: rr.RefID}
 				}
 			} else {
 				text = nodeLabel(rr.Run.Ref)
@@ -231,8 +253,9 @@ func renderRuns(runs []publish.Run, start int, r backend.Resolver) (string, []ma
 			continue
 		}
 		next := at + u16(text)
-		if deferred != "" {
-			self = append(self, selfLink{name: deferred, start: at, end: next})
+		if cited != nil {
+			cited.start, cited.end = at, next
+			cites = append(cites, *cited)
 		}
 		if link != nil {
 			styles = append(styles, map[string]any{"updateTextStyle": map[string]any{
@@ -244,7 +267,7 @@ func renderRuns(runs []publish.Run, start int, r backend.Resolver) (string, []ma
 		sb.WriteString(text)
 		at = next
 	}
-	return sb.String(), styles, self, nil
+	return sb.String(), styles, cites, nil
 }
 
 // renderTableText renders a table as text rows.

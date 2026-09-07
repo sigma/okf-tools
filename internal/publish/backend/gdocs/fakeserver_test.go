@@ -41,6 +41,12 @@ type fakeGoogle struct {
 	// can assert the search corpus was a DRIVE id and never a folder id (#168).
 	corpora []string
 
+	// writeLog records the content-affecting requests in order, so a test can see
+	// how the run interleaved tabs rather than infer it.
+	writeLog []string
+	// patchBatches counts batches that ONLY restyle links — the re-linking traffic
+	// #171's fix adds, which a run with nothing stranded must not pay.
+	patchBatches int
 	// batchUpdates counts documents.batchUpdate calls, so a test can assert the
 	// write cost rather than infer it.
 	batchUpdates int
@@ -87,9 +93,19 @@ type fakeTab struct {
 	// links records every link applied to this tab's text, so a test can assert
 	// what a cross-reference actually targeted rather than trusting the text.
 	links []map[string]any
+	// spans records each link with the range it was applied over, so a test can
+	// assert a link covers the RIGHT text — a link with a correct target over the
+	// wrong span is still a broken citation (#171).
+	spans []linkSpan
 	// namedRanges records identity markers by name, so a test can assert they are
 	// re-asserted on every rewrite rather than assumed to survive.
 	namedRanges map[string]bool
+}
+
+// linkSpan is one link and the document-frame range it covers.
+type linkSpan struct {
+	start, end int
+	link       map[string]any
 }
 
 func newFakeTab(id, title string) *fakeTab {
@@ -320,6 +336,9 @@ func (f *fakeGoogle) batchUpdate(w http.ResponseWriter, r *http.Request, id stri
 	}
 	json.NewDecoder(r.Body).Decode(&in)
 	f.batchUpdates++
+	if onlyLinkStyles(in.Requests) {
+		f.patchBatches++
+	}
 
 	replies := make([]map[string]any, 0, len(in.Requests))
 	for _, req := range in.Requests {
@@ -387,7 +406,9 @@ func (f *fakeGoogle) batchUpdate(w http.ResponseWriter, r *http.Request, id stri
 			style, _ := uts["textStyle"].(map[string]any)
 			if link, ok := style["link"].(map[string]any); ok {
 				if tab := f.tabOf(doc, rng); tab != nil {
-					tab.links = append(tab.links, link)
+					tab.links = replaceLinkAt(tab.links, rng, link)
+					tab.spans = replaceSpanAt(tab.spans, intOf(rng["startIndex"]), intOf(rng["endIndex"]), link)
+					f.writeLog = append(f.writeLog, "link:"+tab.title)
 				}
 			}
 			replies = append(replies, map[string]any{})
@@ -431,6 +452,7 @@ func (f *fakeGoogle) batchUpdate(w http.ResponseWriter, r *http.Request, id stri
 				tab.body = ""
 				tab.headings = map[int]string{}
 				tab.links = nil
+				tab.spans = nil
 			}
 			replies = append(replies, map[string]any{})
 
@@ -444,6 +466,7 @@ func (f *fakeGoogle) batchUpdate(w http.ResponseWriter, r *http.Request, id stri
 			tab := f.tabOf(doc, loc)
 			if tab != nil {
 				tab.body += text
+				f.writeLog = append(f.writeLog, "insert:"+tab.title)
 			}
 			replies = append(replies, map[string]any{})
 
@@ -541,6 +564,95 @@ func (f *fakeGoogle) namedRangesOf(docID, title string) []string {
 		}
 		for name := range tab.namedRanges {
 			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// onlyLinkStyles reports whether a batch does nothing but restyle links, which
+// is what a re-link patch looks like on the wire.
+func onlyLinkStyles(reqs []map[string]any) bool {
+	if len(reqs) == 0 {
+		return false // an empty batch is never sent, and would otherwise count as a patch
+	}
+	for _, req := range reqs {
+		uts, ok := req["updateTextStyle"].(map[string]any)
+		if !ok {
+			return false
+		}
+		style, _ := uts["textStyle"].(map[string]any)
+		if _, ok := style["link"]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// replaceLinkAt models the real API: restyling a range REPLACES the link over it
+// rather than adding a second one. Without this a re-link would look like two
+// links on one span, and "the tab's links" would no longer mean what it says.
+func replaceLinkAt(links []map[string]any, rng map[string]any, link map[string]any) []map[string]any {
+	key := fmt.Sprintf("%v-%v", rng["startIndex"], rng["endIndex"])
+	for i, existing := range links {
+		if existing["okf:range"] == key {
+			link["okf:range"] = key
+			links[i] = link
+			return links
+		}
+	}
+	link["okf:range"] = key
+	return append(links, link)
+}
+
+// replaceSpanAt mirrors replaceLinkAt for the range-carrying record.
+func replaceSpanAt(spans []linkSpan, start, end int, link map[string]any) []linkSpan {
+	for i, sp := range spans {
+		if sp.start == start && sp.end == end {
+			spans[i].link = link
+			return spans
+		}
+	}
+	return append(spans, linkSpan{start: start, end: end, link: link})
+}
+
+// linkedTexts reports, per link on a tab, the TEXT the link actually covers,
+// recovered from the tab's body by the range the request carried. A link whose
+// target is right but whose range slipped would otherwise look correct.
+func (f *fakeGoogle) linkedTexts(docID, title string) map[string]map[string]any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := map[string]map[string]any{}
+	for _, tab := range f.docs[docID].tabs {
+		if tab.title != title {
+			continue
+		}
+		units := utf16.Encode([]rune(tab.body))
+		for _, sp := range tab.spans {
+			// The body was inserted at index 1, so a document index maps to a body
+			// offset by subtracting it.
+			lo, hi := sp.start-1, sp.end-1
+			if lo < 0 || hi > len(units) || lo > hi {
+				out[fmt.Sprintf("<out of range %d-%d>", sp.start, sp.end)] = sp.link
+				continue
+			}
+			out[string(utf16.Decode(units[lo:hi]))] = sp.link
+		}
+	}
+	return out
+}
+
+// headingIDsOfTab reports the heading ids a tab currently carries, BY TAB ID, so
+// a link's target can be checked against the tab it actually points into.
+func (f *fakeGoogle) headingIDsOfTab(docID, tabID string) map[string]bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := map[string]bool{}
+	for _, tab := range f.docs[docID].tabs {
+		if tab.id != tabID {
+			continue
+		}
+		for _, id := range tab.headings {
+			out[id] = true
 		}
 	}
 	return out
