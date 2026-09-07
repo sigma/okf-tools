@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -454,9 +455,24 @@ func (f *fakeGoogle) batchUpdate(w http.ResponseWriter, r *http.Request, id stri
 			style, _ := ups["paragraphStyle"].(map[string]any)
 			named, _ := style["namedStyleType"].(string)
 			tab := f.tabOf(doc, rng)
+			if !f.rejectIfPastSegment(w, i, "updateParagraphStyle", tab, rng) {
+				return
+			}
 			if tab != nil && strings.HasPrefix(named, "HEADING_") {
 				start := intOf(rng["startIndex"])
 				tab.headings[start] = f.next("h.")
+			}
+			replies = append(replies, map[string]any{})
+
+		case req["createParagraphBullets"] != nil:
+			cpb, _ := req["createParagraphBullets"].(map[string]any)
+			rng, _ := cpb["range"].(map[string]any)
+			tab := f.tabOf(doc, rng)
+			if !f.rejectIfPastSegment(w, i, "createParagraphBullets", tab, rng) {
+				return
+			}
+			if tab != nil {
+				tab.applyParagraphBullets(intOf(rng["startIndex"]), intOf(rng["endIndex"]))
 			}
 			replies = append(replies, map[string]any{})
 
@@ -464,8 +480,12 @@ func (f *fakeGoogle) batchUpdate(w http.ResponseWriter, r *http.Request, id stri
 			uts, _ := req["updateTextStyle"].(map[string]any)
 			rng, _ := uts["range"].(map[string]any)
 			style, _ := uts["textStyle"].(map[string]any)
+			tab := f.tabOf(doc, rng)
+			if !f.rejectIfPastSegment(w, i, "updateTextStyle", tab, rng) {
+				return
+			}
 			if link, ok := style["link"].(map[string]any); ok {
-				if tab := f.tabOf(doc, rng); tab != nil {
+				if tab != nil {
 					tab.links = replaceLinkAt(tab.links, rng, link)
 					tab.spans = replaceSpanAt(tab.spans, intOf(rng["startIndex"]), intOf(rng["endIndex"]), link)
 					f.writeLog = append(f.writeLog, "link:"+tab.title)
@@ -477,16 +497,11 @@ func (f *fakeGoogle) batchUpdate(w http.ResponseWriter, r *http.Request, id stri
 			cnr, _ := req["createNamedRange"].(map[string]any)
 			name, _ := cnr["name"].(string)
 			rng, _ := cnr["range"].(map[string]any)
-			if tab := f.tabOf(doc, rng); tab != nil {
-				// A range must end strictly inside the segment. Predicting the
-				// post-insert geometry arithmetically got this wrong by one (#179), and
-				// a fake that accepts any range can never say so.
-				if end, seg := intOf(rng["endIndex"]), segmentEnd(tab.body); end > seg {
-					http.Error(w, fmt.Sprintf(
-						`{"error":{"message":"Invalid requests[%d].createNamedRange: Index %d must be less than the end index of the referenced segment, %d."}}`,
-						i, end, seg), http.StatusBadRequest)
-					return
-				}
+			tab := f.tabOf(doc, rng)
+			if !f.rejectIfPastSegment(w, i, "createNamedRange", tab, rng) {
+				return
+			}
+			if tab != nil {
 				tab.namedRanges[name]++
 			}
 			replies = append(replies, map[string]any{})
@@ -807,8 +822,11 @@ func intOf(v any) int {
 
 func u16len(s string) int { return len(utf16.Encode([]rune(s))) }
 
-// segmentEnd is the end index of a tab's body segment, as the real API reports
-// it.
+// segmentEnd is the LAST INDEX INSIDE a tab's body segment: the furthest a range
+// may end, and one less than the endIndex documents.get reports for the same
+// body. Both of the fake's uses derive from this one function — the read serves
+// segmentEnd+1, and a request is rejected at segmentEnd+1 — so the number the
+// backend reads back and the number it is judged against cannot drift apart.
 //
 // A body always ends in a paragraph terminator, and text inserted at the end of
 // the segment ends with its own newline (every block is rendered as
@@ -822,6 +840,107 @@ func segmentEnd(body string) int {
 		end--
 	}
 	return end
+}
+
+// rejectIfPastSegment enforces the rule every index-carrying request is held to: a
+// range must END STRICTLY INSIDE the segment it addresses, which is why the last
+// paragraph's terminator can never be styled. The real API reports an equal end
+// with the same 400 as one past it — "Index N must be less than the end index of
+// the referenced segment, N" (#185).
+//
+// A nil tab is a request the fake could not route; those are counted elsewhere
+// and left alone here. It reports whether the batch may CONTINUE: a rejection
+// has already written the 400 and the caller must return.
+func (f *fakeGoogle) rejectIfPastSegment(w http.ResponseWriter, i int, kind string, tab *fakeTab, rng map[string]any) bool {
+	if tab == nil || rng == nil {
+		return true
+	}
+	// The end the API names in its message, and compares against, is the one
+	// documents.get reports as the body's endIndex — one past the last index a
+	// range may address.
+	end, seg := intOf(rng["endIndex"]), segmentEnd(tab.body)+1
+	if end < seg {
+		return true
+	}
+	http.Error(w, fmt.Sprintf(
+		`{"error":{"message":"Invalid requests[%d].%s: Index %d must be less than the end index of the referenced segment, %d."}}`,
+		i, kind, end, seg), http.StatusBadRequest)
+	return false
+}
+
+// applyParagraphBullets models the half of createParagraphBullets that MOVES
+// TEXT. Nesting depth is expressed as leading tabs, and the request counts them
+// and then REMOVES them, "to avoid excess space between the bullet and the
+// corresponding paragraph".
+//
+// That deletion is the whole of #185: every request later in the same atomic
+// batch addresses a body that is shorter than the one the renderer measured, so
+// a fake that only recorded the bullets would accept indexes the real API
+// rejects. The tab's recorded geometry — heading starts and link spans — slides
+// left with the text, exactly as the server's does.
+func (t *fakeTab) applyParagraphBullets(start, end int) {
+	units := utf16.Encode([]rune(t.body))
+	kept := make([]uint16, 0, len(units))
+	// removedBefore[i] is how many units were dropped before original offset i,
+	// which is all a recorded index needs to follow the text.
+	removedBefore := make([]int, len(units)+1)
+	removed := 0
+	atParagraphStart, stripping := true, false
+	for i, u := range units {
+		removedBefore[i] = removed
+		if atParagraphStart {
+			doc := bodyBaseIndex + i
+			stripping = doc >= start && doc < end
+			atParagraphStart = false
+		}
+		if stripping && u == '\t' {
+			removed++
+			continue
+		}
+		stripping = false
+		kept = append(kept, u)
+		if u == '\n' {
+			atParagraphStart = true
+		}
+	}
+	removedBefore[len(units)] = removed
+	if removed == 0 {
+		return
+	}
+	t.body = string(utf16.Decode(kept))
+
+	slide := func(doc int) int {
+		i := doc - bodyBaseIndex
+		switch {
+		case i < 0:
+			return doc
+		case i > len(units):
+			i = len(units)
+		}
+		return doc - removedBefore[i]
+	}
+	headings := make(map[int]string, len(t.headings))
+	for at, id := range t.headings {
+		headings[slide(at)] = id
+	}
+	t.headings = headings
+	for i := range t.spans {
+		t.spans[i].start, t.spans[i].end = slide(t.spans[i].start), slide(t.spans[i].end)
+	}
+	// The link records are keyed by the range they were applied over, and a
+	// re-link (#171) looks itself up by that key. Leaving the keys in pre-strip
+	// coordinates would make the repair APPEND a second link to the same text
+	// instead of replacing the first.
+	for _, link := range t.links {
+		key, _ := link["okf:range"].(string)
+		lo, hi, cut := strings.Cut(key, "-")
+		start, err1 := strconv.Atoi(lo)
+		end, err2 := strconv.Atoi(hi)
+		if !cut || err1 != nil || err2 != nil {
+			continue
+		}
+		link["okf:range"] = fmt.Sprintf("%d-%d", slide(start), slide(end))
+	}
 }
 
 // bodyBaseIndex is where a tab's body starts; index 0 is the segment start the
