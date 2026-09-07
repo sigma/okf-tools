@@ -384,6 +384,19 @@ func (f *fakeGoogle) batchUpdate(w http.ResponseWriter, r *http.Request, id stri
 					i, maxTabTitle), http.StatusBadRequest)
 				return
 			}
+			// A tab title must be UNIQUE within a document, and the real API rejects a
+			// duplicate outright rather than uniquing it server-side (#180). That is
+			// what turns "a tab the backend failed to adopt" into a permanently
+			// unpublishable destination, so the fake has to model it or the recovery
+			// path passes against a server that forgives everything.
+			for _, existing := range doc.tabs {
+				if existing.title == title {
+					http.Error(w, fmt.Sprintf(
+						`{"error":{"message":"Invalid requests[%d].addDocumentTab: Tab title must be unique."}}`,
+						i), http.StatusBadRequest)
+					return
+				}
+			}
 			tab := newFakeTab(f.next("t."), title)
 			// TabProperties.index places a tab explicitly; the real API shifts the
 			// tabs at and after it. Without honouring this, a test could not tell an
@@ -635,6 +648,20 @@ func (f *fakeGoogle) sidecar() string {
 		}
 	}
 	return ""
+}
+
+// setSidecar overwrites the state file's content, which is how a test stands in
+// for a run that died between writing tabs and persisting its provenance.
+func (f *fakeGoogle) setSidecar(content string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, file := range f.files {
+		if file.mimeType == "application/json" {
+			file.content = []byte(content)
+			return
+		}
+	}
+	f.t.Fatal("no state file to overwrite")
 }
 
 // linksOf reports the links applied to a tab's text, by title.

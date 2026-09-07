@@ -64,7 +64,7 @@ func runCmd(args []string) error {
 	schemaPath := fs.String("schema", "", "schema.json path (default: <root>/schema.json if present)")
 	outDir := fs.String("out", "", "output dir for the fs/export backend (default: "+pipeline.DefaultOutDir+")")
 	dryRun := fs.Bool("dry-run", false, "publish nothing: with --backend gdocs, dump the API writes that would be issued; otherwise export to the filesystem (implies --backend fs)")
-	recompute := fs.Bool("recompute", false, "opt into the full live-block scan (true drift + subpage/anchor self-heal); default is the cheap steady-state scan")
+	recompute := fs.Bool("recompute", false, "opt into the full live-block scan (true drift + subpage/anchor self-heal); default is the cheap steady-state scan. Notion only: the gdocs scan reads the whole document either way, and self-heals unconditionally")
 	interval := fs.Duration("interval", notion.DefaultInterval, "minimum spacing between Notion writes (reads burst ahead of it); zero or less disables pacing")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -312,7 +312,8 @@ Run flags:
   --out      fs/export output dir   (default: okfpub-export)
   --dry-run  publish nothing. With --backend gdocs, dump the API writes that
              would be issued; otherwise export to the filesystem (--backend fs)
-  --recompute                       full live-block scan (true drift + self-heal)
+  --recompute                       full live-block scan (true drift + self-heal).
+                                    Notion only: the gdocs scan always self-heals
   --select <area|path>              publish only this area or path as one document;
                                     repeatable (gdocs). Omitted: one document per area
   --interval  minimum spacing between Notion writes (default 350ms; 0 or less disables)

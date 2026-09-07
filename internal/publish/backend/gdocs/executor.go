@@ -89,6 +89,15 @@ func (b *Backend) Execute(ctx context.Context, txn publish.Transaction, r backen
 			// Drop its remembered citations too, or a later re-link would style a
 			// range in a tab that no longer exists.
 			delete(b.citations, tabID)
+			// And release its title: the scan seeds the claimed-title map from the
+			// document, so a title deleted during this run would otherwise stay
+			// claimed and push a later node with the same name into a needless
+			// directory prefix (#180).
+			for title, owner := range b.titles {
+				if owner == rel {
+					delete(b.titles, title)
+				}
+			}
 			b.mu.Unlock()
 		}
 		return res, nil
@@ -493,7 +502,19 @@ func tabRange(tabID string, start, end int) map[string]any {
 
 // namedRangeFor is a node's identity marker: stable across renames because it is
 // keyed by the source path, and 1–256 code units as the API requires (#158).
-func namedRangeFor(rel string) string { return "okf:" + rel }
+func namedRangeFor(rel string) string { return markerPrefix + rel }
+
+// markerPrefix distinguishes this backend's identity ranges from any other named
+// range a human may have left in the document.
+const markerPrefix = "okf:"
+
+// relOfMarker inverts namedRangeFor: it recovers the node a named range
+// identifies, so a tab can be recognised from the DOCUMENT rather than from
+// external state (#180).
+func relOfMarker(name string) (string, bool) {
+	rel, ok := strings.CutPrefix(name, markerPrefix)
+	return rel, ok && rel != ""
+}
 
 // anchorHeadings matches each hosted anchor to the headingId of the paragraph it
 // was rendered into.
