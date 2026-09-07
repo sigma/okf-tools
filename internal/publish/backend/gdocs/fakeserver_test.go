@@ -311,7 +311,7 @@ func (f *fakeGoogle) getDocument(w http.ResponseWriter, r *http.Request, id stri
 	}
 	tabs := make([]map[string]any, 0, len(doc.tabs))
 	for _, tab := range doc.tabs {
-		content := []map[string]any{{"endIndex": u16len(tab.body) + 2}}
+		content := []map[string]any{{"endIndex": segmentEnd(tab.body) + 1}}
 		for start, hid := range tab.headings {
 			content = append(content, map[string]any{
 				"startIndex": start,
@@ -465,6 +465,15 @@ func (f *fakeGoogle) batchUpdate(w http.ResponseWriter, r *http.Request, id stri
 			name, _ := cnr["name"].(string)
 			rng, _ := cnr["range"].(map[string]any)
 			if tab := f.tabOf(doc, rng); tab != nil {
+				// A range must end strictly inside the segment. Predicting the
+				// post-insert geometry arithmetically got this wrong by one (#179), and
+				// a fake that accepts any range can never say so.
+				if end, seg := intOf(rng["endIndex"]), segmentEnd(tab.body); end > seg {
+					http.Error(w, fmt.Sprintf(
+						`{"error":{"message":"Invalid requests[%d].createNamedRange: Index %d must be less than the end index of the referenced segment, %d."}}`,
+						i, end, seg), http.StatusBadRequest)
+					return
+				}
 				tab.namedRanges[name]++
 			}
 			replies = append(replies, map[string]any{})
@@ -524,7 +533,10 @@ func (f *fakeGoogle) batchUpdate(w http.ResponseWriter, r *http.Request, id stri
 	writeJSON(w, map[string]any{"replies": replies})
 }
 
-// maxTabTitle is the tab-title ceiling the real API enforces (#178).
+// maxTabTitle is the tab-title ceiling the real API enforces (#178). The fake
+// keeps its OWN copy on purpose: it stands in for the server, and one that
+// borrowed the client's constant could never disagree with it — which is the
+// only way a test here can catch the client drifting.
 const maxTabTitle = 50
 
 // overLongTitle reports whether a title exceeds the cap. Counted in RUNES: the
@@ -767,6 +779,28 @@ func intOf(v any) int {
 }
 
 func u16len(s string) int { return len(utf16.Encode([]rune(s))) }
+
+// segmentEnd is the end index of a tab's body segment, as the real API reports
+// it.
+//
+// A body always ends in a paragraph terminator, and text inserted at the end of
+// the segment ends with its own newline (every block is rendered as
+// "prefix + body + \n"). That final newline MERGES with the terminator the
+// segment already has, so the segment grows by one unit fewer than the string
+// that was sent — which is exactly the off-by-one #179 reported: a range end
+// predicted at 19088 against a segment that ended at 19087.
+func segmentEnd(body string) int {
+	end := bodyBaseIndex + u16len(body)
+	if strings.HasSuffix(body, "\n") {
+		end--
+	}
+	return end
+}
+
+// bodyBaseIndex is where a tab's body starts; index 0 is the segment start the
+// API does not let a caller write at. The fake's own copy, for the same reason
+// as maxTabTitle above.
+const bodyBaseIndex = 1
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")

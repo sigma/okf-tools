@@ -4,9 +4,13 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"unicode/utf16"
 
+	"github.com/sigma/okf-tools/internal/publish/backend/gdocs"
 	"github.com/sigma/okf-tools/internal/publish/pipeline"
 )
+
+func u16Len(s string) int { return len(utf16.Encode([]rune(s))) }
 
 // longTitle is 63 characters — the length of a real ADR title from the bundle
 // that hit this, and squarely in the 57–79 band the issue measured.
@@ -52,10 +56,51 @@ func TestOverLongTitlesPublish(t *testing.T) {
 		t.Fatal("nothing was published")
 	}
 	for _, title := range titles {
-		if n := len([]rune(title)); n > 50 {
+		if n := u16Len(title); n > gdocs.MaxTabTitle {
 			t.Errorf("tab title is %d characters, over the API's limit: %q", n, title)
 		}
 	}
+}
+
+// TestTruncationDoesNotDefeatDisambiguation: two pages in different directories
+// sharing a long title truncate to the same string, so the clash only exists
+// AFTER fitting — which is exactly when the claimed-title map has to be consulted
+// with the fitted title rather than the raw one (#178).
+func TestTruncationDoesNotDefeatDisambiguation(t *testing.T) {
+	fake := newFakeGoogle(t)
+	srv := fake.server()
+	defer srv.Close()
+
+	// Same 79-character title in two areas: identical for the first 49 runes, so
+	// they are distinguishable before fitting and identical after it.
+	files := map[string]string{
+		"okf.toml": "[glossary]\nenabled = true\nfiles = [\"CONTEXT.md\"]\n",
+		"index.md": "---\nokf_version: \"0.1\"\ntitle: Index\ntype: index\n---\n\n# Index\n",
+		"CONTEXT.md": "---\nokf_version: \"0.1\"\ntitle: Context\ntype: context\n---\n\n" +
+			"# Keys\n\n- **Widget**: a small thing.\n",
+		"alpha/page.md": "---\nokf_version: \"0.1\"\ntitle: \"" + longestTitle + "\"\ntype: concept\n---\n\n# One\n",
+		"beta/page.md":  "---\nokf_version: \"0.1\"\ntitle: \"" + longestTitle + "\"\ntype: concept\n---\n\n# Two\n",
+	}
+
+	be := newBackend(t, srv.URL)
+	if _, err := pipeline.Run(context.Background(), be, loadBundle(t, files)); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	titles := fake.tabTitles(be.DocumentID())
+	seen := map[string]int{}
+	for _, title := range titles {
+		seen[title]++
+		if n := u16Len(title); n > gdocs.MaxTabTitle {
+			t.Errorf("disambiguation pushed a title back over the ceiling: %d units, %q", n, title)
+		}
+	}
+	for title, n := range seen {
+		if n > 1 {
+			t.Errorf("%d tabs share the title %q; truncation defeated disambiguation", n, title)
+		}
+	}
+	t.Logf("titles: %v", titles)
 }
 
 // TestTruncationReadsAsDeliberate: a hard chop at the boundary looks like a

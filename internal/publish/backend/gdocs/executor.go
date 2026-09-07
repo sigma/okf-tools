@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"unicode"
 
 	"github.com/sigma/okf-tools/internal/publish"
 	"github.com/sigma/okf-tools/internal/publish/backend"
@@ -97,7 +98,12 @@ func (b *Backend) Execute(ctx context.Context, txn publish.Transaction, r backen
 		b.mu.Lock()
 		taken := b.titles
 		b.mu.Unlock()
-		title := fitTabTitle(disambiguate(tabTitle(rel, propOps), rel, taken))
+		// Fit BEFORE disambiguating as well as after: the claimed-title map holds
+		// fitted titles, so comparing a raw one against it would miss every clash
+		// between titles that differ only past the ceiling — exactly the titles most
+		// likely to collide once truncated (#178). The outer fit then re-bounds the
+		// directory prefix disambiguate may have added.
+		title := fitTabTitle(disambiguate(fitTabTitle(tabTitle(rel, propOps)), rel, taken))
 		id, err := b.createTab(ctx, docID, rel, title)
 		if err != nil {
 			return res, err
@@ -141,29 +147,15 @@ func (b *Backend) Execute(ctx context.Context, txn publish.Transaction, r backen
 		return res, err
 	}
 
-	// The second pass. A heading's id is READ-ONLY and the batchUpdate reply does
-	// not carry it (#150), so an anchor's real target can only be learned by
-	// reading the document back after the write. This is the carve-out #152
-	// accepted, and it is confined to tabs that actually host anchors.
-	if len(body.anchorStarts) > 0 {
-		if b.cfg.DryRunWriter != nil {
-			// A dry run has nothing to read back, but the anchors must still RESOLVE:
-			// the transport gates every citing transaction on them, so leaving them
-			// out would stall the plan and the dump would show only part of the run.
-			for name := range body.anchorStarts {
-				res.Anchors[name] = anchorID(tabID, b.nextDryRunHeadingID())
-			}
-		} else {
-			ids, err := b.harvestHeadings(ctx, docID, tabID, body.anchorStarts)
-			if err != nil {
-				return res, err
-			}
-			for name, headingID := range ids {
-				res.Anchors[name] = anchorID(tabID, headingID)
-			}
-		}
-	}
-	if err := b.linkSelfRefs(ctx, docID, tabID, body.citations, res.Anchors); err != nil {
+	// The second pass, and the reason this backend has one: two facts about a tab
+	// exist only AFTER the write, and neither can be predicted.
+	//
+	// A heading's id is read-only and the batchUpdate reply does not carry it
+	// (#150), so an anchor's target is learned by reading back — the carve-out
+	// #152 accepted. Where the body actually ENDS is the same kind of fact: the
+	// arithmetic prediction was wrong by one (#179). One read answers both, and
+	// one batch acts on both.
+	if err := b.assertTabState(ctx, docID, tabID, rel, body, res.Anchors); err != nil {
 		return res, err
 	}
 	// This tab's own citations are re-rendered from scratch on every write, so the
@@ -174,6 +166,73 @@ func (b *Backend) Execute(ctx context.Context, txn publish.Transaction, r backen
 		return res, err
 	}
 	return res, nil
+}
+
+// assertTabState is the post-write pass: read the tab back once, then issue the
+// single batch that needs what the read revealed — the identity marker over the
+// body's REAL extent, and the link targets for citations of anchors this tab
+// hosts. Neither could be known before the write: a heading id is minted by the
+// server (#170's deferral rests on that), and the body's real extent contradicted
+// the arithmetic that predicted it (#179).
+func (b *Backend) assertTabState(ctx context.Context, docID, tabID, rel string,
+	body rendered, anchors map[publish.AnchorName]publish.BackendID) error {
+	if body.text == "" {
+		// Nothing was written, so there is no marker to place and no heading to
+		// harvest. Skipping keeps a props-only or delete transaction free of the
+		// read this pass otherwise costs.
+		return nil
+	}
+
+	var state tabState
+	if b.cfg.DryRunWriter == nil {
+		var err error
+		if state, err = b.readTabState(ctx, docID, tabID); err != nil {
+			return err
+		}
+		for name, headingID := range state.anchorHeadings(body.anchorStarts) {
+			anchors[name] = anchorID(tabID, headingID)
+		}
+	} else {
+		// A dry run has nothing to read back, but the anchors must still RESOLVE:
+		// the transport gates every citing transaction on them, so leaving them out
+		// would stall the plan and the dump would show only part of the run. The
+		// marker range is modelled rather than read: the trailing newline of a
+		// rendered body merges with the paragraph terminator, so the segment grows
+		// one unit less than the text (#179). It is the best a dump can do, and a
+		// model is exactly what a dry run cannot verify — which is why one could
+		// never have caught this.
+		for name := range body.anchorStarts {
+			anchors[name] = anchorID(tabID, b.nextDryRunHeadingID())
+		}
+		state.end = bodyBase + u16(body.text)
+		if strings.HasSuffix(body.text, "\n") {
+			state.end--
+		}
+	}
+
+	var requests []map[string]any
+	{
+		// The marker is re-created on every write rather than assumed to survive:
+		// the API documents only how a named range is ADJUSTED as content shifts,
+		// never what happens when the span it covers is deleted outright, and
+		// Google's own sample re-creates it (#158).
+		requests = append(requests, map[string]any{
+			"createNamedRange": map[string]any{
+				"name":  namedRangeFor(rel),
+				"range": tabRange(tabID, bodyBase, state.contentEnd()),
+			},
+		})
+	}
+	links, err := b.selfRefRequests(tabID, body.citations, anchors)
+	if err != nil {
+		return err
+	}
+	requests = append(requests, links...)
+	if len(requests) == 0 {
+		return nil
+	}
+	_, err = b.c.batchUpdate(ctx, docID, requests)
+	return err
 }
 
 // rememberCitations records where this tab cites each anchor, so a later
@@ -290,34 +349,39 @@ func (b *Backend) nextDryRunHeadingID() string {
 	return fmt.Sprintf("%s-%d", dryRunHeadingID, b.dryHeadingCount)
 }
 
-// linkSelfRefs applies the link targets that could not exist during the write:
-// one updateTextStyle per citation of an anchor this tab hosts, over the range
-// its text already occupies.
+// selfRefRequests builds the link styles that could not exist during the write:
+// one per citation of an anchor this tab hosts, over the range its text already
+// occupies.
 //
-// Patching the STYLE rather than re-rendering the body is what keeps the ids
-// valid: a rewrite deletes and re-inserts the paragraphs, so the server mints
-// fresh headingIds and the ones just harvested go dead. Styling text that is
-// already in place cites the live ids.
+// Styling text already in place is what keeps the ids valid: a rewrite deletes
+// and re-inserts the paragraphs, so the server mints fresh headingIds and the
+// ones just harvested go dead.
 //
 // This is the same-tab half of the repair. A later transaction for the same node
 // re-renders and rewrites the whole tab (see Execute's merge of b.pending) and
 // re-mints its heading ids; self-citations survive that because they are
 // re-emitted from every render, and links other tabs hold are repaired by
 // relinkMoved (#171).
-func (b *Backend) linkSelfRefs(ctx context.Context, docID, tabID string, cites []anchorCitation,
-	anchors map[publish.AnchorName]publish.BackendID) error {
+func (b *Backend) selfRefRequests(tabID string, cites []anchorCitation,
+	anchors map[publish.AnchorName]publish.BackendID) ([]map[string]any, error) {
 	var requests []map[string]any
 	for _, sl := range cites {
 		if !sl.deferred() {
 			continue // an ordinary citation; it linked during the write
 		}
+		// These two are loud rather than skipped. A deferred citation names an
+		// anchor THIS transaction hosts, so the harvest that just ran should have
+		// produced it; "the anchor's own gate will report it" is true for another
+		// tab's citation and false here, where silence would publish a citation
+		// that links nowhere and say nothing.
 		id, ok := anchors[sl.name]
 		if !ok {
-			return fmt.Errorf("gdocs: anchor %s is hosted here but no heading was harvested for it", sl.name)
+			return nil, fmt.Errorf(
+				"gdocs: anchor %s is hosted here but no heading was harvested for it", sl.name)
 		}
 		_, headingID, ok := splitAnchorID(id)
 		if !ok {
-			return fmt.Errorf("gdocs: anchor %s resolved to a malformed target %q", sl.name, id)
+			return nil, fmt.Errorf("gdocs: anchor %s resolved to a malformed target %q", sl.name, id)
 		}
 		requests = append(requests, map[string]any{"updateTextStyle": map[string]any{
 			"range":     relRange(sl.start, sl.end),
@@ -325,17 +389,15 @@ func (b *Backend) linkSelfRefs(ctx context.Context, docID, tabID string, cites [
 			"fields":    "link",
 		}})
 	}
-	if len(requests) == 0 {
-		return nil
-	}
-	// The same relative-to-absolute shift the body's own styles go through, for the
-	// same reason: an untagged range silently applies to the FIRST tab (#147).
-	_, err := b.c.batchUpdate(ctx, docID, shiftRequests(requests, bodyBase, tabID))
-	return err
+	// The same relative-to-absolute shift the body's own styles go through, for
+	// the same reason: an untagged range silently applies to the FIRST tab (#147).
+	return shiftRequests(requests, bodyBase, tabID), nil
 }
 
 // writeTab replaces a tab's whole body: drop the identity marker, clear the
-// content, insert the new text, restyle it, and re-assert the marker.
+// content, insert the new text and restyle it. The identity marker is asserted
+// afterwards, by assertTabState, because its range depends on where the body
+// really ended up (#179).
 //
 // The marker is re-created rather than assumed to survive. The API documents only
 // how a named range is ADJUSTED as content shifts, never what happens when the
@@ -392,12 +454,6 @@ func (b *Backend) writeTab(ctx context.Context, docID, tabID, rel string, body r
 			},
 		})
 		requests = append(requests, shiftRequests(body.styles, bodyBase, tabID)...)
-		requests = append(requests, map[string]any{
-			"createNamedRange": map[string]any{
-				"name":  namedRangeFor(rel),
-				"range": tabRange(tabID, bodyBase, bodyBase+u16(body.text)),
-			},
-		})
 	}
 
 	_, err = b.c.batchUpdate(ctx, docID, requests)
@@ -439,36 +495,16 @@ func tabRange(tabID string, start, end int) map[string]any {
 // keyed by the source path, and 1–256 code units as the API requires (#158).
 func namedRangeFor(rel string) string { return "okf:" + rel }
 
-// harvestHeadings reads the document back and matches each hosted anchor to the
-// headingId of the paragraph it was rendered into.
-func (b *Backend) harvestHeadings(ctx context.Context, docID, tabID string, starts map[publish.AnchorName]int) (map[publish.AnchorName]string, error) {
-	doc, err := b.c.getDocument(ctx, docID)
-	if err != nil {
-		return nil, err
-	}
-	byStart := map[int]string{}
-	var walk func([]documentTab)
-	walk = func(tabs []documentTab) {
-		for _, t := range tabs {
-			if t.TabProperties.TabID == tabID {
-				for _, el := range t.DocumentTab.Body.Content {
-					if el.Paragraph != nil && el.Paragraph.ParagraphStyle.HeadingID != "" {
-						byStart[el.StartIndex] = el.Paragraph.ParagraphStyle.HeadingID
-					}
-				}
-			}
-			walk(t.ChildTabs)
-		}
-	}
-	walk(doc.Tabs)
-
+// anchorHeadings matches each hosted anchor to the headingId of the paragraph it
+// was rendered into.
+func (s tabState) anchorHeadings(starts map[publish.AnchorName]int) map[publish.AnchorName]string {
 	out := map[publish.AnchorName]string{}
 	for name, off := range starts {
-		if id, ok := byStart[off+bodyBase]; ok {
+		if id, ok := s.headings[off+bodyBase]; ok {
 			out[name] = id
 		}
 	}
-	return out, nil
+	return out
 }
 
 // createTab adds a tab and returns its server-minted id.
@@ -577,7 +613,24 @@ type tabState struct {
 	// or the zero value returned with an error — and a nil map reads as "carries
 	// nothing", which is exactly right for a tab that does not exist yet.
 	namedRanges map[string]bool
+	// headings maps a paragraph's start index to the headingId the server minted
+	// for it. Read-only server state, and the reason a post-write read exists at
+	// all (#150).
+	headings map[int]string
 }
+
+// contentEnd is the exclusive end a range may address: one before the end the
+// read reported, which is the last position inside the segment.
+//
+// It is only meaningful for a tab that HAS a body; assertTabState returns before
+// calling it when nothing was written.
+//
+// Predicting this from the text that was SENT is what #179 got wrong. A rendered
+// body ends in "\n", and that newline merges with the paragraph terminator the
+// segment already has, so the segment grows by one unit fewer than the string —
+// a createNamedRange predicted at 19088 against a segment ending at 19087.
+// Reading it back needs no theory about what the server normalizes.
+func (s tabState) contentEnd() int { return s.end - 1 }
 
 // hasNamedRange reports whether the tab already carries the named range.
 func (s tabState) hasNamedRange(name string) bool { return s.namedRanges[name] }
@@ -588,7 +641,7 @@ func (b *Backend) readTabState(ctx context.Context, docID, tabID string) (tabSta
 	if err != nil {
 		return tabState{}, err
 	}
-	out := tabState{namedRanges: map[string]bool{}}
+	out := tabState{namedRanges: map[string]bool{}, headings: map[int]string{}}
 	var walk func([]documentTab)
 	walk = func(tabs []documentTab) {
 		for _, t := range tabs {
@@ -596,6 +649,9 @@ func (b *Backend) readTabState(ctx context.Context, docID, tabID string) (tabSta
 				for _, el := range t.DocumentTab.Body.Content {
 					if el.EndIndex > out.end {
 						out.end = el.EndIndex
+					}
+					if el.Paragraph != nil && el.Paragraph.ParagraphStyle.HeadingID != "" {
+						out.headings[el.StartIndex] = el.Paragraph.ParagraphStyle.HeadingID
 					}
 				}
 				for name := range t.DocumentTab.NamedRanges {
@@ -620,10 +676,16 @@ func tabTitle(rel string, props []setProps) string {
 	return strings.TrimSuffix(path.Base(rel), ".md")
 }
 
-// maxTabTitle is the API's ceiling on a tab title, in characters. An over-long
-// title is rejected outright rather than truncated server-side, and batchUpdate
-// is atomic — so one long title used to fail its whole transaction, and the
+// maxTabTitle is the API's ceiling on a tab title. An over-long title is
+// rejected outright rather than truncated server-side, and batchUpdate is
+// atomic — so one long title used to fail its whole transaction, and the
 // selection with it (#178).
+//
+// The error says "characters"; this counts UTF-16 code units, the unit every
+// other index in this API is expressed in. Where the two differ — an emoji, an
+// astral-plane character — counting units is the conservative reading: it
+// truncates a little early rather than sending a title the server may still
+// reject.
 const maxTabTitle = 50
 
 // fitTabTitle brings a title within the ceiling, marking it as shortened.
@@ -642,13 +704,23 @@ const maxTabTitle = 50
 // It runs AFTER disambiguate, whose directory prefix can itself push a title
 // over the ceiling.
 func fitTabTitle(title string) string {
-	r := []rune(title)
-	if len(r) <= maxTabTitle {
+	if u16(title) <= maxTabTitle {
 		return title
 	}
-	// Counted in runes: the limit is expressed in characters, and titles are prose
-	// that may carry non-ASCII. Trailing space before the ellipsis reads as a typo.
-	return strings.TrimRight(string(r[:maxTabTitle-1]), " ") + "…"
+	// Cut on a RUNE boundary at or under the unit ceiling, so the result is never
+	// a split surrogate pair — which would be invalid text, not a short title.
+	kept := make([]rune, 0, maxTabTitle)
+	used := 0
+	for _, r := range title {
+		n := u16(string(r))
+		if used+n > maxTabTitle-1 { // -1 leaves room for the ellipsis
+			break
+		}
+		kept = append(kept, r)
+		used += n
+	}
+	// Trailing whitespace before the ellipsis reads as a typo rather than a cut.
+	return strings.TrimRightFunc(string(kept), unicode.IsSpace) + "…"
 }
 
 // disambiguate qualifies a title with its parent directory when another page in
