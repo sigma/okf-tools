@@ -27,7 +27,9 @@ const (
 	ListItem
 	// CodeBlock is a fenced or indented code block (no inline refs).
 	CodeBlock
-	// Quote is a block quote, its nested content flattened into one inline run.
+	// Quote is a block quote. Its PROSE flattens into one inline run — consecutive
+	// paragraphs separated by a break — while a table, fenced block or nested list
+	// inside it emits as a block of its own, in document order (#182).
 	Quote
 	// Generic is any other block-level node, kept so its inline refs survive.
 	Generic
@@ -230,46 +232,55 @@ func resolveByNode(root ast.Node, d *bundle.Doc) map[ast.Node]*bundle.ResolvedLi
 // level.
 func (b *docBuilder) walk(n ast.Node, depth int) {
 	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
-		switch v := c.(type) {
-		case *ast.Heading:
-			b.emit(Heading, v.Level, c)
-		case *ast.Paragraph, *ast.TextBlock:
-			b.emit(Paragraph, 0, c)
-		case *ast.List:
-			b.walk(c, depth+1) // items live one level deeper
-		case *ast.ListItem:
-			// A list item's own text is its first paragraph/text block; nested
-			// lists follow. Emit the item's inline run, then recurse for children.
-			b.emit(ListItem, max(depth, 1), c)
-		case *ast.Blockquote:
-			b.emit(Quote, 0, c)
-		case *east.Table:
-			// A GFM table: emit one Table block whose cells carry their own inline
-			// runs. emitTable visits cells in the parser's own depth-first order, so
-			// the link ordinal stays in lockstep with d.Resolved just as emit does.
-			b.emitTable(v)
-		case *ast.FencedCodeBlock:
-			// Code carries no inline links, so it contributes nothing to linkIdx.
-			// Its body lives in Lines() (not child inlines) and its fence names a
-			// language, both of which emitCode captures.
-			b.emitCode(v, string(v.Language(b.src)))
-		case *ast.CodeBlock:
-			// Indented code: same body-in-Lines() shape, but no fence language.
-			b.emitCode(v, "")
-		case *ast.ThematicBreak:
-			// nothing to carry
-		default:
-			// Unknown block: keep it (and count any links inside) so nothing is lost.
-			b.emit(Generic, 0, c)
-		}
+		b.emitNode(c, depth)
+	}
+}
+
+// emitNode emits one block-level node. It is walk's body, extracted so a list
+// item can dispatch the blocks nested INSIDE it through the same table — a
+// nested block emits as itself wherever it sits, rather than only at the top
+// level (#182).
+func (b *docBuilder) emitNode(c ast.Node, depth int) {
+	switch v := c.(type) {
+	case *ast.Heading:
+		b.emit(Heading, v.Level, c)
+	case *ast.Paragraph, *ast.TextBlock:
+		b.emit(Paragraph, 0, c)
+	case *ast.List:
+		b.walk(c, depth+1) // items live one level deeper
+	case *ast.ListItem:
+		// A list item's own text is its first paragraph/text block; nested
+		// lists follow. Emit the item's inline run, then recurse for children.
+		b.emit(ListItem, max(depth, 1), c)
+	case *ast.Blockquote:
+		b.emitQuote(v, depth)
+	case *east.Table:
+		// A GFM table: emit one Table block whose cells carry their own inline
+		// runs. emitTable visits cells in the parser's own depth-first order, so
+		// the link ordinal stays in lockstep with d.Resolved just as emit does.
+		b.emitTable(v)
+	case *ast.FencedCodeBlock:
+		// Code carries no inline links, so it contributes nothing to linkIdx.
+		// Its body lives in Lines() (not child inlines) and its fence names a
+		// language, both of which emitCode captures.
+		b.emitCode(v, string(v.Language(b.src)))
+	case *ast.CodeBlock:
+		// Indented code: same body-in-Lines() shape, but no fence language.
+		b.emitCode(v, "")
+	case *ast.ThematicBreak:
+		// nothing to carry
+	default:
+		// Unknown block: keep it (and count any links inside) so nothing is lost.
+		b.emit(Generic, 0, c)
 	}
 }
 
 // emit collects n's inline content into one neutral block of the given kind and
 // level, records the block's Refs and (for a glossary host) any anchor it hosts,
-// and appends it. For a ListItem it collects only the item's own inline run, not
-// nested lists, then recurses into the item so nested lists become their own
-// deeper Item blocks.
+// and appends it. For a ListItem it collects only the item's own lead text, then
+// emits each block nested under the item — a deeper list, a table, a fenced
+// block, a quote — as a block of its own, in document order. An item with no
+// lead text emits no block: its nested blocks are its whole content.
 func (b *docBuilder) emit(kind BlockKind, level int, n ast.Node) {
 	inlines, blockRefs := b.inlinesOf(n)
 
@@ -282,18 +293,122 @@ func (b *docBuilder) emit(kind BlockKind, level int, n ast.Node) {
 			blk.Anchors = []publish.AnchorName{anchorName(slug)}
 		}
 	}
-	b.blocks = append(b.blocks, blk)
-	b.refs = append(b.refs, blockRefs...)
+	// A bullet whose whole content is a nested block — a table, a fenced block —
+	// has no text of its own. The block below carries the content, so an empty
+	// bullet beside it is noise rather than structure (#182).
+	if kind != ListItem || len(inlines) > 0 {
+		b.blocks = append(b.blocks, blk)
+		b.refs = append(b.refs, blockRefs...)
+	}
 
-	// A list item may hold nested lists after its own text; recurse so they emit
-	// as deeper Item blocks in document order.
+	// A list item may hold whole BLOCKS after its own text — a nested list, but
+	// also a table, a fenced block, a quote, a second paragraph. Each emits as
+	// itself, in document order, rather than being flattened into the item's
+	// inline run with its structure discarded (#182).
+	//
+	// Only a nested LIST carries the item's depth onward; every other kind emits
+	// at level 0, so a table under a bullet renders as a sibling of the list rather
+	// than as indented content. That is a deliberate trade: the neutral model has
+	// no "block nested under an item" level, and the mediums it targets disagree
+	// about indenting one — losing the indent is recoverable by eye, losing the
+	// table's rows is not.
 	if _, ok := n.(*ast.ListItem); ok {
-		for c := n.FirstChild(); c != nil; c = c.NextSibling() {
-			if list, ok := c.(*ast.List); ok {
-				b.walk(list, level+1)
-			}
+		for c := itemFirstBlock(n); c != nil; c = c.NextSibling() {
+			b.emitNode(c, level)
 		}
 	}
+}
+
+// emitQuote projects a blockquote in DOCUMENT ORDER: each stretch of consecutive
+// prose becomes one Quote block, and every structured child between those
+// stretches — a table, a fenced block, a nested list or quote — emits as a block
+// of its own where it stands.
+//
+// Order is the whole point of doing this in one pass. Flattening the quote's
+// prose and lifting its tables out afterwards would hoist any prose that FOLLOWED
+// a table above it, which loses the argument the quote was making just as surely
+// as losing the table's rows did (#182).
+func (b *docBuilder) emitQuote(n ast.Node, depth int) {
+	var prose []ast.Node
+	flush := func() {
+		if len(prose) > 0 {
+			b.emitProse(Quote, prose)
+			prose = nil
+		}
+	}
+	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
+		if isOwnBlock(c) {
+			flush()
+			b.emitNode(c, depth)
+			continue
+		}
+		prose = append(prose, c)
+	}
+	flush()
+}
+
+// emitProse emits one block folding several sibling prose nodes into a single
+// inline run. They are SEPARATED by a break as they fold: they are distinct
+// blocks in the source, and running them into one string is the same glue #181
+// was about.
+func (b *docBuilder) emitProse(kind BlockKind, nodes []ast.Node) {
+	var inlines []Inline
+	var blockRefs []publish.SymbolicID
+	for _, n := range nodes {
+		if len(inlines) > 0 {
+			inlines = appendBreak(inlines, "\n")
+		}
+		in, refs := b.inlinesOf(n)
+		inlines = append(inlines, in...)
+		blockRefs = append(blockRefs, refs...)
+	}
+	blk := publish.Block{
+		Content: BlockContent{Kind: kind, Inlines: inlines},
+		Refs:    blockRefs,
+	}
+	// The anchor is looked up by SOURCE LINE, so it belongs to the first node of
+	// the run — the line the quote starts on.
+	if b.doc.Glossary && len(nodes) > 0 {
+		if slug, ok := b.anchorAt(nodes[0]); ok {
+			blk.Anchors = []publish.AnchorName{anchorName(slug)}
+		}
+	}
+	b.blocks = append(b.blocks, blk)
+	b.refs = append(b.refs, blockRefs...)
+}
+
+// isOwnBlock reports whether a node carries structure that an inline run cannot
+// hold — a table's rows and cells, a code block's language and literal body, a
+// list's items. Such a node is emitted as a block of its own wherever it is
+// nested; prose, which flattening loses nothing of, is not.
+func isOwnBlock(n ast.Node) bool {
+	switch n.(type) {
+	case *east.Table, *ast.FencedCodeBlock, *ast.CodeBlock, *ast.List, *ast.Blockquote:
+		return true
+	}
+	return false
+}
+
+// itemLead reports the child holding a list item's OWN text: its first paragraph
+// (a loose item) or text block (a tight one). Everything after it is a nested
+// block, and an item that opens with one — a bullet whose content is a table —
+// has no lead at all.
+func itemLead(item ast.Node) ast.Node {
+	switch c := item.FirstChild(); c.(type) {
+	case *ast.Paragraph, *ast.TextBlock:
+		return c
+	default:
+		return nil
+	}
+}
+
+// itemFirstBlock reports the first of a list item's children that is a block of
+// its own: the sibling after the lead, or the first child when there is no lead.
+func itemFirstBlock(item ast.Node) ast.Node {
+	if lead := itemLead(item); lead != nil {
+		return lead.NextSibling()
+	}
+	return item.FirstChild()
 }
 
 // emitTable projects a GFM table node into one neutral Table block: the header
@@ -460,13 +575,13 @@ func (b *docBuilder) inlinesOf(n ast.Node) (inlines []Inline, refs []publish.Sym
 			}
 		}
 	}
-	// For a list item, restrict to its own text block(s), skipping nested lists.
+	// A list item contributes only its LEAD text. Its other children are blocks in
+	// their own right and are emitted as such, so visiting them here would collect
+	// a nested table's cells as bare text runs — every separator lost, and the
+	// item's own sentence glued to the first cell (#182).
 	if _, ok := n.(*ast.ListItem); ok {
-		for c := n.FirstChild(); c != nil; c = c.NextSibling() {
-			if _, isList := c.(*ast.List); isList {
-				continue
-			}
-			visit(c)
+		if lead := itemLead(n); lead != nil {
+			visit(lead)
 		}
 		return inlines, refs
 	}
