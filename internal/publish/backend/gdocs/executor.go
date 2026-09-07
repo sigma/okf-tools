@@ -20,6 +20,15 @@ import (
 // data loss (#155).
 const maxTabs = 100
 
+// bodyBase is where a tab's body begins once it has been emptied: index 1, since
+// index 0 is the segment start the API does not let a caller write at.
+//
+// Every relative offset the renderer produces — a style range, a hosted anchor's
+// paragraph start, a self-link's text span — is turned absolute by adding this,
+// and the harvest matches paragraphs back by subtracting it. One constant so the
+// four sites cannot drift apart and style the wrong span.
+const bodyBase = 1
+
 // Execute applies one sealed transaction as a batchUpdate against the
 // destination document. The unit of work is a TAB, so a transaction creates a
 // tab, replaces its content, or deletes it.
@@ -114,7 +123,14 @@ func (b *Backend) Execute(ctx context.Context, txn publish.Transaction, r backen
 	mergedBlocks := append([]contentBlock(nil), pend.blocks...)
 	b.mu.Unlock()
 
-	body, err := renderTab(mergedBlocks, mergedProps, r)
+	// A transaction's own anchors resolve against a transaction-local overlay, the
+	// mechanism WithOverlay exists for. This backend cannot supply a real id there
+	// — a headingId is minted by the server and readable only from a document read
+	// (#150) — so the overlay resolves them to a deferral sentinel: the citation
+	// renders, the transaction is not rejected for an "unresolvable" ref (#170),
+	// and its link target is applied below, once harvested.
+	body, err := renderTab(mergedBlocks, mergedProps,
+		backend.WithOverlay(r, deferredAnchors(mergedBlocks, tabID)))
 	if err != nil {
 		return res, err
 	}
@@ -132,7 +148,7 @@ func (b *Backend) Execute(ctx context.Context, txn publish.Transaction, r backen
 			// the transport gates every citing transaction on them, so leaving them
 			// out would stall the plan and the dump would show only part of the run.
 			for name := range body.anchorStarts {
-				res.Anchors[name] = anchorID(tabID, "would-create-heading")
+				res.Anchors[name] = anchorID(tabID, dryRunHeadingID)
 			}
 		} else {
 			ids, err := b.harvestHeadings(ctx, docID, tabID, body.anchorStarts)
@@ -144,7 +160,51 @@ func (b *Backend) Execute(ctx context.Context, txn publish.Transaction, r backen
 			}
 		}
 	}
+	if err := b.linkSelfRefs(ctx, docID, tabID, body.selfLinks, res.Anchors); err != nil {
+		return res, err
+	}
 	return res, nil
+}
+
+// linkSelfRefs applies the link targets that could not exist during the write:
+// one updateTextStyle per citation of an anchor this tab hosts, over the range
+// its text already occupies.
+//
+// Patching the STYLE rather than re-rendering the body is what keeps the ids
+// valid: a rewrite deletes and re-inserts the paragraphs, so the server mints
+// fresh headingIds and the ones just harvested go dead. Styling text that is
+// already in place cites the live ids.
+//
+// This holds WITHIN a tab. It does not fix the pre-existing cross-tab case: a
+// later transaction for the same node re-renders and rewrites the whole tab
+// (see Execute's merge of b.pending), re-minting its headingIds, and another
+// tab's link written before that rewrite is not re-patched. Self-links are,
+// because they are re-emitted from each render.
+func (b *Backend) linkSelfRefs(ctx context.Context, docID, tabID string, links []selfLink,
+	anchors map[publish.AnchorName]publish.BackendID) error {
+	if len(links) == 0 {
+		return nil
+	}
+	requests := make([]map[string]any, 0, len(links))
+	for _, sl := range links {
+		id, ok := anchors[sl.name]
+		if !ok {
+			return fmt.Errorf("gdocs: anchor %s is hosted here but no heading was harvested for it", sl.name)
+		}
+		_, headingID, ok := splitAnchorID(id)
+		if !ok {
+			return fmt.Errorf("gdocs: anchor %s resolved to a malformed target %q", sl.name, id)
+		}
+		requests = append(requests, map[string]any{"updateTextStyle": map[string]any{
+			"range":     relRange(sl.start, sl.end),
+			"textStyle": map[string]any{"link": headingLink(tabID, headingID)},
+			"fields":    "link",
+		}})
+	}
+	// The same relative-to-absolute shift the body's own styles go through, for the
+	// same reason: an untagged range silently applies to the FIRST tab (#147).
+	_, err := b.c.batchUpdate(ctx, docID, shiftRequests(requests, bodyBase, tabID))
+	return err
 }
 
 // writeTab replaces a tab's whole body: drop the identity marker, clear the
@@ -184,19 +244,18 @@ func (b *Backend) writeTab(ctx context.Context, docID, tabID, rel string, body r
 		})
 	}
 
-	const base = 1 // an emptied body's content begins at index 1
 	if body.text != "" {
 		requests = append(requests, map[string]any{
 			"insertText": map[string]any{
-				"location": map[string]any{"tabId": tabID, "index": base},
+				"location": map[string]any{"tabId": tabID, "index": bodyBase},
 				"text":     body.text,
 			},
 		})
-		requests = append(requests, shiftRequests(body.styles, base, tabID)...)
+		requests = append(requests, shiftRequests(body.styles, bodyBase, tabID)...)
 		requests = append(requests, map[string]any{
 			"createNamedRange": map[string]any{
 				"name":  namedRangeFor(rel),
-				"range": tabRange(tabID, base, base+u16(body.text)),
+				"range": tabRange(tabID, bodyBase, bodyBase+u16(body.text)),
 			},
 		})
 	}
@@ -247,7 +306,6 @@ func (b *Backend) harvestHeadings(ctx context.Context, docID, tabID string, star
 	if err != nil {
 		return nil, err
 	}
-	const base = 1
 	byStart := map[int]string{}
 	var walk func([]documentTab)
 	walk = func(tabs []documentTab) {
@@ -266,7 +324,7 @@ func (b *Backend) harvestHeadings(ctx context.Context, docID, tabID string, star
 
 	out := map[publish.AnchorName]string{}
 	for name, off := range starts {
-		if id, ok := byStart[off+base]; ok {
+		if id, ok := byStart[off+bodyBase]; ok {
 			out[name] = id
 		}
 	}
