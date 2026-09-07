@@ -328,6 +328,7 @@ func leadTerm(n ast.Node, src []byte) (term string, boldLead, wellFormed bool) {
 		switch t := c.(type) {
 		case *ast.Text:
 			rest.Write(t.Segment.Value(src))
+			rest.WriteString(LineBreakOf(t))
 		case *ast.String:
 			rest.Write(t.Value)
 		default:
@@ -355,6 +356,27 @@ func hasLinkDescendant(n ast.Node) bool {
 	return found
 }
 
+// LineBreakOf reports the text a Text node's recorded line break renders as, per
+// CommonMark: a soft break (an ordinary wrapped line) is a SPACE, and a hard
+// break (two trailing spaces or a backslash) is a NEWLINE. It is empty for a node
+// that ends no line.
+//
+// goldmark splits a soft-wrapped paragraph into one Text node per SOURCE LINE and
+// records the break on the node before it, out of band from the segment — so
+// every consumer that concatenates segments has to ask for it. This is the one
+// home for that rule; the publisher's document builder shares it (#181).
+func LineBreakOf(t *ast.Text) string {
+	// Hard is tested FIRST because goldmark sets the soft flag on a hard-broken
+	// node too, so the reverse order would render every hard break as a space.
+	switch {
+	case t.HardLineBreak():
+		return "\n"
+	case t.SoftLineBreak():
+		return " "
+	}
+	return ""
+}
+
 // collectText concatenates the source text of a node's inline descendants,
 // yielding the rendered link/heading text without markup delimiters.
 func collectText(n ast.Node, src []byte) string {
@@ -363,6 +385,7 @@ func collectText(n ast.Node, src []byte) string {
 		switch t := c.(type) {
 		case *ast.Text:
 			sb.Write(t.Segment.Value(src))
+			sb.WriteString(LineBreakOf(t)) // the segment excludes it (#181)
 		case *ast.String:
 			sb.Write(t.Value)
 		default:

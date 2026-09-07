@@ -98,6 +98,9 @@ type TableCell struct {
 // classes qualify, #119), and the synthetic disclaimer banner's source deep-link
 // (ADR-0015).
 type Inline struct {
+	// Text is the run's literal text. It carries the line breaks of wrapped source
+	// prose too — a space for a soft break, a newline for a hard one — rather than
+	// those being a fourth kind of inline (#181).
 	Text string
 	Ref  *Ref
 	// URL, when non-empty, makes this a plain text run hyperlinked to an external
@@ -414,6 +417,11 @@ func (b *docBuilder) inlinesOf(n ast.Node) (inlines []Inline, refs []publish.Sym
 				if s := string(v.Segment.Value(b.src)); s != "" {
 					inlines = append(inlines, Inline{Text: s})
 				}
+				// The segment excludes the break that follows it, so without this
+				// every wrapped line glues its last word to the next line's first —
+				// in every backend, since this is the shared builder. The rule itself
+				// lives in parser.LineBreakOf (#181).
+				inlines = appendBreak(inlines, parser.LineBreakOf(v))
 			case *ast.String:
 				if s := string(v.Value); s != "" {
 					inlines = append(inlines, Inline{Text: s})
@@ -464,6 +472,28 @@ func (b *docBuilder) inlinesOf(n ast.Node) (inlines []Inline, refs []publish.Sym
 	}
 	visit(n)
 	return inlines, refs
+}
+
+// appendBreak adds a line break to an inline run. It FOLDS the break into the
+// preceding span when that span is plain text, so an ordinary wrap costs no extra
+// run — but never into a link or a Ref, where the break falls on a boundary and
+// the separator belongs outside the linked text rather than inside it.
+func appendBreak(inlines []Inline, brk string) []Inline {
+	if brk == "" {
+		return inlines
+	}
+	if n := len(inlines); n > 0 && inlines[n-1].Ref == nil && inlines[n-1].URL == "" {
+		// A break whose line ended with a link is recorded on an EMPTY text node
+		// after it, so when that link produced no inline at all — unresolved, or
+		// demoted out of the selection to nothing — folding the space in would
+		// double the one the text before the link already ends with.
+		if brk == " " && strings.HasSuffix(inlines[n-1].Text, " ") {
+			return inlines
+		}
+		inlines[n-1].Text += brk
+		return inlines
+	}
+	return append(inlines, Inline{Text: brk})
 }
 
 // refOf decides whether a resolved link becomes a first-class Ref, and which
