@@ -60,6 +60,13 @@ type Backend struct {
 	// without accumulation the content write would wipe the properties written a
 	// moment earlier. Keyed by bundle-relative path.
 	pending map[string]*pendingTab
+	// citations remembers where each tab cites an anchor, in ABSOLUTE ranges, so a
+	// citation can be re-linked when its target is re-minted by a rewrite (#171).
+	// Keyed by tabId, and replaced wholesale on each write of that tab.
+	citations map[string][]anchorCitation
+	// dryHeadingCount counts the placeholder heading ids a dry run has handed out,
+	// which is what makes each one distinct (#171).
+	dryHeadingCount int
 	// missing records that a dry run found no destination, so reads are skipped and
 	// the dump shows what a first publish would do.
 	missing bool
@@ -151,12 +158,13 @@ func New(ctx context.Context, cfg Config) (*Backend, error) {
 		hc = oauth2.NewClient(ctx, ts)
 	}
 	return &Backend{
-		cfg:     cfg,
-		c:       &client{http: hc, docs: cfg.DocsEndpoint, drive: cfg.DriveEndpoint, dry: cfg.DryRunWriter},
-		tabs:    map[string]string{},
-		hashes:  map[string]nodeState{},
-		titles:  map[string]string{},
-		pending: map[string]*pendingTab{},
+		cfg:       cfg,
+		c:         &client{http: hc, docs: cfg.DocsEndpoint, drive: cfg.DriveEndpoint, dry: cfg.DryRunWriter},
+		tabs:      map[string]string{},
+		citations: map[string][]anchorCitation{},
+		hashes:    map[string]nodeState{},
+		titles:    map[string]string{},
+		pending:   map[string]*pendingTab{},
 	}, nil
 }
 
