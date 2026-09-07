@@ -750,3 +750,12 @@ func (f *fakeGoogle) addDocumentFile(driveID string) string {
 	f.files[id] = &fakeFile{id: id, driveID: driveID, mimeType: mimeDocument}
 	return id
 }
+
+// batchUpdateCount reports how many batchUpdate calls the backend has issued —
+// every write it makes is one — under the lock, since the conformance kit reads
+// it between publishes.
+func (f *fakeGoogle) batchUpdateCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.batchUpdates
+}
