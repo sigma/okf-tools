@@ -36,6 +36,54 @@ type rendered struct {
 	// anchorStarts maps an anchor to the relative start offset of its paragraph, so
 	// the read-back pass can match it to a headingId.
 	anchorStarts map[publish.AnchorName]int
+	// selfLinks are citations of anchors this same body hosts, whose link target
+	// cannot be known until after the write (#170). They carry no link style in the
+	// first batchUpdate; the executor applies one once the ids are harvested.
+	selfLinks []selfLink
+}
+
+// selfLink is one citation of an anchor hosted by the very body being written,
+// held as the range its text occupies so the target can be applied later.
+type selfLink struct {
+	name  publish.AnchorName
+	start int
+	end   int
+}
+
+// deferredHeadingID is the placeholder an anchor resolves to while the
+// transaction that HOSTS it is the one being rendered.
+//
+// A heading's id is minted by the server and readable only from a document read
+// (#150), so at render time a self-hosted anchor has no target to link to — but
+// it must still RESOLVE, or ResolveRuns rejects the whole transaction, which is
+// exactly how #170 broke every self-citing glossary. Resolving to this sentinel
+// says "real anchor, target pending" and keeps the two apart from a genuine miss.
+const deferredHeadingID = "okf:deferred"
+
+// dryRunHeadingID is the deferral sentinel's dry-run twin: a run that never
+// writes has nothing to read back, so a hosted anchor resolves to this instead
+// of to a harvested id. It reaches the DUMP, where naming it is the point,
+// whereas deferredHeadingID must never survive a render.
+const dryRunHeadingID = "would-create-heading"
+
+// deferredAnchors is the transaction-local overlay: every anchor these blocks
+// HOST, resolving to a placeholder target in this tab.
+//
+// It is built from the blocks rather than from the render, because ResolveRuns
+// runs during the render and would already have failed. Only hosted anchors go
+// in, so a citation of another tab's term still falls through to the base
+// resolver and links on the first write as it always did.
+func deferredAnchors(blocks []contentBlock, tabID string) map[publish.SymbolicID]publish.BackendID {
+	var local map[publish.SymbolicID]publish.BackendID
+	for _, blk := range blocks {
+		for _, name := range blk.anchors {
+			if local == nil {
+				local = map[publish.SymbolicID]publish.BackendID{}
+			}
+			local[publish.AnchorRef(name)] = anchorID(tabID, deferredHeadingID)
+		}
+	}
+	return local
 }
 
 // u16 counts a string's length in UTF-16 code units — the unit every Docs index
@@ -50,12 +98,13 @@ func renderTab(blocks []contentBlock, props []setProps, r backend.Resolver) (ren
 
 	for _, blk := range blocks {
 		start := u16(sb.String())
-		text, styles, err := renderBlockText(blk, start, r)
+		text, styles, self, err := renderBlockText(blk, start, r)
 		if err != nil {
 			return out, err
 		}
 		sb.WriteString(text)
 		out.styles = append(out.styles, styles...)
+		out.selfLinks = append(out.selfLinks, self...)
 		for _, a := range blk.anchors {
 			out.anchorStarts[a] = start
 		}
@@ -80,10 +129,10 @@ func renderTab(blocks []contentBlock, props []setProps, r backend.Resolver) (ren
 
 // renderBlockText renders one block and the styling that decorates it. start is
 // the block's offset within the tab body.
-func renderBlockText(blk contentBlock, start int, r backend.Resolver) (string, []map[string]any, error) {
+func renderBlockText(blk contentBlock, start int, r backend.Resolver) (string, []map[string]any, []selfLink, error) {
 	// A table's content lives per-cell, not in runs.
 	if blk.kind == graph.Table {
-		return renderTableText(blk), nil, nil
+		return renderTableText(blk), nil, nil, nil
 	}
 
 	prefix := ""
@@ -93,9 +142,9 @@ func renderBlockText(blk contentBlock, start int, r backend.Resolver) (string, [
 		prefix = strings.Repeat("\t", blk.level-1)
 	}
 
-	body, linkStyles, err := renderRuns(blk.runs, start+u16(prefix), r)
+	body, linkStyles, self, err := renderRuns(blk.runs, start+u16(prefix), r)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	text := prefix + body + "\n"
 	end := start + u16(text)
@@ -137,33 +186,38 @@ func renderBlockText(blk contentBlock, start int, r backend.Resolver) (string, [
 			"indentStart": map[string]any{"magnitude": 36, "unit": "PT"},
 		}, "indentStart"))
 	}
-	return text, styles, nil
+	return text, styles, self, nil
 }
 
 // renderRuns renders a block's inline runs and the link styling over them.
 //
 // A Ref run carries NO visible text — the label is the backend's to supply — so a
 // node reference shows its page name and an anchor reference its term.
-func renderRuns(runs []publish.Run, start int, r backend.Resolver) (string, []map[string]any, error) {
+func renderRuns(runs []publish.Run, start int, r backend.Resolver) (string, []map[string]any, []selfLink, error) {
 	resolved, err := backend.ResolveRuns(runs, r)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	var sb strings.Builder
 	var styles []map[string]any
+	var self []selfLink
 	at := start
 
 	for _, rr := range resolved {
 		text := rr.Run.Text
 		var link map[string]any
+		var deferred publish.AnchorName
 
 		switch {
 		case rr.Run.Ref != "":
 			if name, isAnchor := rr.Run.Ref.AnchorName(); isAnchor {
 				text = anchorLabel(name)
 				tabID, headingID, ok := splitAnchorID(rr.RefID)
-				if ok {
-					link = map[string]any{"heading": map[string]any{"id": headingID, "tabId": tabID}}
+				switch {
+				case ok && headingID == deferredHeadingID:
+					deferred = name
+				case ok:
+					link = headingLink(tabID, headingID)
 				}
 			} else {
 				text = nodeLabel(rr.Run.Ref)
@@ -177,6 +231,9 @@ func renderRuns(runs []publish.Run, start int, r backend.Resolver) (string, []ma
 			continue
 		}
 		next := at + u16(text)
+		if deferred != "" {
+			self = append(self, selfLink{name: deferred, start: at, end: next})
+		}
 		if link != nil {
 			styles = append(styles, map[string]any{"updateTextStyle": map[string]any{
 				"range":     relRange(at, next),
@@ -187,7 +244,7 @@ func renderRuns(runs []publish.Run, start int, r backend.Resolver) (string, []ma
 		sb.WriteString(text)
 		at = next
 	}
-	return sb.String(), styles, nil
+	return sb.String(), styles, self, nil
 }
 
 // renderTableText renders a table as text rows.
@@ -271,6 +328,12 @@ func anchorLabel(name publish.AnchorName) string {
 // along in the value rather than being looked up separately.
 func anchorID(tabID, headingID string) publish.BackendID {
 	return publish.BackendID(tabID + "#" + headingID)
+}
+
+// headingLink is the in-document link to an anchor's heading. Both halves are
+// required: a heading id alone would resolve against the wrong tab.
+func headingLink(tabID, headingID string) map[string]any {
+	return map[string]any{"heading": map[string]any{"id": headingID, "tabId": tabID}}
 }
 
 func splitAnchorID(id publish.BackendID) (tabID, headingID string, ok bool) {
