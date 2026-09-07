@@ -95,6 +95,26 @@ type recordedReq struct {
 	Version string
 }
 
+// writeCount reports how many requests actually MUTATED the workspace, for the
+// conformance kit's near-noop property.
+//
+// "Not a GET" would be wrong: this API queries a data source with POST
+// /data_sources/{id}/query, so a steady-state run that writes nothing still posts
+// once to read its own rows. Counting that as a write fails a backend that is
+// behaving exactly as it should.
+func (f *fakeNotion) writeCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, r := range f.reqs {
+		if r.Method == http.MethodGet || strings.HasSuffix(r.Path, "/query") {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
 func newFakeNotion() *fakeNotion {
 	return &fakeNotion{
 		children:   map[string][]string{},
