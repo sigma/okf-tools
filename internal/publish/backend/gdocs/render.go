@@ -42,6 +42,11 @@ type rendered struct {
 	// harvested (#170), and a resolved one is remembered so it can be re-linked if
 	// its target is re-minted out from under it (#171).
 	citations []anchorCitation
+	// strips is how many UTF-16 units the bullet requests DELETE from the inserted
+	// text: the depth tabs createParagraphBullets counts and then removes. The
+	// document ends up that much shorter than text, which only a run with nothing
+	// to read back has to model.
+	strips int
 }
 
 // anchorCitation is one citation of an anchor, held as the range its text
@@ -110,24 +115,61 @@ func deferredAnchors(blocks []contentBlock, tabID string) map[publish.SymbolicID
 // bytes would silently misplace every style after the first one.
 func u16(s string) int { return len(utf16.Encode([]rune(s))) }
 
+// styleReq is one styling request together with the shrink in force when it
+// runs: how many units the bullet requests BEFORE it will have deleted from the
+// body by the time the server reaches it.
+//
+// The two travel together rather than in parallel slices because the second is
+// only meaningful for the first — a request separated from its shrink can be
+// neither clamped nor checked (#185).
+type styleReq struct {
+	req    map[string]any
+	shrink int
+}
+
 // renderTab turns a transaction's ordered blocks into one tab body.
+//
+// Two frames come out of this loop, and they are NOT the same one (#185).
+// createParagraphBullets counts a nested item's leading tabs as its depth and
+// then DELETES them, so within the single atomic batch the body shrinks as the
+// batch is applied: a style request addresses a body already shortened by every
+// bullet request before it, while anything applied AFTER the batch — a self-link,
+// an anchor's paragraph start matched against the read-back — addresses the body
+// with every tab gone, its own included.
+//
+// shrunk carries the first frame: it is subtracted from the offsets handed to
+// each block, so the styles this loop emits are already rebased onto the text
+// that will exist when they run.
 func renderTab(blocks []contentBlock, props []setProps, r backend.Resolver) (rendered, error) {
 	out := rendered{anchorStarts: map[publish.AnchorName]int{}}
 	var sb strings.Builder
+	var styled []styleReq
+	shrunk := 0
 
 	for _, blk := range blocks {
-		start := u16(sb.String())
-		text, styles, cites, err := renderBlockText(blk, start, r)
+		start := u16(sb.String()) - shrunk
+		text, styles, cites, strips, err := renderBlockText(blk, start, r)
 		if err != nil {
 			return out, err
 		}
 		sb.WriteString(text)
-		out.styles = append(out.styles, styles...)
-		out.citations = append(out.citations, cites...)
+		for _, req := range styles {
+			styled = append(styled, styleReq{req: req, shrink: shrunk})
+		}
+		// A citation is linked after the batch, so its range must also clear its own
+		// paragraph's tabs — which by then are gone.
+		for _, c := range cites {
+			c.start, c.end = c.start-strips, c.end-strips
+			out.citations = append(out.citations, c)
+		}
+		// A paragraph START does not move when its OWN tabs go: they are what it
+		// begins with. Only earlier blocks' strips shift it.
 		for _, a := range blk.anchors {
 			out.anchorStarts[a] = start
 		}
+		shrunk += strips
 	}
+	out.strips = shrunk
 	// Properties TRAIL the content as a metadata footer. A tab has no property
 	// surface of its own — the carve-out from #152 — so frontmatter is rendered
 	// rather than asserted; but rendering it first made every tab open with
@@ -143,15 +185,83 @@ func renderTab(blocks []contentBlock, props []setProps, r backend.Resolver) (ren
 	}
 
 	out.text = sb.String()
+	styles, err := clampStyleRanges(styled, u16(out.text))
+	if err != nil {
+		return out, err
+	}
+	out.styles = styles
+	return out, nil
+}
+
+// clampStyleRanges holds every style range to the segment it will be applied to,
+// and REFUSES the batch when one overshoots by more than the segment can
+// explain.
+//
+// A rendered body ends in "\n", and that final newline merges with the paragraph
+// terminator the segment already has (#179) — so a range covering the LAST block
+// asks for exactly one unit more than the API allows, and the terminator is not
+// styleable by construction. Stopping short of it is the correct range.
+//
+// Any overshoot BEYOND that one unit is not a boundary case, it is the renderer
+// having measured a body it did not produce — the fault #185 reported, arriving
+// from Google as a 400 naming an index and nothing else. Clamping it silently
+// would style the wrong text and hide the next occurrence, so it is refused here
+// instead, naming the request and the size of the miss.
+//
+// total is the length of the text as INSERTED; each request's own shrink says how
+// much shorter the body will be when it runs.
+func clampStyleRanges(styles []styleReq, total int) ([]map[string]any, error) {
+	out := make([]map[string]any, 0, len(styles))
+	for _, s := range styles {
+		keep := true
+		for kind, body := range s.req {
+			m, ok := body.(map[string]any)
+			if !ok {
+				continue
+			}
+			rng, ok := m["range"].(map[string]any)
+			if !ok {
+				continue
+			}
+			// limit is the last index inside the segment as it will stand when this
+			// request is reached.
+			limit := total - 1 - s.shrink
+			start, end := rng["startIndex"].(int), rng["endIndex"].(int)
+			if end > limit+1 {
+				return nil, fmt.Errorf("gdocs: %s range [%d,%d) runs %d units past the end of "+
+					"the body being written; the offsets this render computed do not describe "+
+					"the text it produced (#185)", kind, start, end, end-limit)
+			}
+			if end > limit {
+				rng["endIndex"], end = limit, limit
+			}
+			if start >= end {
+				// Only a block whose entire text IS its terminator can land here, and
+				// such a block carries no depth tabs — so dropping its request cannot
+				// falsify the strip accounting every offset above depends on.
+				keep = false
+			}
+		}
+		if keep {
+			out = append(out, s.req)
+		}
+	}
 	return out, nil
 }
 
 // renderBlockText renders one block and the styling that decorates it. start is
-// the block's offset within the tab body.
-func renderBlockText(blk contentBlock, start int, r backend.Resolver) (string, []map[string]any, []anchorCitation, error) {
+// the block's offset within the tab body, in the frame the block's own requests
+// will be applied in.
+//
+// strips reports how many units this block's own requests delete from the body:
+// the depth tabs a createParagraphBullets consumes, and zero for every other
+// block — including a nested item that HOSTS an anchor, which becomes a heading
+// and so keeps its tabs as literal text.
+func renderBlockText(blk contentBlock, start int, r backend.Resolver) (
+	text string, styles []map[string]any, cites []anchorCitation, strips int, err error) {
 	// A table's content lives per-cell, not in runs.
 	if blk.kind == graph.Table {
-		return renderTableText(blk), nil, nil, nil
+		return renderTableText(blk), nil, nil, 0, nil
 	}
 
 	prefix := ""
@@ -163,12 +273,12 @@ func renderBlockText(blk contentBlock, start int, r backend.Resolver) (string, [
 
 	body, linkStyles, cites, err := renderRuns(blk.runs, start+u16(prefix), r)
 	if err != nil {
-		return "", nil, nil, err
+		return "", nil, nil, 0, err
 	}
-	text := prefix + body + "\n"
+	text = prefix + body + "\n"
 	end := start + u16(text)
 
-	styles := linkStyles
+	styles = linkStyles
 	switch {
 	case len(blk.anchors) > 0:
 		// An anchor-hosting block becomes a heading so it has a link target.
@@ -186,6 +296,9 @@ func renderBlockText(blk contentBlock, start int, r backend.Resolver) (string, [
 				"bulletPreset": "BULLET_DISC_CIRCLE_SQUARE",
 			},
 		})
+		// The depth tabs go away here: the request counts them and removes them, so
+		// everything the batch does after this point addresses a shorter body (#185).
+		strips = u16(prefix)
 	case blk.kind == graph.CodeBlock:
 		// There is no native code block (#150). Monospace plus a shaded, bordered
 		// paragraph is the documented degradation.
@@ -205,7 +318,7 @@ func renderBlockText(blk contentBlock, start int, r backend.Resolver) (string, [
 			"indentStart": map[string]any{"magnitude": 36, "unit": "PT"},
 		}, "indentStart"))
 	}
-	return text, styles, cites, nil
+	return text, styles, cites, strips, nil
 }
 
 // renderRuns renders a block's inline runs and the link styling over them.

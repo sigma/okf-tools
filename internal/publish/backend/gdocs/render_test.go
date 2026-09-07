@@ -160,3 +160,88 @@ func indexOf(hay, needle string) int {
 	}
 	return -1
 }
+
+// TestBulletStripsShiftLaterOffsets is #185 at the unit: createParagraphBullets
+// deletes the depth tabs it counts, so every offset the SAME batch uses after one
+// must already be rebased onto the shorter body. The paragraph starts a hosted
+// anchor is matched by move with it.
+func TestBulletStripsShiftLaterOffsets(t *testing.T) {
+	blocks := []contentBlock{
+		{kind: graph.ListItem, level: 3, runs: []publish.Run{{Text: "deep"}}},
+		{kind: graph.Paragraph, runs: []publish.Run{{Text: "Widget: a small thing."}},
+			anchors: []publish.AnchorName{"glossary/widget"}},
+		{kind: graph.Paragraph, runs: []publish.Run{{Text: "trailer"}}},
+	}
+	body, err := renderTab(blocks, nil, nopResolver{})
+	if err != nil {
+		t.Fatalf("renderTab: %v", err)
+	}
+	// Two tabs for level 3, and they are the only thing the batch removes.
+	if body.strips != 2 {
+		t.Errorf("strips = %d, want 2 (one per level below the first)", body.strips)
+	}
+	// "\t\tdeep\n" is 7 units as inserted and 5 once bulleted, so the anchor's
+	// paragraph begins at 5, not 7.
+	if got := body.anchorStarts["glossary/widget"]; got != 5 {
+		t.Errorf("anchor paragraph start = %d, want 5 (the tabs are gone by then)", got)
+	}
+	var heading map[string]any
+	for _, req := range body.styles {
+		if ups, ok := req["updateParagraphStyle"].(map[string]any); ok {
+			heading = ups["range"].(map[string]any)
+		}
+	}
+	if heading == nil {
+		t.Fatal("the anchor block emitted no heading style")
+	}
+	if heading["startIndex"] != 5 {
+		t.Errorf("heading style starts at %v, want 5", heading["startIndex"])
+	}
+}
+
+// TestOvershootIsRefusedNotClamped pins the diagnostic #185 asked for: a range
+// that misses by more than the merged terminator means the renderer measured a
+// body it did not produce, and silently clamping it would style the wrong text
+// and hide the next occurrence. One unit is the boundary case; two is a fault.
+func TestOvershootIsRefusedNotClamped(t *testing.T) {
+	const total = 10
+	styles := []styleReq{{shrink: 0, req: map[string]any{
+		"createParagraphBullets": map[string]any{"range": relRange(2, total)},
+	}}}
+	if _, err := clampStyleRanges(styles, total); err != nil {
+		t.Errorf("an end one past the last index is the terminator, and must clamp: %v", err)
+	}
+	if got := styles[0].req["createParagraphBullets"].(map[string]any)["range"].(map[string]any)["endIndex"]; got != total-1 {
+		t.Errorf("end clamped to %v, want %d", got, total-1)
+	}
+
+	over := []styleReq{{shrink: 0, req: map[string]any{
+		"updateTextStyle": map[string]any{"range": relRange(2, total+1)},
+	}}}
+	switch _, err := clampStyleRanges(over, total); {
+	case err == nil:
+		t.Error("a two-unit overshoot was accepted; it names a body the render never wrote")
+	case !contains(err.Error(), "updateTextStyle") || !contains(err.Error(), "#185"):
+		t.Errorf("the error does not name the offending request: %v", err)
+	}
+}
+
+// TestStyleRangesStopShortOfTheTerminator pins the clamp: the last paragraph's
+// terminator is not addressable, and a range that runs into it is answered with a
+// 400 for the WHOLE atomic batch (#179, #185).
+func TestStyleRangesStopShortOfTheTerminator(t *testing.T) {
+	blocks := []contentBlock{{kind: graph.Quote, runs: []publish.Run{{Text: "last word"}}}}
+	body, err := renderTab(blocks, nil, nopResolver{})
+	if err != nil {
+		t.Fatalf("renderTab: %v", err)
+	}
+	limit := u16(body.text) - 1
+	for _, req := range body.styles {
+		for name, raw := range req {
+			rng := raw.(map[string]any)["range"].(map[string]any)
+			if end := rng["endIndex"].(int); end > limit {
+				t.Errorf("%s ends at %d, past the last addressable index %d", name, end, limit)
+			}
+		}
+	}
+}

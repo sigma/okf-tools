@@ -213,7 +213,9 @@ func (b *Backend) assertTabState(ctx context.Context, docID, tabID, rel string,
 		for name := range body.anchorStarts {
 			anchors[name] = anchorID(tabID, b.nextDryRunHeadingID())
 		}
-		state.end = bodyBase + u16(body.text)
+		// The bullet requests shorten the body by every depth tab they consume
+		// (#185), so the modelled segment has to lose them too.
+		state.end = bodyBase + u16(body.text) - body.strips
 		if strings.HasSuffix(body.text, "\n") {
 			state.end--
 		}
