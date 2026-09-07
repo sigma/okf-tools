@@ -51,6 +51,7 @@ type options struct {
 	scanMode  backend.ScanMode
 	banner    *graph.Banner
 	selection func(rel string) bool
+	progress  func(done, total int)
 }
 
 // WithBanner threads a resolved generated-page disclaimer banner into Generation,
@@ -77,6 +78,14 @@ func WithSelection(contains func(rel string) bool) Option {
 
 func WithScanMode(mode backend.ScanMode) Option {
 	return func(o *options) { o.scanMode = mode }
+}
+
+// WithProgress reports the drain's progress — done of total transactions, after
+// each one lands. Unset, a publish says nothing between its banner and its
+// summary, so a run wedged on a stalled request looks exactly like a slow one
+// (#184).
+func WithProgress(f func(done, total int)) Option {
+	return func(o *options) { o.progress = f }
 }
 
 // Run drives one publish of b against be, wiring the three stages behind a single
@@ -134,7 +143,7 @@ func Run(ctx context.Context, be backend.Backend, b *bundle.Bundle, opts ...Opti
 
 	dag := optimize.Optimize(g, be, be)
 
-	res, err := transport.New(be).Run(ctx, dag, scan)
+	res, err := transport.New(be, transport.WithProgress(o.progress)).Run(ctx, dag, scan)
 	if err != nil {
 		return nil, fmt.Errorf("transport: %w", err)
 	}

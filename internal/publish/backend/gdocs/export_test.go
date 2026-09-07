@@ -1,5 +1,7 @@
 package gdocs
 
+import "time"
+
 // Internals the external test package asserts against. Re-declaring these as
 // literals over there would let a rename pass the assertion silently — the
 // sentinel's whole job is to never reach a request, so the test has to watch the
@@ -14,3 +16,8 @@ const (
 	MaxTabTitle = maxTabTitle
 	BodyBase    = bodyBase
 )
+
+// RequestTimeout reports the per-attempt deadline the client was built with, so a
+// test can assert New WIRED the default rather than merely that the default
+// exists (#184).
+func (b *Backend) RequestTimeout() time.Duration { return b.c.timeout }

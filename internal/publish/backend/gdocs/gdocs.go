@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/oauth2"
 
@@ -114,6 +115,12 @@ type Config struct {
 	// HTTPClient overrides the authenticated transport. Tests pass an unauthenticated
 	// client aimed at an httptest server; production leaves it nil.
 	HTTPClient *http.Client
+	// RequestTimeout bounds ONE attempt's round trip; zero takes
+	// DefaultRequestTimeout. A NEGATIVE value disables the bound, which is the
+	// unbounded behaviour a stalled stream hangs forever on (#184) and exists only
+	// so a test can opt out. notion.WithRequestTimeout reads zero and negative the
+	// same way.
+	RequestTimeout time.Duration
 }
 
 var (
@@ -149,6 +156,11 @@ func New(ctx context.Context, cfg Config) (*Backend, error) {
 		return nil, fmt.Errorf("gdocs: a shared drive or folder id is required")
 	}
 
+	timeout := cfg.RequestTimeout
+	if timeout == 0 {
+		timeout = DefaultRequestTimeout
+	}
+
 	hc := cfg.HTTPClient
 	if hc == nil {
 		ts, err := tokenSource(ctx, cfg.ImpersonateSA, cfg.IAMEndpoint)
@@ -158,8 +170,11 @@ func New(ctx context.Context, cfg Config) (*Backend, error) {
 		hc = oauth2.NewClient(ctx, ts)
 	}
 	return &Backend{
-		cfg:       cfg,
-		c:         &client{http: hc, docs: cfg.DocsEndpoint, drive: cfg.DriveEndpoint, dry: cfg.DryRunWriter},
+		cfg: cfg,
+		c: &client{
+			http: hc, docs: cfg.DocsEndpoint, drive: cfg.DriveEndpoint,
+			dry: cfg.DryRunWriter, timeout: timeout,
+		},
 		tabs:      map[string]string{},
 		citations: map[string][]anchorCitation{},
 		hashes:    map[string]nodeState{},

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -53,6 +54,20 @@ const (
 	// to maxRetryBackoff. Used only when the response carries no Retry-After.
 	retryBaseBackoff = 500 * time.Millisecond
 	maxRetryBackoff  = 8 * time.Second
+	// DefaultRequestTimeout bounds ONE attempt: how long the client waits for a
+	// response before treating the request as stalled.
+	//
+	// Without it a publish has no deadline anywhere. HTTP/2 multiplexes every call
+	// over one connection, so a half-dead connection parks the stream on a reply
+	// that never arrives, and nothing at any layer gives up — a run observed in the
+	// wild sat wedged for 34 minutes on 2.5 seconds of CPU (#184). The retry loop
+	// cannot help on its own: it classifies STATUSES, and a request that never
+	// returns produces none.
+	//
+	// Generous on purpose. The failure being fixed is unbounded, not slow: a
+	// healthy Notion call answers in well under a second, and a bulk block append
+	// on a bad day is still far inside this.
+	DefaultRequestTimeout = 60 * time.Second
 	// maxRetryAfter caps how long a server-sent Retry-After may park the run.
 	// Bounding the attempts bounds nothing if one header can stall a publish for an
 	// hour; retrying earlier than asked risks another 429, which is itself bounded
@@ -96,12 +111,15 @@ type limiter struct {
 	interval    time.Duration
 	readBurst   int
 	maxAttempts int
-	now         func() time.Time
-	sleep       func(context.Context, time.Duration) error
-	mu          sync.Mutex
-	lastReq     time.Time
-	tokens      float64
-	filled      time.Time
+	// timeout bounds one attempt's round trip. Non-positive disables the bound,
+	// which is what the wedged run of #184 effectively ran with.
+	timeout time.Duration
+	now     func() time.Time
+	sleep   func(context.Context, time.Duration) error
+	mu      sync.Mutex
+	lastReq time.Time
+	tokens  float64
+	filled  time.Time
 }
 
 // counters is the run's API traffic accounting: how many attempts the client made
@@ -128,6 +146,15 @@ func (c *counters) request() {
 
 // retry records that an attempt which failed with status is being re-sent,
 // attributing it to throttling (429) or to a transient server failure (5xx).
+// stalledRetry books a re-send caused by THIS client's deadline firing rather
+// than by a status. It lands in the transient bucket, which is what a stall is:
+// the summary's transient count is every re-send that was not a 429 (#184).
+func (c *counters) stalledRetry() {
+	c.mu.Lock()
+	c.transient++
+	c.mu.Unlock()
+}
+
 func (c *counters) retry(status int) {
 	c.mu.Lock()
 	if status == http.StatusTooManyRequests {
@@ -186,7 +213,21 @@ func (b *Backend) do(ctx context.Context, method, path string, body, out any) er
 			// request may have reached Notion and been applied, and unlike a 429 there is
 			// no signal that it did not. Replaying a create on that guess mints a
 			// duplicate page — see replaySafe.
-			return err
+			if !b.stalled(ctx, err) || !replaySafe(method, path) || attempt >= b.limits.maxAttempts {
+				return err
+			}
+			// A stalled attempt on a replay-safe route is exactly what the retry loop
+			// exists to absorb: replaying a *set* operation lands the same state whether
+			// or not the first attempt reached Notion, so one bad connection costs a
+			// backoff rather than the run (#184).
+			b.stats.stalledRetry()
+			delay := b.limits.retryDelay(nil, attempt)
+			b.logf("notion: %s %s: no response within %v, retry %d/%d in %v",
+				method, path, b.limits.timeout, attempt, b.limits.maxAttempts-1, delay)
+			if err := b.limits.sleep(ctx, delay); err != nil {
+				return fmt.Errorf("notion: %s %s: timeout, retry aborted: %w", method, path, err)
+			}
+			continue
 		}
 
 		switch {
@@ -226,6 +267,20 @@ func (b *Backend) attempt(ctx context.Context, method, path string, payload []by
 		reader = bytes.NewReader(payload)
 	}
 
+	// The deadline is PER ATTEMPT, not per call: a retry gets its own full budget,
+	// so a stall costs one backoff rather than eating the whole call's allowance
+	// (#184). Cancelling covers the body read as well as the round trip — a
+	// response whose body never finishes streaming hangs exactly as a missing
+	// response does.
+	// caller is kept UNDERIVED so a failure can be told apart from the caller
+	// giving up: inside the derived context every error looks like a deadline.
+	caller := ctx
+	if b.limits.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, b.limits.timeout)
+		defer cancel()
+	}
+
 	req, err := http.NewRequestWithContext(ctx, method, b.baseURL+path, reader)
 	if err != nil {
 		return 0, nil, nil, fmt.Errorf("notion: build request %s %s: %w", method, path, err)
@@ -240,15 +295,35 @@ func (b *Backend) attempt(ctx context.Context, method, path string, payload []by
 
 	resp, err := b.http.Do(req)
 	if err != nil {
-		return 0, nil, nil, fmt.Errorf("notion: %s %s: %w", method, path, err)
+		return 0, nil, nil, b.wrapAttemptErr(caller, method, path, err)
 	}
 	defer resp.Body.Close()
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return 0, nil, nil, fmt.Errorf("notion: read %s %s response: %w", method, path, err)
+		return 0, nil, nil, b.wrapAttemptErr(caller, "read "+method, path, err)
 	}
 	return resp.StatusCode, resp.Header, data, nil
+}
+
+// wrapAttemptErr names a failed round trip. A stall is reported as a TIMEOUT
+// naming the budget it exceeded rather than as a bare "context deadline
+// exceeded", because the two read very differently to whoever finds the failed
+// run: one says the destination stopped answering, the other looks like a bug in
+// this program.
+func (b *Backend) wrapAttemptErr(ctx context.Context, method, path string, err error) error {
+	if b.stalled(ctx, err) {
+		return fmt.Errorf("notion: %s %s: no response within %v (request timeout): %w",
+			method, path, b.limits.timeout, err)
+	}
+	return fmt.Errorf("notion: %s %s: %w", method, path, err)
+}
+
+// stalled reports whether err is THIS client's per-attempt deadline firing rather
+// than the caller giving up. The distinction decides whether a retry is even
+// considered: a cancelled run stops, it does not back off and try again.
+func (b *Backend) stalled(ctx context.Context, err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil
 }
 
 // retryable reports whether a failed request should be retried, given its status

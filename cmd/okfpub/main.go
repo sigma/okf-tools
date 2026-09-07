@@ -8,10 +8,13 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/sigma/okf-tools/internal/bundle"
 	"github.com/sigma/okf-tools/internal/publish/backend"
@@ -169,7 +172,11 @@ func runCmd(args []string) error {
 
 // runOnce publishes one destination and prints its summary.
 func runOnce(ctx context.Context, be backend.Backend, b *bundle.Bundle, kind pipeline.BackendKind, runOpts []pipeline.Option) error {
-	res, err := pipeline.Run(ctx, be, b, runOpts...)
+	prog := newProgress("")
+	stop := prog.start()
+	res, err := pipeline.Run(ctx, be, b, append(runOpts, pipeline.WithProgress(prog.report))...)
+	// Stopped BEFORE the summary prints, so no progress line lands after it.
+	stop()
 	if err != nil {
 		return err
 	}
@@ -206,9 +213,15 @@ func runFanOut(ctx context.Context, cfg *pipeline.Config, b *bundle.Bundle, kind
 		if err != nil {
 			return err
 		}
+		// Progress is labelled per selection: a fan-out publishes one document at a
+		// time, but "3/12" with no name says which document only by luck of order.
+		prog := newProgress(sel.Name)
+		stop := prog.start()
 		opts := append(append([]pipeline.Option(nil), runOpts...),
-			pipeline.WithSelection(sel.Contains))
+			pipeline.WithSelection(sel.Contains),
+			pipeline.WithProgress(prog.report))
 		res, err := pipeline.Run(ctx, be, b, opts...)
+		stop()
 		if err != nil {
 			failed++
 			fmt.Printf("okfpub: %s: FAILED: %v\n", sel.Name, err)
@@ -220,6 +233,94 @@ func runFanOut(ctx context.Context, cfg *pipeline.Config, b *bundle.Bundle, kind
 		return fmt.Errorf("%d of %d selection(s) failed", failed, len(plan.Selections))
 	}
 	return nil
+}
+
+// progressInterval is how often a running drain reports itself. Long enough that
+// a healthy publish adds a handful of lines to a CI log rather than one per
+// transaction, short enough that a wedged one is obvious while someone is
+// watching (#184).
+const progressInterval = 15 * time.Second
+
+// progress reports a drain as it runs. Between the configuration banner and the
+// final summary a publish is otherwise SILENT, which is how a run wedged on a
+// stalled request went 34 minutes without anyone being able to tell it from a
+// slow one (#184).
+//
+// The line is printed by a TICKER rather than by the drain: a run that is stuck
+// completes no transaction, so a reporter driven by completions alone says
+// nothing at exactly the moment there is something to say. Ticking republishes
+// the same count instead, and a count that does not move is the signal.
+type progress struct {
+	label string
+	// out is where the lines go. A field rather than os.Stdout inline so the
+	// reporter is testable without capturing the process's own output.
+	out io.Writer
+
+	mu    sync.Mutex
+	done  int
+	total int
+}
+
+func newProgress(selection string) *progress {
+	label := ""
+	if selection != "" {
+		label = selection + ": "
+	}
+	return &progress{label: label, out: os.Stdout}
+}
+
+// report is the pipeline callback: it records what has landed and prints the
+// final line itself, so the counter always ends at n/n rather than wherever the
+// last tick left it. It is called from the drain loop, so it does no work beyond
+// recording and, once, a print.
+func (p *progress) report(done, total int) {
+	p.mu.Lock()
+	p.done, p.total = done, total
+	last := done >= total
+	p.mu.Unlock()
+	if last {
+		p.print()
+	}
+}
+
+// start begins ticking and returns the function that stops it. The stop is
+// synchronous, so no line lands after the run's summary.
+func (p *progress) start() func() {
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		t := time.NewTicker(progressInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				p.print()
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			close(done)
+			<-stopped
+		})
+	}
+}
+
+// print reports the count as it stands. Nothing is printed before the drain has
+// executed anything: a run still scanning has no transactions to count, and
+// "0/0" would claim it does.
+func (p *progress) print() {
+	p.mu.Lock()
+	done, total := p.done, p.total
+	p.mu.Unlock()
+	if total == 0 {
+		return
+	}
+	fmt.Fprintf(p.out, "okfpub: %s%d/%d transaction(s)\n", p.label, done, total)
 }
 
 // printResult renders one destination's summary, labelled by selection when a run
@@ -236,7 +337,7 @@ func printResult(kind pipeline.BackendKind, selection string, res *pipeline.Resu
 	// nobody planned, and one whose retries dominate is throttled. Printed for every
 	// backend that meters traffic, zeros included — "0 request(s)" is an answer.
 	if res.Metered {
-		fmt.Printf("okfpub: %d request(s), %d retried after 429, %d after 5xx\n",
+		fmt.Printf("okfpub: %d request(s), %d retried after 429, %d after a transient failure\n",
 			res.Stats.Requests, res.Stats.Throttled, res.Stats.Transient)
 	}
 	// Reclaimed rows are worth naming: each one is a row an earlier run created and

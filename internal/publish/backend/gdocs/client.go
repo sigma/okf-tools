@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,6 +24,18 @@ const (
 	DefaultIAMEndpoint   = "https://iamcredentials.googleapis.com"
 )
 
+// DefaultRequestTimeout bounds ONE attempt's round trip.
+//
+// Without it a publish has no deadline anywhere: HTTP/2 multiplexes every call
+// over one connection, so a half-dead connection parks the stream on a reply that
+// never arrives and nothing at any layer gives up. That wedged a Notion publish
+// for 34 minutes, and nothing about this backend prevented the same (#184).
+//
+// Generous on purpose: the failure being bounded is unbounded, not slow. A
+// document read with every tab's content is the heaviest call here and answers
+// far inside this.
+const DefaultRequestTimeout = 60 * time.Second
+
 // client is the thin REST transport shared by every role. It counts attempts so
 // the backend can satisfy RequestReporter, and retries the two failures Google
 // asks callers to retry.
@@ -30,6 +43,9 @@ type client struct {
 	http  *http.Client
 	docs  string
 	drive string
+	// timeout bounds one attempt's round trip. Non-positive disables the bound,
+	// which is the unbounded behaviour #184 is about.
+	timeout time.Duration
 	// dry, when set, makes every WRITE dump its payload here instead of issuing
 	// it. Reads still happen: a dry run against a live document should diff against
 	// what is really there, and reading mutates nothing.
@@ -54,52 +70,14 @@ func (c *client) do(ctx context.Context, method, url string, body, out any) erro
 	}
 
 	backoff := 250 * time.Millisecond
-	for attempt := 0; ; attempt++ {
-		var rdr io.Reader
-		if payload != nil {
-			rdr = bytes.NewReader(payload)
-		}
-		req, err := http.NewRequestWithContext(ctx, method, url, rdr)
-		if err != nil {
+	for n := 0; ; n++ {
+		status, done, err := c.attempt(ctx, method, url, payload, out)
+		if done {
 			return err
 		}
-		if payload != nil {
-			req.Header.Set("Content-Type", "application/json")
-		}
-
-		resp, err := c.http.Do(req)
-		c.count(func(s *publish.RequestStats) { s.Requests++ })
-		if err != nil {
-			return fmt.Errorf("gdocs: %s %s: %w", method, url, err)
-		}
-
-		switch {
-		case resp.StatusCode == http.StatusTooManyRequests:
-			c.count(func(s *publish.RequestStats) { s.Throttled++ })
-		case resp.StatusCode >= 500:
-			c.count(func(s *publish.RequestStats) { s.Transient++ })
-		default:
-			defer resp.Body.Close()
-			raw, err := io.ReadAll(resp.Body)
-			if err != nil {
-				return fmt.Errorf("gdocs: %s %s: %w", method, url, err)
-			}
-			if resp.StatusCode < 200 || resp.StatusCode > 299 {
-				return apiError(method, url, resp.StatusCode, raw)
-			}
-			if out == nil || len(raw) == 0 {
-				return nil
-			}
-			if err := json.Unmarshal(raw, out); err != nil {
-				return fmt.Errorf("gdocs: %s %s: decode: %w", method, url, err)
-			}
-			return nil
-		}
-		resp.Body.Close()
-
-		if attempt >= 4 {
+		if n >= 4 {
 			return fmt.Errorf("gdocs: %s %s: giving up after %d attempts (last status %d)",
-				method, url, attempt+1, resp.StatusCode)
+				method, url, n+1, status)
 		}
 		select {
 		case <-ctx.Done():
@@ -108,6 +86,95 @@ func (c *client) do(ctx context.Context, method, url string, body, out any) erro
 		}
 		backoff *= 2
 	}
+}
+
+// attempt performs one round trip. done reports that the call is FINISHED —
+// successfully, or with a failure the retry loop must not re-send — and err
+// carries its outcome; done false is a 429 or 5xx the caller may back off and
+// retry, with status naming which.
+//
+// It is a function rather than the loop's body so the attempt's deadline is
+// released by an ordinary defer on every path, including the ones added later
+// (#184).
+func (c *client) attempt(ctx context.Context, method, url string, payload []byte, out any) (status int, done bool, err error) {
+	// The deadline is per ATTEMPT, so a retry gets its own full budget. A stall is
+	// NOT itself made retryable here, and that is a conservative choice rather than
+	// a safety argument: this client already replays every route on 429/5xx,
+	// including a batchUpdate that may have landed, and #184 is about bounding a
+	// hang — widening what gets replayed is a separate call, taken deliberately or
+	// not at all. Bounded, a stall fails the run with a diagnosable error instead
+	// of hanging it forever.
+	attemptCtx, cancel := c.withTimeout(ctx)
+	defer cancel()
+
+	var rdr io.Reader
+	if payload != nil {
+		rdr = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequestWithContext(attemptCtx, method, url, rdr)
+	if err != nil {
+		return 0, true, err
+	}
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := c.http.Do(req)
+	c.count(func(s *publish.RequestStats) { s.Requests++ })
+	if err != nil {
+		return 0, true, c.wrapErr(ctx, method, url, err)
+	}
+	defer resp.Body.Close()
+
+	switch {
+	case resp.StatusCode == http.StatusTooManyRequests:
+		c.count(func(s *publish.RequestStats) { s.Throttled++ })
+		return resp.StatusCode, false, nil
+	case resp.StatusCode >= 500:
+		c.count(func(s *publish.RequestStats) { s.Transient++ })
+		return resp.StatusCode, false, nil
+	}
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		// A response whose body never finishes streaming hangs exactly as a missing
+		// response does, so it is named the same way.
+		return resp.StatusCode, true, c.wrapErr(ctx, "read "+method, url, err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return resp.StatusCode, true, apiError(method, url, resp.StatusCode, raw)
+	}
+	if out == nil || len(raw) == 0 {
+		return resp.StatusCode, true, nil
+	}
+	if err := json.Unmarshal(raw, out); err != nil {
+		return resp.StatusCode, true, fmt.Errorf("gdocs: %s %s: decode: %w", method, url, err)
+	}
+	return resp.StatusCode, true, nil
+}
+
+// wrapErr names a failed round trip. A stall is reported as a TIMEOUT naming the
+// budget it exceeded rather than as a bare "context deadline exceeded", because
+// the two read very differently to whoever finds the failed run: one says the
+// destination stopped answering, the other looks like a bug in this program.
+//
+// caller is the UNDERIVED context, so this client's own deadline can be told
+// apart from the caller giving up.
+func (c *client) wrapErr(caller context.Context, method, url string, err error) error {
+	if errors.Is(err, context.DeadlineExceeded) && caller.Err() == nil {
+		return fmt.Errorf("gdocs: %s %s: no response within %v (request timeout): %w",
+			method, url, c.timeout, err)
+	}
+	return fmt.Errorf("gdocs: %s %s: %w", method, url, err)
+}
+
+// withTimeout bounds one attempt. It always returns a cancel function, so the
+// caller releases the context whether or not a deadline was set.
+func (c *client) withTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if c.timeout <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, c.timeout)
 }
 
 func (c *client) count(f func(*publish.RequestStats)) {

@@ -177,6 +177,22 @@ func WithHTTPClient(c *http.Client) Option {
 	}
 }
 
+// WithRequestTimeout bounds ONE attempt's round trip — how long the client waits
+// for a response before treating the request as stalled and, on a replay-safe
+// route, retrying it. Zero keeps DefaultRequestTimeout; a NEGATIVE duration
+// disables the bound, which is the unbounded behaviour that let a stalled stream
+// hang a publish indefinitely (#184) and exists only so a test can opt out.
+//
+// Zero and negative are deliberately not the same thing, and read the same way in
+// gdocs.Config.RequestTimeout: an unset knob must not silently remove the bound.
+func WithRequestTimeout(d time.Duration) Option {
+	return func(b *Backend) {
+		if d != 0 {
+			b.limits.timeout = d
+		}
+	}
+}
+
 // WithNotionVersion overrides the Notion-Version header. Empty keeps the default.
 func WithNotionVersion(v string) Option {
 	return func(b *Backend) {
@@ -249,6 +265,7 @@ func New(opts ...Option) *Backend {
 			interval:    DefaultInterval,
 			readBurst:   DefaultReadBurst,
 			maxAttempts: defaultMaxAttempts,
+			timeout:     DefaultRequestTimeout,
 			now:         time.Now,
 			sleep:       realSleep,
 		},

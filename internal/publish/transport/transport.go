@@ -38,11 +38,38 @@ import (
 // the zero value is not usable.
 type Transport struct {
 	exec backend.Executor
+	// progress, when set, is called after each transaction executes with how many
+	// of the DAG's transactions have now landed. A drain is otherwise SILENT
+	// between the run's banner and its summary, which is how a publish wedged on a
+	// stalled request went 34 minutes without anyone being able to tell it apart
+	// from a slow one (#184).
+	progress func(done, total int)
 }
 
 // New builds a Transport over exec.
-func New(exec backend.Executor) *Transport {
-	return &Transport{exec: exec}
+func New(exec backend.Executor, opts ...Option) *Transport {
+	t := &Transport{exec: exec}
+	for _, opt := range opts {
+		opt(t)
+	}
+	return t
+}
+
+// Option configures a Transport.
+type Option func(*Transport)
+
+// WithProgress reports drain progress: after each transaction executes, done is
+// how many have landed of total. A nil function is ignored.
+//
+// It is called from the drain loop, so it must not block — whatever it does costs
+// the run that time, and a reporter that stalls reintroduces exactly the hang it
+// is there to make visible.
+func WithProgress(f func(done, total int)) Option {
+	return func(t *Transport) {
+		if f != nil {
+			t.progress = f
+		}
+	}
 }
 
 // Result is the outcome of a drained publish: the resolution-table updates
@@ -108,6 +135,7 @@ func (t *Transport) Run(ctx context.Context, dag *optimize.TxnDAG, seed *publish
 		byGroup[txn.Group] = append(byGroup[txn.Group], i)
 	}
 	done := map[publish.GroupKey]int{}
+	executed := 0
 
 	for len(remaining) > 0 {
 		if err := ctx.Err(); err != nil {
@@ -140,6 +168,11 @@ func (t *Transport) Run(ctx context.Context, dag *optimize.TxnDAG, seed *publish
 				return nil, fmt.Errorf("transport: execute txn %d (group %s): %w", i, txn.Group, err)
 			}
 			tbl.merge(res)
+
+			executed++
+			if t.progress != nil {
+				t.progress(executed, len(dag.Txns))
+			}
 
 			done[txn.Group]++
 			if done[txn.Group] < len(byGroup[txn.Group]) {
