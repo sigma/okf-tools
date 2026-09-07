@@ -33,9 +33,10 @@ const (
 	// Identity Federation in CI) rather than carried as a secret
 	// (sigma/okf-tools#154).
 	EnvGDocsImpersonate = "GDOCS_IMPERSONATE_SA"
-	// EnvGDriveID names the SHARED DRIVE the document lives in. It must be a shared
-	// drive: a service account has no storage quota and cannot own files, so a My
-	// Drive folder fails at write time with a misleading 403 (#149).
+	// EnvGDriveID names where the document lives: a shared drive, or a folder
+	// inside one (#168). It must be ON a shared drive: a service account has no
+	// storage quota and cannot own files, so a My Drive folder fails at write time
+	// with a misleading 403 (#149).
 	EnvGDriveID = "GDRIVE_FOLDER_ID"
 )
 
@@ -73,8 +74,8 @@ type Config struct {
 	// GDocsImpersonate is the service account the Google Docs backend impersonates
 	// (GDOCS_IMPERSONATE_SA).
 	GDocsImpersonate string
-	// GDriveID is the shared drive the Google Docs backend publishes into
-	// (GDRIVE_FOLDER_ID).
+	// GDriveID is the shared drive, or the folder inside one, that the Google Docs
+	// backend publishes into (GDRIVE_FOLDER_ID).
 	GDriveID string
 	// GDocsDryRun, when set, makes the Google Docs backend dump the writes it would
 	// perform to this writer instead of issuing them — including the Drive creates

@@ -179,13 +179,17 @@ it in the UI is safe. Tabs are flat, titled from frontmatter, and an area's `REA
 opens its document.
 
 ```
-GDRIVE_FOLDER_ID       the SHARED DRIVE to publish into
+GDRIVE_FOLDER_ID       the shared drive, or a folder on one, to publish into
 GDOCS_IMPERSONATE_SA   the service account to impersonate
 ```
 
-> **It must be a shared drive, not a folder in My Drive.** A service account has no
-> storage quota and cannot own files, so publishing into a My Drive folder fails at
-> write time with a misleading `403 storageQuotaExceeded`.
+> **It must be on a shared drive, not in My Drive.** A service account has no storage
+> quota and cannot own files, so publishing into a My Drive folder fails at write time
+> with a misleading `403 storageQuotaExceeded`.
+
+A folder id publishes into that folder, which keeps a bundle's documents together on a
+drive shared with other content, and needs only **Content manager** on the folder —
+membership of the whole drive is not required. A drive id publishes into its root.
 
 **There is no key file.** Google organizations enforce
 `constraints/iam.managed.disableServiceAccountKeyCreation` by default, so no

@@ -146,7 +146,8 @@ func apiError(method, url string, code int, raw []byte) error {
 	case code == http.StatusForbidden && bytes.Contains(raw, []byte("ACCESS_TOKEN_SCOPE_INSUFFICIENT")):
 		hint = " (the token lacks the Drive/Docs scopes; see gdocs.Scopes)"
 	case code == http.StatusNotFound:
-		hint = " (check the service account is a member of the shared drive)"
+		hint = " (check the service account can see the destination: Content manager on " +
+			"the folder, or membership of the shared drive)"
 	}
 	return fmt.Errorf("gdocs: %s %s: %d %s%s", method, url, code, msg, hint)
 }
@@ -184,6 +185,7 @@ func (c *client) dumpBatch(docID string, requests []map[string]any) ([]map[strin
 // driveFile is the subset of a Drive file this backend reads.
 type driveFile struct {
 	ID            string            `json:"id,omitempty"`
+	DriveID       string            `json:"driveId,omitempty"`
 	Name          string            `json:"name,omitempty"`
 	MimeType      string            `json:"mimeType,omitempty"`
 	Parents       []string          `json:"parents,omitempty"`
@@ -191,21 +193,90 @@ type driveFile struct {
 }
 
 const (
-	mimeDoc  = "application/vnd.google-apps.document"
-	mimeJSON = "application/json"
+	mimeDoc    = "application/vnd.google-apps.document"
+	mimeJSON   = "application/json"
+	mimeFolder = "application/vnd.google-apps.folder"
 )
 
-// findByAppProperty locates a file in one shared drive by a private
-// appProperties pair. `in parents` matches DIRECT children only, so a file a
-// human drags into a subfolder becomes invisible and would be re-created —
-// noted here because it is the mechanism's one sharp edge (#149).
-func (c *client) findByAppProperty(ctx context.Context, driveID, key, value string) (*driveFile, error) {
+// driveLocation is the destination, split into the two things Drive treats as
+// different and the configured id conflated (#168):
+//
+//   - drive is the search CORPUS, the driveId query parameter, which accepts a
+//     shared drive id and nothing else — a folder id is rejected as malformed,
+//     404 "Shared drive not found", whatever the caller has been granted.
+//   - parent is the WRITE target, which accepts any folder.
+//
+// For a shared drive root the two coincide, because a drive's id is also its
+// root folder's id. That coincidence is why one field worked at all, and why it
+// only ever worked there.
+type driveLocation struct {
+	drive  string
+	parent string
+}
+
+// String names the destination for a human: a drive root is a DRIVE, and only a
+// folder is reported as one — the two are the same id there, and printing
+// "folder X (drive X)" would read as a mistake.
+func (l driveLocation) String() string {
+	if l.parent == l.drive {
+		return "drive " + l.drive
+	}
+	return fmt.Sprintf("folder %s (drive %s)", l.parent, l.drive)
+}
+
+// resolveLocation turns the configured id into a corpus and a parent with one
+// files.get, so publishing into a folder needs no new configuration.
+//
+// A shared drive root reports its own id as driveId, which collapses both cases
+// into this single path. The drives.get fallback exists because that behaviour
+// is documented only by observation: if a root ever answers without a driveId,
+// a successful drives.get says "this id IS a drive" and the corpus is itself.
+func (c *client) resolveLocation(ctx context.Context, id string) (driveLocation, error) {
+	u := fmt.Sprintf("%s/drive/v3/files/%s?supportsAllDrives=true&fields=id,driveId,mimeType", c.drive, id)
+	var f driveFile
+	if err := c.do(ctx, http.MethodGet, u, nil, &f); err != nil {
+		return driveLocation{}, err
+	}
+	// An absent mimeType is not a rejection: the field is requested, so it is only
+	// missing when Drive declines to describe the id, and the write that follows
+	// gives a better error than a guess here would.
+	if f.MimeType != "" && f.MimeType != mimeFolder {
+		return driveLocation{}, fmt.Errorf(
+			"gdocs: %s is a %s, not a folder: GDRIVE_FOLDER_ID must name a shared drive or a folder inside one",
+			id, f.MimeType)
+	}
+	if f.DriveID != "" {
+		return driveLocation{drive: f.DriveID, parent: id}, nil
+	}
+	if err := c.assertSharedDrive(ctx, id); err != nil {
+		return driveLocation{}, fmt.Errorf(
+			"gdocs: %s reports no shared drive, so it is not in one: %w", id, err)
+	}
+	return driveLocation{drive: id, parent: id}, nil
+}
+
+// assertSharedDrive succeeds only if the id names a shared drive, which is the
+// question drives.get answers by existing.
+func (c *client) assertSharedDrive(ctx context.Context, id string) error {
+	u := fmt.Sprintf("%s/drive/v3/drives/%s?fields=id", c.drive, id)
+	return c.do(ctx, http.MethodGet, u, nil, nil)
+}
+
+// findByAppProperty locates a file under loc.parent by a private appProperties
+// pair, searching the shared drive loc.parent lives in.
+//
+// The corpus and the parent filter are separate on purpose: driveId only accepts
+// a drive id, `in parents` accepts a folder (#168). `in parents` also matches
+// DIRECT children only, so a file a human drags into a subfolder becomes
+// invisible and would be re-created — a sharp edge (#149) that a folder
+// destination turns into a supported layout rather than a trap.
+func (c *client) findByAppProperty(ctx context.Context, loc driveLocation, key, value string) (*driveFile, error) {
 	q := fmt.Sprintf("appProperties has {key='%s' and value='%s'} and '%s' in parents and trashed = false",
-		key, value, driveID)
+		key, value, loc.parent)
 	u := fmt.Sprintf("%s/drive/v3/files?%s", c.drive, url.Values{
 		"q":                         {q},
 		"corpora":                   {"drive"},
-		"driveId":                   {driveID},
+		"driveId":                   {loc.drive},
 		"includeItemsFromAllDrives": {"true"},
 		"supportsAllDrives":         {"true"},
 		"fields":                    {"files(id,name,appProperties)"},

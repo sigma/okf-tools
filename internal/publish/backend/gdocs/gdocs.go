@@ -76,9 +76,13 @@ type Config struct {
 	// Empty means "publish as the ambient credentials", which is valid but not the
 	// documented path.
 	ImpersonateSA string
-	// DriveID is the shared drive the document lives in (GDRIVE_FOLDER_ID). It must
-	// be a SHARED drive: a service account has no storage quota and cannot own
-	// files, so a My Drive folder fails at write time (#149).
+	// DriveID is where the document lives (GDRIVE_FOLDER_ID): either a shared drive
+	// or a folder INSIDE one (#168). It stays the single user-facing input; the
+	// backend resolves it into a search corpus and a write parent at Provision.
+	//
+	// It must be on a SHARED drive: a service account has no storage quota and
+	// cannot own files, so a My Drive folder fails at write time (#149). A folder
+	// destination needs only a folder-level grant, not drive membership.
 	DriveID string
 	// Bundle names the bundle, and Selection the area or path being published.
 	// Together they form the identity key stamped into the document's
@@ -135,7 +139,7 @@ func New(ctx context.Context, cfg Config) (*Backend, error) {
 		cfg.IAMEndpoint = DefaultIAMEndpoint
 	}
 	if cfg.DriveID == "" {
-		return nil, fmt.Errorf("gdocs: a shared drive id is required")
+		return nil, fmt.Errorf("gdocs: a shared drive or folder id is required")
 	}
 
 	hc := cfg.HTTPClient

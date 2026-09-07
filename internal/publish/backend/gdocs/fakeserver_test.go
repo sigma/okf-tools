@@ -17,6 +17,14 @@ import (
 // fake server. It models the behaviours this backend depends on — appProperties
 // lookup scoped to a drive, server-minted tab ids, per-tab bodies, and
 // tab-scoped content ranges.
+// The mime types the fake distinguishes. They are spelled out here rather than
+// borrowed from the package under test, which is what an external test package
+// is for: the wire values are part of what is being asserted.
+const (
+	mimeFolder   = "application/vnd.google-apps.folder"
+	mimeDocument = "application/vnd.google-apps.document"
+)
+
 type fakeGoogle struct {
 	mu sync.Mutex
 	t  *testing.T
@@ -24,6 +32,14 @@ type fakeGoogle struct {
 	files map[string]*fakeFile
 	docs  map[string]*fakeDoc
 	seq   int
+
+	// containers are the destinations a file can be created in: shared drive roots
+	// and the folders inside them. They are deliberately NOT in files, because a
+	// test asserting "a dry run created nothing" counts that map.
+	containers map[string]*fakeContainer
+	// corpora records the driveId query parameter of every files.list, so a test
+	// can assert the search corpus was a DRIVE id and never a folder id (#168).
+	corpora []string
 
 	// batchUpdates counts documents.batchUpdate calls, so a test can assert the
 	// write cost rather than infer it.
@@ -33,8 +49,21 @@ type fakeGoogle struct {
 	untabbedWrites int
 }
 
+// fakeContainer is a shared drive root or a folder inside one. driveID is the
+// drive it belongs to — for a root that is its own id, which is the coincidence
+// that let one config field stand for both corpus and parent (#168).
+type fakeContainer struct {
+	id      string
+	driveID string
+	root    bool
+	// hideDriveID makes files.get omit driveId for this container, so the
+	// drives.get fallback can be exercised.
+	hideDriveID bool
+}
+
 type fakeFile struct {
 	id       string
+	driveID  string
 	name     string
 	mimeType string
 	parents  []string
@@ -68,7 +97,29 @@ func newFakeTab(id, title string) *fakeTab {
 }
 
 func newFakeGoogle(t *testing.T) *fakeGoogle {
-	return &fakeGoogle{t: t, files: map[string]*fakeFile{}, docs: map[string]*fakeDoc{}}
+	f := &fakeGoogle{
+		t:          t,
+		files:      map[string]*fakeFile{},
+		docs:       map[string]*fakeDoc{},
+		containers: map[string]*fakeContainer{},
+	}
+	f.addDriveRoot(testDriveID)
+	return f
+}
+
+// addDriveRoot seeds a shared drive. Its root folder's id IS the drive id.
+func (f *fakeGoogle) addDriveRoot(id string) *fakeContainer {
+	c := &fakeContainer{id: id, driveID: id, root: true}
+	f.containers[id] = c
+	return c
+}
+
+// addFolder seeds a folder INSIDE a shared drive: a legal write target, and an
+// illegal search corpus.
+func (f *fakeGoogle) addFolder(id, driveID string) *fakeContainer {
+	c := &fakeContainer{id: id, driveID: driveID}
+	f.containers[id] = c
+	return c
 }
 
 func (f *fakeGoogle) next(prefix string) string {
@@ -80,6 +131,7 @@ func (f *fakeGoogle) server() *httptest.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/drive/v3/files", f.driveFiles)
 	mux.HandleFunc("/drive/v3/files/", f.driveFile)
+	mux.HandleFunc("/drive/v3/drives/", f.driveDrive)
 	mux.HandleFunc("/upload/drive/v3/files/", f.driveUpload)
 	mux.HandleFunc("/v1/documents/", f.docsRoute)
 	return httptest.NewServer(mux)
@@ -104,10 +156,17 @@ func (f *fakeGoogle) driveFiles(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":{"message":"storageQuotaExceeded"}}`, http.StatusForbidden)
 			return
 		}
+		parent, ok := f.containers[in.Parents[0]]
+		if !ok {
+			// The real API 404s a parent the caller cannot see or that does not exist.
+			http.Error(w, fmt.Sprintf(`{"error":{"message":"File not found: %s."}}`, in.Parents[0]),
+				http.StatusNotFound)
+			return
+		}
 		id := f.next("file-")
-		file := &fakeFile{id: id, name: in.Name, mimeType: in.MimeType, parents: in.Parents, appProps: in.AppProperties}
+		file := &fakeFile{id: id, driveID: parent.driveID, name: in.Name, mimeType: in.MimeType, parents: in.Parents, appProps: in.AppProperties}
 		f.files[id] = file
-		if in.MimeType == "application/vnd.google-apps.document" {
+		if in.MimeType == mimeDocument {
 			f.docs[id] = &fakeDoc{id: id, tabs: []*fakeTab{newFakeTab("t.0", "Tab 1")}}
 		}
 		writeJSON(w, map[string]any{"id": id, "name": in.Name, "appProperties": in.AppProperties})
@@ -116,10 +175,25 @@ func (f *fakeGoogle) driveFiles(w http.ResponseWriter, r *http.Request) {
 
 	q := r.URL.Query().Get("q")
 	key, value := parseAppPropertyQuery(q)
-	parent := r.URL.Query().Get("driveId")
+	// The corpus and the parent are DIFFERENT inputs to the real API: driveId only
+	// accepts a shared drive id, while `in parents` accepts any folder (#168).
+	corpus := r.URL.Query().Get("driveId")
+	parent := parseParentQuery(q)
+	f.corpora = append(f.corpora, corpus)
+	if corpus != "" {
+		c, ok := f.containers[corpus]
+		if !ok || !c.root {
+			http.Error(w, fmt.Sprintf(`{"error":{"message":"Shared drive not found: %s."}}`, corpus),
+				http.StatusNotFound)
+			return
+		}
+	}
 	var out []map[string]any
 	for _, file := range f.files {
 		if file.appProps[key] != value || value == "" {
+			continue
+		}
+		if corpus != "" && file.driveID != corpus {
 			continue
 		}
 		if parent != "" && !contains(file.parents, parent) {
@@ -130,17 +204,51 @@ func (f *fakeGoogle) driveFiles(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"files": out})
 }
 
-// driveFile handles media download.
+// driveDrive handles drives.get, which succeeds only for a shared drive ROOT.
+func (f *fakeGoogle) driveDrive(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id := strings.TrimPrefix(r.URL.Path, "/drive/v3/drives/")
+	if c, ok := f.containers[id]; ok && c.root {
+		writeJSON(w, map[string]any{"id": id, "name": "Fake Drive"})
+		return
+	}
+	http.Error(w, fmt.Sprintf(`{"error":{"message":"Shared drive not found: %s."}}`, id),
+		http.StatusNotFound)
+}
+
+// driveFile handles metadata get and media download.
 func (f *fakeGoogle) driveFile(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	id := strings.TrimPrefix(r.URL.Path, "/drive/v3/files/")
+	if r.URL.Query().Get("alt") != "media" {
+		f.fileMetadata(w, id)
+		return
+	}
 	file, ok := f.files[id]
 	if !ok {
 		http.Error(w, `{"error":{"message":"not found"}}`, http.StatusNotFound)
 		return
 	}
 	w.Write(file.content)
+}
+
+// fileMetadata answers files.get for a container or a created file.
+func (f *fakeGoogle) fileMetadata(w http.ResponseWriter, id string) {
+	if c, ok := f.containers[id]; ok {
+		out := map[string]any{"id": id, "mimeType": mimeFolder}
+		if !c.hideDriveID {
+			out["driveId"] = c.driveID
+		}
+		writeJSON(w, out)
+		return
+	}
+	if file, ok := f.files[id]; ok {
+		writeJSON(w, map[string]any{"id": id, "driveId": file.driveID, "mimeType": file.mimeType})
+		return
+	}
+	http.Error(w, fmt.Sprintf(`{"error":{"message":"File not found: %s."}}`, id), http.StatusNotFound)
 }
 
 // driveUpload handles media upload (the sidecar write).
@@ -464,6 +572,22 @@ func contains(hay []string, needle string) bool {
 	return false
 }
 
+// parseParentQuery pulls X out of "... and 'X' in parents and ...". Like
+// parseAppPropertyQuery beside it, it handles only the one query shape this
+// backend emits — a fake, not a query engine.
+func parseParentQuery(q string) string {
+	i := strings.Index(q, "' in parents")
+	if i < 0 {
+		return ""
+	}
+	head := q[:i]
+	j := strings.LastIndex(head, "'")
+	if j < 0 {
+		return ""
+	}
+	return head[j+1:]
+}
+
 // parseAppPropertyQuery pulls the key and value out of
 // "appProperties has {key='k' and value='v'} and ...".
 func parseAppPropertyQuery(q string) (string, string) {
@@ -483,4 +607,34 @@ func between(s, open, close string) string {
 		return ""
 	}
 	return rest[:j]
+}
+
+// parentsOf reports a created file's parents, for assertions about the write
+// target.
+func (f *fakeGoogle) parentsOf(id string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if file, ok := f.files[id]; ok {
+		return file.parents
+	}
+	return nil
+}
+
+// fileIDs reports every file the backend created.
+func (f *fakeGoogle) fileIDs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, 0, len(f.files))
+	for id := range f.files {
+		out = append(out, id)
+	}
+	return out
+}
+
+// addDocumentFile seeds a Google Doc that is NOT a folder, so a misconfigured
+// destination can be exercised.
+func (f *fakeGoogle) addDocumentFile(driveID string) string {
+	id := f.next("doc-")
+	f.files[id] = &fakeFile{id: id, driveID: driveID, mimeType: mimeDocument}
+	return id
 }
