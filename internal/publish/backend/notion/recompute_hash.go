@@ -65,9 +65,33 @@ type canonBlock struct {
 }
 
 // hashCanonBlocks is the single serializer both sides run: SHA-256 over one
-// "<type>:<text>\n" line per block, in order.
+// "<type>:<text>\n" line per block, in order, under the current renderer version.
+//
+// The version is in here for the same reason it is in graph.ContentHash: this
+// backend REPLACES that hasher, so without it a renderer fix could not reach a
+// published Notion page (#183). It works because the two sides are compared at
+// different times:
+//
+//   - the steady-state scan compares against a hash PERSISTED by an earlier run,
+//     written under whatever version that binary carried, so a bump mismatches
+//     once and the rewrite stores the new value;
+//   - --recompute compares against a hash reconstructed from live blocks HERE and
+//     now, so both sides carry the current version and an unchanged page still
+//     hash-skips. A bump does not churn the recompute path.
+//
+// It is not redundant with the canonical projection either. That projection sees
+// block types and text, so it catches a rendering change that moves them (#181,
+// #182 both did) and is blind to one that does not — an annotation, a colour, a
+// block property. The version covers what the projection cannot see.
 func hashCanonBlocks(blocks []canonBlock) publish.Hash {
+	return hashCanonBlocksAt(graph.RendererVersion, blocks)
+}
+
+// hashCanonBlocksAt is hashCanonBlocks at an explicit renderer version, separated
+// so a test can prove a bump moves every hash without a global to mutate.
+func hashCanonBlocksAt(version int, blocks []canonBlock) publish.Hash {
 	h := sha256.New()
+	fmt.Fprintf(h, "okf/render/%d\x00", version)
 	for _, blk := range blocks {
 		fmt.Fprintf(h, "%s:%s\n", blk.typ, blk.text)
 	}

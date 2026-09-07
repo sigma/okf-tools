@@ -208,3 +208,24 @@ func TestRecomputeHashDetectsBodyDrift(t *testing.T) {
 		t.Fatal("a live body edit must change the content hash")
 	}
 }
+
+// TestRendererVersionMovesTheCanonHash is #183 for this backend: it REPLACES
+// graph.ContentHash, so folding the version into that hasher alone would have
+// left Notion — the backend most of the mirrors live on — unable to receive a
+// rendering fix.
+func TestRendererVersionMovesTheCanonHash(t *testing.T) {
+	blocks := []canonBlock{{typ: "paragraph", text: "one two"}, {typ: "heading_2", text: "Keys"}}
+
+	if hashCanonBlocksAt(graph.RendererVersion, blocks) != hashCanonBlocks(blocks) {
+		t.Fatal("hashCanonBlocks does not hash at the current renderer version")
+	}
+	if hashCanonBlocksAt(graph.RendererVersion+1, blocks) == hashCanonBlocks(blocks) {
+		t.Error("bumping the renderer version left the canonical hash unchanged")
+	}
+	// Both sides of the recompute round trip run this serializer, so they still
+	// agree with each other at any one version — a bump must not make --recompute
+	// rewrite every page on every run.
+	if hashCanonBlocksAt(9, blocks) != hashCanonBlocksAt(9, blocks) {
+		t.Error("the canonical hash is not stable at a fixed version")
+	}
+}

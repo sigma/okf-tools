@@ -289,6 +289,33 @@ func runFixture(t *testing.T, newSubject Factory, f Fixture) {
 		}
 	})
 
+	t.Run("a forced republish rewrites every node", func(t *testing.T) {
+		// The escape hatch has to work on EVERY backend, not just the one it was
+		// reported against: a rendering fix that cannot reach a live destination is
+		// a fix that silently did not ship (#183). An unchanged re-run publishes
+		// nothing; the same re-run forced must publish the whole fixture.
+		s := newSubject(t)
+		b := loadBundle(t, f.Files)
+		publishBundleWith(t, s, b, f)
+
+		steady, err := pipeline.Run(context.Background(), s.Backend, b)
+		if err != nil {
+			t.Fatalf("steady re-run failed: %v", err)
+		}
+		if steady.TxnCount != 0 {
+			t.Skipf("this backend's unchanged re-run is not a noop (%d txns), so a forced one proves nothing",
+				steady.TxnCount)
+		}
+
+		forced, err := pipeline.Run(context.Background(), s.Backend, b, pipeline.WithForceRewrite())
+		if err != nil {
+			t.Fatalf("forced re-run failed: %v", err)
+		}
+		if forced.TxnCount == 0 {
+			t.Errorf("--force published nothing (%s)", f.Why)
+		}
+	})
+
 	t.Run("republish is deterministic", func(t *testing.T) {
 		s := newSubject(t)
 		if s.Snapshot == nil {

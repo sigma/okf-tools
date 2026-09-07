@@ -12,6 +12,31 @@ import (
 	"github.com/sigma/okf-tools/internal/publish"
 )
 
+// RendererVersion is folded into every default content hash, and is BUMPED
+// whenever this package changes what a given source renders into.
+//
+// Without it the hash covered only the inputs, so a fix to the RENDERER could
+// never reach an already-published page: two okfpub versions that render the same
+// source differently produced the same hash, change detection skipped every node,
+// and the run reported "0 transaction(s)" and success while the mirror kept
+// serving the old output. That happened twice running, with #181 (soft line
+// breaks dropped) and #182 (nested tables flattened) — both verified-correct
+// fixes that a plain re-run could not deliver (#183).
+//
+// Bumping it re-renders every page exactly once. The cost is REMEMBERING to bump
+// it, which is worth naming plainly: forgetting reproduces the bug silently.
+// Bump it in the same commit as any change to how buildDocument projects source
+// into blocks — new block kinds, changed inline handling, changed text folding —
+// and leave it alone for anything a reader of the mirror cannot see. The escape
+// hatch when it is missed is --force (WithForceRewrite), which is why the two
+// ship together.
+//
+// It starts at 2, not 1: every hash written before this existed is version 1 by
+// construction, and introducing the prefix is itself the bump — the one that
+// delivers #181 (soft/hard line breaks now render) and #182 (blocks nested in a
+// list item or quote survive as blocks) to destinations already published.
+const RendererVersion = 2
+
 // ContentHash is the default expected-state hash of a source doc: a SHA-256 over
 // its whole source (frontmatter + body). Change detection compares it against the
 // scanned hash a node carries — equal means hash-skip, different means the
@@ -27,8 +52,15 @@ import (
 // matching hash swaps this out via WithHasher so both sides agree. Both sides
 // sharing one algorithm is the whole contract; the pipeline treats the value as
 // opaque.
-func ContentHash(d *bundle.Doc) publish.Hash {
-	sum := sha256.Sum256([]byte(d.Content))
+func ContentHash(d *bundle.Doc) publish.Hash { return contentHashAt(RendererVersion, d) }
+
+// contentHashAt is ContentHash at an explicit renderer version. Separated so a
+// test can prove a bump moves every hash without a global to mutate.
+//
+// The version is a PREFIX with a NUL separator rather than a suffix or a plain
+// concatenation, so no source text can forge another version's hash.
+func contentHashAt(version int, d *bundle.Doc) publish.Hash {
+	sum := sha256.Sum256(fmt.Appendf(nil, "okf/render/%d\x00%s", version, d.Content))
 	return publish.Hash(hex.EncodeToString(sum[:]))
 }
 

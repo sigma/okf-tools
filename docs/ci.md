@@ -301,6 +301,25 @@ jobs:
 `--recompute` is a Notion concern. For Google Docs the two scan modes are the same
 operation — one read returns every tab — so the flag changes nothing there.
 
+### After an okfpub upgrade that changes rendering
+
+A published page is skipped when its content hash is unchanged, and that hash covers the
+renderer version as well as the source. So a release that fixes how a bundle renders
+re-renders the affected pages on the next ordinary run: nothing to remember, and the
+rewrite happens exactly once.
+
+`--force` skips change detection outright and re-publishes everything. Reach for it when a
+rendering change shipped without its version bump, or when the destination drifted in a way
+no hash can see. It rewrites every page in the destination, so it is a deliberate act rather
+than a scheduled one:
+
+```sh
+okfpub run --bundle docs --force
+```
+
+It re-asserts what exists; it does not recreate it. Pages keep their ids, their tabs and
+their links.
+
 ### Reading the run summary
 
 Every publish prints what it did, and the traffic line is what makes a slow run

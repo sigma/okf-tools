@@ -68,6 +68,7 @@ func runCmd(args []string) error {
 	outDir := fs.String("out", "", "output dir for the fs/export backend (default: "+pipeline.DefaultOutDir+")")
 	dryRun := fs.Bool("dry-run", false, "publish nothing: with --backend gdocs, dump the API writes that would be issued; otherwise export to the filesystem (implies --backend fs)")
 	recompute := fs.Bool("recompute", false, "opt into the full live-block scan (true drift + subpage/anchor self-heal); default is the cheap steady-state scan. Notion only: the gdocs scan reads the whole document either way, and self-heals unconditionally")
+	force := fs.Bool("force", false, "re-publish every page whatever change detection says. The escape hatch when a rendering fix cannot reach an already-published mirror; costs a full rewrite of the destination")
 	interval := fs.Duration("interval", notion.DefaultInterval, "minimum spacing between Notion writes (reads burst ahead of it); zero or less disables pacing")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -134,7 +135,20 @@ func runCmd(args []string) error {
 	}
 
 	var runOpts []pipeline.Option
+	if *force {
+		// Named in the output, because a full rewrite is what it costs and a run that
+		// rewrote everything should say why it did.
+		fmt.Println("okfpub: --force: re-publishing every page, skipping change detection")
+		runOpts = append(runOpts, pipeline.WithForceRewrite())
+	}
 	if *recompute {
+		// A flag that silently does nothing is worse than one that errors (#183).
+		// Erroring would break every config that passes it for both backends, so it
+		// says what it did instead — and on gdocs what it did is nothing, because
+		// that scan reads the whole document and self-heals either way.
+		if kind == pipeline.BackendGDocs {
+			fmt.Println("okfpub: --recompute: no effect on the gdocs backend; its scan reads the whole document and self-heals on every run")
+		}
 		runOpts = append(runOpts, pipeline.WithScanMode(backend.ScanRecompute))
 	}
 
@@ -415,6 +429,8 @@ Run flags:
              would be issued; otherwise export to the filesystem (--backend fs)
   --recompute                       full live-block scan (true drift + self-heal).
                                     Notion only: the gdocs scan always self-heals
+  --force                           re-publish every page, skipping change
+                                    detection (a full rewrite of the destination)
   --select <area|path>              publish only this area or path as one document;
                                     repeatable (gdocs). Omitted: one document per area
   --interval  minimum spacing between Notion writes (default 350ms; 0 or less disables)

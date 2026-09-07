@@ -52,6 +52,7 @@ type options struct {
 	banner    *graph.Banner
 	selection func(rel string) bool
 	progress  func(done, total int)
+	force     bool
 }
 
 // WithBanner threads a resolved generated-page disclaimer banner into Generation,
@@ -78,6 +79,15 @@ func WithSelection(contains func(rel string) bool) Option {
 
 func WithScanMode(mode backend.ScanMode) Option {
 	return func(o *options) { o.scanMode = mode }
+}
+
+// WithForceRewrite re-asserts every published page whatever change detection
+// says, so a fix to how a bundle RENDERS can reach an already-published mirror.
+// The renderer version folded into the content hash covers that case
+// automatically; this is the escape hatch for when it was missed, or when a
+// destination drifted in a way no hash can see (#183).
+func WithForceRewrite() Option {
+	return func(o *options) { o.force = true }
 }
 
 // WithProgress reports the drain's progress — done of total transactions, after
@@ -121,6 +131,9 @@ func Run(ctx context.Context, be backend.Backend, b *bundle.Bundle, opts ...Opti
 	}
 	if o.selection != nil {
 		genOpts = append(genOpts, graph.WithSelection(o.selection))
+	}
+	if o.force {
+		genOpts = append(genOpts, graph.WithForceRewrite())
 	}
 	// A backend that reconstructs a matching content hash from its live scan supplies
 	// a source-side hasher so change detection compares like against like. Without it

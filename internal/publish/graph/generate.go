@@ -27,6 +27,9 @@ type options struct {
 	selection func(rel string) bool
 	// areaRoots adds each area's root README.md back to the published node set.
 	areaRoots bool
+	// force re-asserts every existing node regardless of its hashes — the operator's
+	// escape hatch when a hash cannot see the difference (#183).
+	force bool
 }
 
 // Recomputer is an OPTIONAL backend role: a backend whose live scan can
@@ -55,6 +58,22 @@ func WithHasher(fn func(*bundle.Doc) publish.Hash) Option {
 			o.customHasher = true
 		}
 	}
+}
+
+// WithForceRewrite re-asserts every published node whatever its hashes say,
+// skipping change detection for existing nodes.
+//
+// It exists because a hash can only see what it covers. RendererVersion handles
+// the common case — a change to how this package renders — but only if whoever
+// made that change remembered to bump it; and a destination can drift in ways no
+// hash reaches at all. Before this, the only recovery was to reach into the
+// destination by hand and delete its state, which is undiscoverable from the CLI
+// (#183).
+//
+// It changes NOTHING else: a new page is still a create, a vanished one still a
+// delete. It is a re-assert, not a rebuild.
+func WithForceRewrite() Option {
+	return func(o *options) { o.force = true }
 }
 
 // WithBanner injects a generated-page disclaimer banner as block-0 of every
@@ -318,13 +337,16 @@ func diffDoc(d *bundle.Doc, cs *publish.CurrentState, o *options, src *hierarchy
 	// missing scanned hash cannot confirm "unchanged", so it re-asserts. So a body-
 	// only edit emits just SetContent, a title/type-only edit just SetProperties,
 	// both edits both arms, and an unchanged node nothing.
+	// A forced rewrite skips both comparisons rather than the ops: what it turns off
+	// is the SKIP, so an existing node re-asserts and a new or vanished one takes
+	// the same path it always did (#183).
 	contentGot, cok := cs.ContentHash(node)
 	propGot, pok := cs.PropertyHash(node)
 	var ops []*Op
-	if !(pok && propGot == propHash) {
+	if o.force || !(pok && propGot == propHash) {
 		ops = append(ops, setProps)
 	}
-	emitted := !(cok && contentGot == hash)
+	emitted := o.force || !(cok && contentGot == hash)
 	if emitted {
 		ops = append(ops, setContent)
 	}

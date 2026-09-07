@@ -120,14 +120,24 @@ Run flags:
 --select   area or path to publish as one document; repeatable (gdocs)
 --dry-run  publish nothing: dump the API writes (gdocs) or export to the
            filesystem (implies --backend fs otherwise)
---recompute                 full live-block scan (true drift + self-heal)
+--recompute                 full live-block scan (true drift + self-heal; Notion)
+--force                     re-publish every page, skipping change detection
 ```
 
 `--dry-run` renders the whole pipeline to a local directory tree instead of
 calling the backend — the same generation, optimization, and transport code path
 that publishes to Notion, so it is a faithful preview. `--recompute` rebuilds each
 live page's fingerprint from the backend rather than trusting stored state,
-which detects out-of-band edits and re-heals them.
+which detects out-of-band edits and re-heals them — a Notion concern, since the
+Google Docs scan reads the whole document either way and self-heals
+unconditionally.
+
+`--force` re-publishes every page whatever change detection says, at the cost of
+a full rewrite of the destination. Change detection compares a content hash that
+covers the source *and* the renderer version, so upgrading okfpub to get a
+rendering fix re-renders the affected pages on the next ordinary run. `--force`
+is the escape hatch for when that is not enough: a renderer change whose version
+bump was missed, or a destination that drifted in a way no hash can see.
 
 The Notion backend reads its credentials from the environment:
 
