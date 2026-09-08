@@ -138,3 +138,29 @@ func RetryAfter(header http.Header, now func() time.Time) (time.Duration, bool) 
 	}
 	return 0, false
 }
+
+// Sleep waits d, or returns early if ctx is cancelled first. A non-positive
+// delay does not wait at all, but still reports ctx's state, so a cancelled run
+// stops rather than falling through into another attempt.
+//
+// It uses a stopped timer rather than time.After so a cancelled wait releases
+// the timer immediately instead of holding it until it fires.
+//
+// This is the shape a retry loop's pause must have, and it is worth one shared
+// function because getting it wrong is silent: a bare time.After leaks, and a
+// select that forgets ctx.Done turns a cancelled publish into one that keeps
+// backing off. Both clients now take it as an injectable field, which is what
+// lets a retry test run at full speed instead of on the wall clock.
+func Sleep(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}

@@ -37,6 +37,7 @@ import (
 
 	"github.com/sigma/okf-tools/internal/publish"
 	"github.com/sigma/okf-tools/internal/publish/backend"
+	"github.com/sigma/okf-tools/internal/publish/backend/request"
 	"github.com/sigma/okf-tools/internal/schema"
 )
 
@@ -267,7 +268,7 @@ func New(opts ...Option) *Backend {
 			maxAttempts: defaultMaxAttempts,
 			timeout:     DefaultRequestTimeout,
 			now:         time.Now,
-			sleep:       realSleep,
+			sleep:       request.Sleep,
 		},
 		logf: func(format string, args ...any) {
 			fmt.Fprintf(os.Stderr, format+"\n", args...)

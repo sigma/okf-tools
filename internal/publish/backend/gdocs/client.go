@@ -46,6 +46,12 @@ type client struct {
 	// synth counts synthetic ids handed back for writes that never happened, so a
 	// dry run's request stream stays internally consistent.
 	synth int
+	// now/sleep are the clock seam, real time by default and overridable so a test
+	// exercises the retry path with no wall-clock delay — the same seam the Notion
+	// client has, and the reason its retry behaviour is testable and this one's was
+	// not. A nil now means time.Now; sleep is set at construction.
+	now   func() time.Time
+	sleep func(context.Context, time.Duration) error
 
 	mu    sync.Mutex
 	stats publish.RequestStats
@@ -75,10 +81,8 @@ func (c *client) do(ctx context.Context, method, url string, body, out any) erro
 		// backoff. This client did neither: it ignored Retry-After and doubled a bare
 		// 250ms, so a throttled fleet re-collided in lockstep and a server asking for
 		// a specific pause was overruled.
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(request.Delay(header, n+1, nil)):
+		if err := c.pause(ctx, request.Delay(header, n+1, c.now)); err != nil {
+			return fmt.Errorf("gdocs: %s %s: status %d, retry aborted: %w", method, url, status, err)
 		}
 	}
 }
@@ -163,6 +167,14 @@ func (c *client) wrapErr(caller context.Context, method, url string, err error) 
 // caller releases the context whether or not a deadline was set.
 func (c *client) withTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
 	return request.WithTimeout(ctx, c.timeout)
+}
+
+// pause waits out a retry delay through the clock seam, defaulting to real time.
+func (c *client) pause(ctx context.Context, d time.Duration) error {
+	if c.sleep != nil {
+		return c.sleep(ctx, d)
+	}
+	return request.Sleep(ctx, d)
 }
 
 func (c *client) count(f func(*publish.RequestStats)) {

@@ -531,23 +531,6 @@ func readOnly(method, path string) bool {
 	}
 }
 
-// realSleep is the production sleep seam: it waits out d, or returns early if the
-// context is cancelled while waiting — a cancelled run must not be held hostage by
-// a long Retry-After.
-func realSleep(ctx context.Context, d time.Duration) error {
-	if d <= 0 {
-		return ctx.Err()
-	}
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
-}
-
 // --- wire types shared by the Executor and Scanner --------------------------
 
 // object is any Notion object carrying at least an id — a created page, an
