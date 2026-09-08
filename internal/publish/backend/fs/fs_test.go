@@ -363,3 +363,60 @@ func snapshot(t *testing.T, root string) map[string]string {
 	}
 	return out
 }
+
+// TestExportContentAssertionDropsStaleSections is sigma/okf-tools#130 for this
+// backend: re-publishing a node whose body SHRANK must leave no surplus section
+// file behind. The first publish writes three sections; the second, against the
+// same output tree, writes one — and the node's content assertion is what removes
+// the other two. Before AssertsContent reached the neutral AtomicUnit this backend
+// had no way to tell a rewrite from a continuation, so 0001.md and 0002.md
+// survived as orphans and the exported tree kept serving paragraphs the source no
+// longer had.
+func TestExportContentAssertionDropsStaleSections(t *testing.T) {
+	out := t.TempDir()
+
+	long := map[string]string{
+		"okf.toml": "",
+		"index.md": "---\nokf_version: \"0.1\"\n---\n# Root\n\nFirst.\n\nSecond.\n\nThird.\n",
+	}
+	publishToDisk(t, loadBundle(t, long), out)
+
+	sections := sectionNames(t, filepath.Join(out, "index.md"))
+	if len(sections) != 4 {
+		t.Fatalf("first publish: section files = %v, want the heading plus three paragraphs", sections)
+	}
+
+	short := map[string]string{
+		"okf.toml": "",
+		"index.md": "---\nokf_version: \"0.1\"\n---\n# Root\n\nOnly.\n",
+	}
+	publishToDisk(t, loadBundle(t, short), out)
+
+	sections = sectionNames(t, filepath.Join(out, "index.md"))
+	if len(sections) != 2 {
+		t.Fatalf("after shrinking: section files = %v, want only the heading and one paragraph", sections)
+	}
+	for _, name := range sections {
+		body := readFile(t, filepath.Join(out, "index.md", name))
+		if strings.Contains(body, "Second.") || strings.Contains(body, "Third.") {
+			t.Errorf("section %s still carries dropped source text:\n%s", name, body)
+		}
+	}
+}
+
+// sectionNames lists a node directory's NNNN.md section files, sorted.
+func sectionNames(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read node dir %s: %v", dir, err)
+	}
+	var got []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
+			got = append(got, e.Name())
+		}
+	}
+	sort.Strings(got)
+	return got
+}

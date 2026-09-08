@@ -56,6 +56,12 @@ func (b *Backend) Tokenize(doc publish.Document) []publish.AtomicUnit {
 		}
 		units = append(units, u)
 	}
+	// The Document is this node's complete expected content, so its first unit is
+	// where the assertion starts; the Executor discards the node's stale content
+	// files there rather than inferring the rewrite from a co-binned create.
+	if len(units) > 0 {
+		units[0].AssertsContent = true
+	}
 	return units
 }
 

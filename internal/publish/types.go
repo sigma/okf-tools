@@ -66,6 +66,26 @@ type AtomicUnit struct {
 	// Anchors are the named anchors this unit hosts, contributing to the anchor
 	// map (a resolved anchor's backend id is this unit's node id).
 	Anchors []AnchorName
+	// AssertsContent marks the FIRST content unit a Document tokenizes into — the
+	// point at which a node's complete expected content begins. Every later unit of
+	// that Document continues the same assertion.
+	//
+	// It lives here, on the neutral currency, because it is a fact about the
+	// Document the tokenizer was handed, not about any backend's payload: a
+	// destination that replaces rather than appends needs to know which transaction
+	// starts the rewrite, and every destination is one of those. Notion clears the
+	// page's existing children before appending (#130), the filesystem export
+	// discards the node's stale content files, and the Docs backend restarts its
+	// per-tab accumulation. Before this field each of the three rederived the fact
+	// privately — Notion smuggled it through its payload struct and promoted it in
+	// its Bin, the export inferred it from a co-binned create, and the Docs backend
+	// relied on a fresh Backend per run — so the rule had three homes and three
+	// failure modes.
+	//
+	// It is metadata, not payload: it never reaches the wire. A Bin that fuses
+	// several content units ORs it, since a transaction asserts the node's content
+	// if any unit in it does.
+	AssertsContent bool
 }
 
 // --- The non-content op seam (tokenizer input for the other three ops) -------

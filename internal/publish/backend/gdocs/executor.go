@@ -135,6 +135,14 @@ func (b *Backend) Execute(ctx context.Context, txn publish.Transaction, r backen
 		pend = &pendingTab{}
 		b.pending[rel] = pend
 	}
+	if t.assertsContent {
+		// A content assertion starts the tab's BODY over, so the accumulated blocks
+		// are dropped rather than appended to — the same fact Notion clears children
+		// on and the export discards sections on (#130). Properties are untouched:
+		// they arrive in their own transaction, and preserving them across the
+		// node's transactions is what this accumulator exists for.
+		pend.blocks = nil
+	}
 	pend.props = append(pend.props, propOps...)
 	pend.blocks = append(pend.blocks, blocks...)
 	mergedProps := append([]setProps(nil), pend.props...)

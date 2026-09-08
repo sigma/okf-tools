@@ -86,7 +86,7 @@ func (bn *bin) Add(u publish.AtomicUnit) bool {
 		// Thread the unit's hosted anchors onto the block so Build carries them and
 		// the Executor can map anchor-name → the block's real Notion id.
 		p.anchors = u.Anchors
-		bn.assertsContent = bn.assertsContent || p.assertsContent
+		bn.assertsContent = bn.assertsContent || u.AssertsContent
 		bn.children = append(bn.children, p)
 		bn.childCost += cost
 		return true

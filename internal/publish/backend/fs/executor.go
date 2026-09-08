@@ -58,6 +58,17 @@ func (b *Backend) Execute(_ context.Context, txn publish.Transaction, r backend.
 	// the intra-object resolution the suppression assumes. See sigma/okf-tools#76.
 	r = withHostedAnchors(rel, t.units, r)
 
+	// A content assertion REPLACES the node's body, so the stale section files go
+	// first — the filesystem's form of Notion's clearChildren (#130). A create
+	// already removes the whole subtree below, so this only has work to do on the
+	// re-assert path, which is exactly the path that used to leave a shrunk node's
+	// surplus sections behind.
+	if t.assertsContent {
+		if err := clearSections(dir); err != nil {
+			return res, fmt.Errorf("fs: replace content of %s: %w", rel, err)
+		}
+	}
+
 	var (
 		created   bool
 		contentN  int
@@ -137,6 +148,49 @@ func (b *Backend) Execute(_ context.Context, txn publish.Transaction, r backend.
 		res.Nodes[publish.SymbolicID(t.group)] = publish.BackendID(rel)
 	}
 	return res, nil
+}
+
+// clearSections removes a node's exported section files and its anchor map, the
+// two artifacts a content assertion rewrites wholesale. It deliberately leaves
+// node.json and props.json alone: existence and properties are asserted by their
+// own ops, and a content-only transaction must not delete them. A missing
+// directory is the fresh-export case and not an error.
+func clearSections(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if name != "anchors.json" && !sectionFile(name) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, name)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// sectionFile reports whether a filename is one of the NNNN.md section files
+// Execute writes, so clearing a node's body never reaches a file another op owns.
+func sectionFile(name string) bool {
+	base, ok := strings.CutSuffix(name, ".md")
+	if !ok || len(base) != 4 {
+		return false
+	}
+	for _, c := range base {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // nodeMeta is the node.json existence marker: the node's repo path (so Scan can

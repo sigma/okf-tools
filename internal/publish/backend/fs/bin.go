@@ -29,6 +29,10 @@ type bin struct {
 	group    publish.GroupKey
 	hasGroup bool
 	units    []unit
+	// assertsContent records that one of the accepted units is its node's first
+	// content unit, which makes this transaction the one asserting the node's whole
+	// content rather than one continuing it.
+	assertsContent bool
 }
 
 // unit is one accumulated AtomicUnit reduced to what Execute needs: its opaque
@@ -48,6 +52,7 @@ func (bn *bin) Add(u publish.AtomicUnit) bool {
 		bn.group = u.Group
 		bn.hasGroup = true
 	}
+	bn.assertsContent = bn.assertsContent || u.AssertsContent
 	bn.units = append(bn.units, unit{payload: u.Payload, refs: u.Refs, anchors: u.Anchors})
 	return true
 }
@@ -56,7 +61,7 @@ func (bn *bin) Add(u publish.AtomicUnit) bool {
 // preserving their order. No fusion happens here; the writes fan out at Execute.
 // The bin must not be used after Build.
 func (bn *bin) Build() publish.Transaction {
-	return &Transaction{group: bn.group, units: bn.units}
+	return &Transaction{group: bn.group, units: bn.units, assertsContent: bn.assertsContent}
 }
 
 // Transaction is the filesystem backend's opaque sealed API call, produced by
@@ -68,4 +73,9 @@ func (bn *bin) Build() publish.Transaction {
 type Transaction struct {
 	group publish.GroupKey
 	units []unit
+	// assertsContent marks this transaction as the one asserting its node's COMPLETE
+	// content, so Execute discards the node's stale section files before writing.
+	// Without it a node whose content shrank kept the surplus sections on disk —
+	// this backend's form of sigma/okf-tools#130.
+	assertsContent bool
 }

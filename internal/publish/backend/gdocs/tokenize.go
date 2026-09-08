@@ -53,6 +53,12 @@ func (b *Backend) Tokenize(doc publish.Document) []publish.AtomicUnit {
 		}
 		units = append(units, u)
 	}
+	// The Document is this node's complete expected content, so its first unit is
+	// where the assertion starts; the Executor restarts the tab's accumulation
+	// there rather than relying on the Backend being fresh for the run.
+	if len(units) > 0 {
+		units[0].AssertsContent = true
+	}
 	return units
 }
 
