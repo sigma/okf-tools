@@ -108,7 +108,7 @@ func checkOKF103(ctx *Context) []Finding {
 	}
 	var fs []Finding
 	for _, d := range ctx.Bundle.Concepts {
-		if !isKebabName(d.Base) {
+		if !convention.IsKebabFilename(d.Base) {
 			fs = append(fs, Finding{Path: d.Rel, Line: 0,
 				Message: "filename '" + d.Base + "' is not kebab-case (lowercase, hyphen-separated)"})
 		}
