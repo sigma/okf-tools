@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/sigma/okf-tools/internal/climain"
 	"github.com/sigma/okf-tools/internal/command"
 )
 
@@ -14,51 +15,24 @@ import (
 var version = "dev"
 
 func main() {
-	if len(os.Args) < 2 {
-		usage(os.Stderr)
-		os.Exit(2)
+	app := climain.App{
+		Prog:    "okftool",
+		Version: version,
+		Usage:   usage,
+		Commands: map[string]climain.Runner{
+			"lint":  command.Lint,
+			"index": command.Index,
+			"fmt":   command.Fmt,
+			"new":   command.New,
+			"graph": command.Graph,
+			"gaps":  command.Gaps,
+			"skill": command.Skill,
+		},
 	}
-
-	cmd, args := os.Args[1], os.Args[2:]
-	var run func(io.Writer, []string) (int, error)
-	switch cmd {
-	case "lint":
-		run = command.Lint
-	case "index":
-		run = command.Index
-	case "fmt":
-		run = command.Fmt
-	case "new":
-		run = command.New
-	case "graph":
-		run = command.Graph
-	case "gaps":
-		run = command.Gaps
-	case "skill":
-		run = command.Skill
-	case "version", "--version", "-v":
-		fmt.Println("okftool " + version)
-		return
-	case "help", "-h", "--help":
-		usage(os.Stdout)
-		return
-	default:
-		fmt.Fprintf(os.Stderr, "okftool: unknown command %q\n\n", cmd)
-		usage(os.Stderr)
-		os.Exit(2)
-	}
-
-	code, err := run(os.Stdout, args)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "okftool: "+err.Error())
-		if code == 0 {
-			code = 1
-		}
-	}
-	os.Exit(code)
+	os.Exit(app.Run(os.Stdout, os.Stderr, os.Args[1:]))
 }
 
-func usage(w *os.File) {
+func usage(w io.Writer) {
 	fmt.Fprint(w, `okftool — Open Knowledge Format bundle tools
 
 Usage:
