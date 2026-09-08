@@ -247,13 +247,18 @@ jobs:
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: projects/<NUM>/locations/global/workloadIdentityPools/<POOL>/providers/<PROVIDER>
-          service_account: okfpub-gdocs@<PROJECT>.iam.gserviceaccount.com
+          project_id: <PROJECT>      # okfpub does not read it; gcloud does
       - uses: sigma/okf-tools/actions/setup-okfpub@v0
       - run: okfpub run --backend gdocs --bundle path/to/bundle
         env:
           GDRIVE_FOLDER_ID: ${{ vars.GDRIVE_FOLDER_ID }}
           GDOCS_IMPERSONATE_SA: okfpub-gdocs@<PROJECT>.iam.gserviceaccount.com
 ```
+
+Do **not** also pass `service_account:` to the auth step: that makes the credential
+*be* the service account, so `okfpub` would impersonate it twice — which the binding
+below does not permit. [`docs/ci.md`](docs/ci.md#publishing-to-google-docs) has the
+two hops and the error to look for.
 
 The provider and its binding are created once, per consuming repo:
 
@@ -272,7 +277,7 @@ gcloud iam workload-identity-pools providers create-oidc github --project "$PROJ
 NUM=$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')
 gcloud iam service-accounts add-iam-policy-binding "$SA" --project "$PROJECT" \
   --role roles/iam.workloadIdentityUser \
-  --member "principalSet://iam.googleapis.com/projects/${NUM}/locations/global/workloadIdentityPools/github/attributes/repository/${REPO}"
+  --member "principalSet://iam.googleapis.com/projects/${NUM}/locations/global/workloadIdentityPools/github/attribute.repository/${REPO}"
 ```
 
 The `--attribute-condition` is load-bearing: without it, **any** GitHub repository can

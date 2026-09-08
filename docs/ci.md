@@ -197,13 +197,31 @@ jobs:
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: projects/<NUM>/locations/global/workloadIdentityPools/<POOL>/providers/<PROVIDER>
-          service_account: okfpub-gdocs@<PROJECT>.iam.gserviceaccount.com
+          project_id: <PROJECT>      # okfpub does not read it; gcloud and other steps do
       - uses: sigma/okf-tools/actions/setup-okfpub@v0
       - run: okfpub run --backend gdocs --bundle docs
         env:
           GDRIVE_FOLDER_ID: ${{ vars.GDRIVE_FOLDER_ID }}
           GDOCS_IMPERSONATE_SA: okfpub-gdocs@<PROJECT>.iam.gserviceaccount.com
 ```
+
+> **Do not also pass `service_account:` to the auth step.** That makes the Application
+> Default Credentials *be* the service account, and `okfpub` then reads
+> `GDOCS_IMPERSONATE_SA` and impersonates it a second time — an account impersonating
+> itself, which needs `roles/iam.serviceAccountTokenCreator` on itself and is not what the
+> binding below grants. Leaving it out is *direct* workload identity federation: the ADC is
+> the federated principal, and `okfpub` performs the single hop
+> `roles/iam.workloadIdentityUser` allows.
+
+There are **two auth hops**, and only the first is the action's. A green
+`google-github-actions/auth` step proves nothing about whether `okfpub` can impersonate: the
+second hop fails one step later, and surfaces nested inside the first Drive call, so the
+outermost frame is a `GET .../drive/v3/files/...` error rather than an auth one. Read down to
+the `gdocs: impersonate <sa>: Permission 'iam.serviceAccounts.getAccessToken' denied` frame.
+
+A federated credential also carries no project of its own, which is what `project_id:` is
+for. `okfpub` never reads it — it impersonates via `projects/-` — but `gcloud` and most
+other steps in the job do.
 
 Forgetting `id-token: write` is the most common failure, and its error message talks about
 a missing token rather than a missing permission.
@@ -229,8 +247,15 @@ gcloud iam workload-identity-pools providers create-oidc github --project "$PROJ
 NUM=$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')
 gcloud iam service-accounts add-iam-policy-binding "$SA" --project "$PROJECT" \
   --role roles/iam.workloadIdentityUser \
-  --member "principalSet://iam.googleapis.com/projects/${NUM}/locations/global/workloadIdentityPools/github/attributes/repository/${REPO}"
+  --member "principalSet://iam.googleapis.com/projects/${NUM}/locations/global/workloadIdentityPools/github/attribute.repository/${REPO}"
 ```
+
+The member path is `attribute.<NAME>/<VALUE>` — singular, dot-separated, and matching the
+attribute name from `--attribute-mapping`. Get it wrong and you create a binding that
+matches no principal, which fails closed with the same `getAccessToken denied` as a double
+impersonation — so the two are hard to tell apart while debugging. Nothing local catches a
+typo here: `gcloud` accepts the member string as written and `get-iam-policy` echoes it
+straight back, so the first evidence is the job failing.
 
 > **The `--attribute-condition` is load-bearing.** Without it, *any* GitHub repository —
 > not just yours — can mint a token for this provider and publish into your drive. This
@@ -346,7 +371,8 @@ Errors whose message points away from the cause.
 | gdocs: `404` on a document or drive | The service account cannot see the destination. Add it as **Content manager** on the folder, or on the shared drive when publishing to its root (a `Contributor` can create and trash but not delete, which fails later in confusing ways). |
 | gdocs: `404 Shared drive not found` | `GDRIVE_FOLDER_ID` names something that is neither a shared drive nor a folder on one — a My Drive folder, or an id that no longer exists. |
 | gdocs: `ACCESS_TOKEN_SCOPE_INSUFFICIENT` | The credential carries `cloud-platform` but not Drive/Docs scope. Note `gcloud auth print-access-token --impersonate-service-account` **ignores `--scopes`**. |
-| gdocs: cannot mint a token for the service account | The CI principal lacks `roles/iam.workloadIdentityUser` on it, or `iamcredentials.googleapis.com` is not enabled on the project. |
+| gdocs: a Drive `GET` failure wrapping `impersonate ...: Permission 'iam.serviceAccounts.getAccessToken' denied` | Impersonating twice: the auth step passed `service_account:` *and* `GDOCS_IMPERSONATE_SA` is set. Drop `service_account:`. The auth step is green either way — the failure is the second hop. |
+| gdocs: cannot mint a token for the service account | The CI principal lacks `roles/iam.workloadIdentityUser` on it, the binding's member is spelled `attributes/repository/` rather than `attribute.repository/` (a binding that matches nobody), or `iamcredentials.googleapis.com` is not enabled on the project. |
 | gdocs: `Callers must accept Terms of Service` | The Google account has never opened the Cloud console. It is a one-time browser action; there is no CLI for it. |
 | gdocs: key creation refused | Expected. `iam.managed.disableServiceAccountKeyCreation` is enforced by default — use impersonation and WIF rather than seeking an exception. Note the *legacy* `iam.disableServiceAccountKeyCreation` policy reads as unenforced while the managed one does the blocking. |
 | Actions: `Unable to get ACTIONS_ID_TOKEN_REQUEST_URL` | The job is missing `permissions: id-token: write`. |
