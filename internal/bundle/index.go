@@ -27,21 +27,7 @@ func (b *Bundle) indexByDir() map[string]*Doc {
 // Owner returns the index that owns concept c: the nearest index.md walking up
 // c's directory chain, or nil if the bundle has no covering index.
 func (b *Bundle) Owner(c *Doc) *Doc {
-	idxByDir := b.indexByDir()
-	dir := path.Dir(c.Rel)
-	for {
-		if idx, ok := idxByDir[dir]; ok {
-			return idx
-		}
-		if dir == "." || dir == "" {
-			return nil
-		}
-		parent := path.Dir(dir)
-		if parent == dir {
-			return nil
-		}
-		dir = parent
-	}
+	return b.ownerWith(b.indexByDir(), c)
 }
 
 // Scope returns the concepts owned by idx, sorted by rel path.
@@ -57,6 +43,9 @@ func (b *Bundle) Scope(idx *Doc) []*Doc {
 	return out
 }
 
+// ownerWith is the walk itself, taking the index-by-directory map as a
+// parameter so Scope can build it once for the whole bundle instead of once per
+// concept. Owner is the single-concept convenience over it.
 func (b *Bundle) ownerWith(idxByDir map[string]*Doc, c *Doc) *Doc {
 	dir := path.Dir(c.Rel)
 	for {
