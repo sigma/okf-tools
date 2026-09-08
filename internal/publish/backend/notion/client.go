@@ -4,18 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"math"
-	"math/rand/v2"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/sigma/okf-tools/internal/publish"
+	"github.com/sigma/okf-tools/internal/publish/backend/request"
 )
 
 // defaults for the shared Notion HTTP client. The base URL is overridable (an
@@ -50,10 +48,11 @@ const (
 	// defaultMaxAttempts bounds a single request's total tries — the first attempt
 	// plus its retries. Exhausting it fails the run naming the status and the count.
 	defaultMaxAttempts = 5
-	// retryBaseBackoff is the first retry's delay ceiling, doubling per attempt up
-	// to maxRetryBackoff. Used only when the response carries no Retry-After.
-	retryBaseBackoff = 500 * time.Millisecond
-	maxRetryBackoff  = 8 * time.Second
+	// The retry delay policy — jittered exponential backoff and Retry-After
+	// honouring — lives in the shared request package; these name it locally for
+	// this client's tests.
+	retryBaseBackoff = request.BaseBackoff
+	maxRetryBackoff  = request.MaxBackoff
 	// DefaultRequestTimeout bounds ONE attempt: how long the client waits for a
 	// response before treating the request as stalled.
 	//
@@ -67,12 +66,12 @@ const (
 	// Generous on purpose. The failure being fixed is unbounded, not slow: a
 	// healthy Notion call answers in well under a second, and a bulk block append
 	// on a bad day is still far inside this.
-	DefaultRequestTimeout = 60 * time.Second
+	DefaultRequestTimeout = request.DefaultTimeout
 	// maxRetryAfter caps how long a server-sent Retry-After may park the run.
 	// Bounding the attempts bounds nothing if one header can stall a publish for an
 	// hour; retrying earlier than asked risks another 429, which is itself bounded
 	// and reported.
-	maxRetryAfter = 60 * time.Second
+	maxRetryAfter = request.MaxRetryAfter
 )
 
 // limiter is the Notion client's rate-limit policy: the global admission gate
@@ -312,18 +311,14 @@ func (b *Backend) attempt(ctx context.Context, method, path string, payload []by
 // run: one says the destination stopped answering, the other looks like a bug in
 // this program.
 func (b *Backend) wrapAttemptErr(ctx context.Context, method, path string, err error) error {
-	if b.stalled(ctx, err) {
-		return fmt.Errorf("notion: %s %s: no response within %v (request timeout): %w",
-			method, path, b.limits.timeout, err)
-	}
-	return fmt.Errorf("notion: %s %s: %w", method, path, err)
+	return request.WrapErr(ctx, "notion", method, path, b.limits.timeout, err)
 }
 
 // stalled reports whether err is THIS client's per-attempt deadline firing rather
 // than the caller giving up. The distinction decides whether a retry is even
 // considered: a cancelled run stops, it does not back off and try again.
 func (b *Backend) stalled(ctx context.Context, err error) bool {
-	return errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil
+	return request.Stalled(ctx, err)
 }
 
 // retryable reports whether a failed request should be retried, given its status
@@ -417,15 +412,7 @@ func routeSegments(path string) []string {
 // exponential backoff doubling from retryBaseBackoff up to maxRetryBackoff, with
 // full jitter so a fleet of retries does not re-collide in lockstep.
 func (l *limiter) retryDelay(header http.Header, attempt int) time.Duration {
-	if d, ok := l.retryAfter(header); ok {
-		return d
-	}
-	backoff := retryBaseBackoff << (attempt - 1)
-	if backoff > maxRetryBackoff || backoff <= 0 {
-		backoff = maxRetryBackoff
-	}
-	// Full jitter over (0, backoff]: rand.Int64N returns [0, n), so shift by one.
-	return time.Duration(rand.Int64N(int64(backoff)) + 1)
+	return request.Delay(header, attempt, l.now)
 }
 
 // retryAfter reads a Retry-After header in either of its two forms — a delay in
@@ -433,22 +420,7 @@ func (l *limiter) retryDelay(header http.Header, attempt int) time.Duration {
 // maxRetryAfter. A missing, unparseable, or already-elapsed value reports false so
 // the caller backs off instead.
 func (l *limiter) retryAfter(header http.Header) (time.Duration, bool) {
-	v := strings.TrimSpace(header.Get("Retry-After"))
-	if v == "" {
-		return 0, false
-	}
-	if secs, err := strconv.Atoi(v); err == nil {
-		if secs <= 0 {
-			return 0, false
-		}
-		return min(time.Duration(secs)*time.Second, maxRetryAfter), true
-	}
-	if when, err := http.ParseTime(v); err == nil {
-		if d := when.Sub(l.now()); d > 0 {
-			return min(d, maxRetryAfter), true
-		}
-	}
-	return 0, false
+	return request.RetryAfter(header, l.now)
 }
 
 // admit passes one request through the gate its own shape selects: the burstable
