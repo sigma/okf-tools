@@ -26,23 +26,26 @@ import (
 func (b *Backend) Tokenize(doc publish.Document) []publish.AtomicUnit {
 	var units []publish.AtomicUnit
 	for _, blk := range doc.Blocks {
+		d := graph.DecodeBlock(blk)
+
 		// A table is a single, unsplittable unit: its rows are the block's children,
 		// so it never chunks against the per-block char cap the way a flat run does.
-		if bc, ok := blk.Content.(graph.BlockContent); ok && bc.Kind == graph.Table {
-			cb, refs := tableChildBlock(bc)
-			u := publish.AtomicUnit{Payload: cb, Cost: 1, Group: doc.Group, Refs: refs}
-			if len(blk.Anchors) > 0 {
-				u.Anchors = blk.Anchors
+		if d.IsTable {
+			u := publish.AtomicUnit{Payload: tableChildBlock(d), Cost: 1, Group: doc.Group, Refs: d.Refs}
+			if len(d.Anchors) > 0 {
+				u.Anchors = d.Anchors
 			}
 			units = append(units, u)
 			continue
 		}
-		kind, level, language, runs, hadInlineRefs := graph.RunsOf(blk.Content)
-		chunks := b.splitRuns(runs)
 
+		// The split is what stops this backend using the shared one-unit-per-block
+		// walk: chunking changes WHICH unit carries the block's refs and anchors, so
+		// both are placed on the first chunk explicitly.
+		chunks := b.splitRuns(d.Runs)
 		for i, chunk := range chunks {
 			u := publish.AtomicUnit{
-				Payload: childBlock{kind: int(kind), level: level, language: language, runs: chunk},
+				Payload: childBlock{kind: int(d.Kind), level: d.Level, language: d.Language, runs: chunk},
 				Cost:    1,
 				Group:   doc.Group,
 				Refs:    publish.RefsOf(chunk),
@@ -50,13 +53,13 @@ func (b *Backend) Tokenize(doc publish.Document) []publish.AtomicUnit {
 			// If the neutral content exposed no inline refs (a fallback content
 			// shape), fall back to the block's aggregate Refs, hosted by the first
 			// unit so late-bound references are never dropped.
-			if !hadInlineRefs && i == 0 && len(blk.Refs) > 0 {
-				u.Refs = append(u.Refs, blk.Refs...)
+			if !d.HadInlineRefs && i == 0 && len(d.BlockRefs) > 0 {
+				u.Refs = append(u.Refs, d.BlockRefs...)
 			}
 			// The declared anchors live on the first unit — the block whose Notion id
 			// becomes the anchor's target.
-			if i == 0 && len(blk.Anchors) > 0 {
-				u.Anchors = blk.Anchors
+			if i == 0 && len(d.Anchors) > 0 {
+				u.Anchors = d.Anchors
 			}
 			units = append(units, u)
 		}
@@ -94,13 +97,12 @@ func (b *Backend) TokenizeOp(op publish.NonContentOp) publish.AtomicUnit {
 // them for the transport to gate and resolve. A table is never split against the
 // char cap, so it maps one-to-one to one unit; a cell whose text exceeds Notion's
 // per-span cap is left intact (these mirror tables are far under it).
-func tableChildBlock(bc graph.BlockContent) (childBlock, []publish.SymbolicID) {
-	rowRuns, refs := graph.TableRunsOf(bc)
-	rows := make([]tableRow, 0, len(rowRuns))
-	for _, cells := range rowRuns {
+func tableChildBlock(d graph.DecodedBlock) childBlock {
+	rows := make([]tableRow, 0, len(d.Rows))
+	for _, cells := range d.Rows {
 		rows = append(rows, tableRow{cells: cells})
 	}
-	return childBlock{kind: int(graph.Table), rows: rows, hasColumnHeader: bc.HasColumnHeader}, refs
+	return childBlock{kind: int(graph.Table), rows: rows, hasColumnHeader: d.HasColumnHeader}
 }
 
 // splitRuns packs a block's inline runs into chunks whose literal text stays
