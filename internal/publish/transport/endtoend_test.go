@@ -2,44 +2,16 @@ package transport
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/sigma/okf-tools/internal/bundle"
+	"github.com/sigma/okf-tools/internal/bundle/bundletest"
 	"github.com/sigma/okf-tools/internal/publish"
 	"github.com/sigma/okf-tools/internal/publish/backend"
 	"github.com/sigma/okf-tools/internal/publish/backend/fake"
 	"github.com/sigma/okf-tools/internal/publish/graph"
 	"github.com/sigma/okf-tools/internal/publish/optimize"
 )
-
-// loadBundle materializes an in-memory file set as a real okf bundle on disk and
-// loads it through the production discover/load path, so the end-to-end test
-// drives Stage 1 against genuine parsed input rather than a hand-built op-DAG.
-func loadBundle(t *testing.T, files map[string]string) *bundle.Bundle {
-	t.Helper()
-	dir := t.TempDir()
-	for name, content := range files {
-		p := filepath.Join(dir, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	root, cfgPath, err := bundle.Discover(dir, "", "")
-	if err != nil {
-		t.Fatalf("discover: %v", err)
-	}
-	b, err := bundle.Load(root, cfgPath)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	return b
-}
 
 // e2eBundle is a small but representative bundle: nested indexes (parent-before-
 // child edges), a cross-document link (a → b, content-refs-node), and a glossary
@@ -61,7 +33,7 @@ func e2eBundle() map[string]string {
 // can inspect the recorded transactions.
 func pipeline(t *testing.T, files map[string]string) (*Result, *optimize.TxnDAG, *fake.Backend) {
 	t.Helper()
-	b := loadBundle(t, files)
+	b := bundletest.Load(t, files)
 	// maxCount=2 dials packing pressure so each node's create+props seal into one
 	// transaction and its content overflows into another. That separation is what
 	// keeps a mutual link (a ↔ b, both new) acyclic: the transport can execute both
@@ -103,7 +75,7 @@ func TestEndToEndPublish(t *testing.T) {
 
 	// Every source page (all new against an empty scan) must resolve to a minted
 	// backend id.
-	b := loadBundle(t, files)
+	b := bundletest.Load(t, files)
 	for _, d := range b.Docs {
 		id := publish.SymbolicID("node:" + d.Rel)
 		if _, ok := res.Nodes[id]; !ok {
@@ -147,7 +119,7 @@ func ringBundle(rels ...string) map[string]string {
 // callers assert the observable outcome only — keeping them strategy-independent.
 func publishUnbounded(t *testing.T, files map[string]string) (*Result, error) {
 	t.Helper()
-	b := loadBundle(t, files)
+	b := bundletest.Load(t, files)
 	be := fake.New() // unbounded / fusing bin — no WithMaxCount
 
 	scan, err := be.Scan(context.Background(), backend.ScanStored)

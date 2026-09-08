@@ -3,6 +3,7 @@ package gdocs_test
 import (
 	"context"
 	"fmt"
+	"github.com/sigma/okf-tools/internal/bundle/bundletest"
 	"net/http"
 	"strings"
 	"testing"
@@ -37,7 +38,7 @@ func TestPublishIntoAFolder(t *testing.T) {
 	defer srv.Close()
 
 	be := folderBackend(t, srv.URL, testFolderID)
-	b := loadBundle(t, testBundle())
+	b := bundletest.Load(t, testBundle())
 	if _, err := pipeline.Run(context.Background(), be, b); err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -71,7 +72,7 @@ func TestFolderPublishIsIdempotent(t *testing.T) {
 	srv := fake.server()
 	defer srv.Close()
 
-	b := loadBundle(t, testBundle())
+	b := bundletest.Load(t, testBundle())
 	first := folderBackend(t, srv.URL, testFolderID)
 	if _, err := pipeline.Run(context.Background(), first, b); err != nil {
 		t.Fatalf("first run: %v", err)
@@ -99,7 +100,7 @@ func TestPublishIntoADriveRoot(t *testing.T) {
 	defer srv.Close()
 
 	be := folderBackend(t, srv.URL, testDriveID)
-	b := loadBundle(t, testBundle())
+	b := bundletest.Load(t, testBundle())
 	if _, err := pipeline.Run(context.Background(), be, b); err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -123,7 +124,7 @@ func TestDriveRootWithoutADriveIDField(t *testing.T) {
 	defer srv.Close()
 
 	be := folderBackend(t, srv.URL, testDriveID)
-	b := loadBundle(t, testBundle())
+	b := bundletest.Load(t, testBundle())
 	if _, err := pipeline.Run(context.Background(), be, b); err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -145,7 +146,7 @@ func TestMyDriveFolderIsRejected(t *testing.T) {
 	defer srv.Close()
 
 	be := folderBackend(t, srv.URL, orphan.id)
-	_, err := pipeline.Run(context.Background(), be, loadBundle(t, testBundle()))
+	_, err := pipeline.Run(context.Background(), be, bundletest.Load(t, testBundle()))
 	if err == nil {
 		t.Fatal("publishing into a folder on no shared drive succeeded")
 	}
@@ -166,7 +167,7 @@ func TestNonFolderDestinationIsRejected(t *testing.T) {
 	defer srv.Close()
 
 	be := folderBackend(t, srv.URL, docID)
-	_, err := pipeline.Run(context.Background(), be, loadBundle(t, testBundle()))
+	_, err := pipeline.Run(context.Background(), be, bundletest.Load(t, testBundle()))
 	if err == nil {
 		t.Fatal("publishing into a document id succeeded")
 	}
@@ -193,7 +194,7 @@ func TestDryRunNamesTheFolderAndTheDrive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
-	if _, err := pipeline.Run(context.Background(), be, loadBundle(t, testBundle())); err != nil {
+	if _, err := pipeline.Run(context.Background(), be, bundletest.Load(t, testBundle())); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if len(fake.files) != 0 {
@@ -220,7 +221,7 @@ func TestDryRunNamesADriveRootAsADrive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
-	if _, err := pipeline.Run(context.Background(), be, loadBundle(t, testBundle())); err != nil {
+	if _, err := pipeline.Run(context.Background(), be, bundletest.Load(t, testBundle())); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	out := firstLines(dump.String())

@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"github.com/sigma/okf-tools/internal/bundle/bundletest"
 	"testing"
 )
 
@@ -79,7 +80,7 @@ func TestTableCellLinkBecomesRefAndKeepsOrdinalAligned(t *testing.T) {
 		"b.md":     "---\ntype: c\n---\nB.\n",
 		"p.md":     "---\ntype: c\n---\n| Doc |\n| --- |\n| [A](a.md) |\n\nThen see [B](b.md).\n",
 	}
-	b := loadBundle(t, files)
+	b := bundletest.Load(t, files)
 	cs := seed{unchanged: []string{"index.md", "a.md", "b.md"}}.build(t, b)
 	g := gen(t, b, cs)
 	sc := opFor(g, nodeRef("p.md"), SetContent)

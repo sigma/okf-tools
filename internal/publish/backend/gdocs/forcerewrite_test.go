@@ -2,6 +2,7 @@ package gdocs_test
 
 import (
 	"context"
+	"github.com/sigma/okf-tools/internal/bundle/bundletest"
 	"strings"
 	"testing"
 
@@ -22,7 +23,7 @@ func TestForceRewriteReachesALiveDestination(t *testing.T) {
 	srv := fake.server()
 	defer srv.Close()
 
-	b := loadBundle(t, testBundle())
+	b := bundletest.Load(t, testBundle())
 	first := newBackend(t, srv.URL)
 	if _, err := pipeline.Run(context.Background(), first, b); err != nil {
 		t.Fatalf("first run: %v", err)

@@ -42,14 +42,13 @@ package backendtest
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"testing"
 
 	"github.com/sigma/okf-tools/internal/areas"
 
 	"github.com/sigma/okf-tools/internal/bundle"
+	"github.com/sigma/okf-tools/internal/bundle/bundletest"
 	"github.com/sigma/okf-tools/internal/publish"
 	"github.com/sigma/okf-tools/internal/publish/backend"
 	"github.com/sigma/okf-tools/internal/publish/graph"
@@ -235,7 +234,7 @@ func runFixture(t *testing.T, newSubject Factory, f Fixture) {
 	})
 
 	t.Run("every declared anchor resolves", func(t *testing.T) {
-		b := loadBundle(t, f.Files)
+		b := bundletest.Load(t, f.Files)
 		res := publishBundle(t, newSubject, f, b)
 		// The expectation is DERIVED from the bundle, not listed here: a
 		// hand-written list drifts silently the moment a fixture gains a term or a
@@ -274,7 +273,7 @@ func runFixture(t *testing.T, newSubject Factory, f Fixture) {
 	})
 
 	t.Run("area roots match the backend's declaration", func(t *testing.T) {
-		b := loadBundle(t, f.Files)
+		b := bundletest.Load(t, f.Files)
 		roots := b.AreaRootDocs()
 		if len(roots) == 0 {
 			t.Skip("fixture declares no area roots")
@@ -309,12 +308,12 @@ func runFixture(t *testing.T, newSubject Factory, f Fixture) {
 			t.Skip("fixture names no removable page")
 		}
 		s := newSubject(t)
-		publishBundleWith(t, s, loadBundle(t, f.Files), f)
+		publishBundleWith(t, s, bundletest.Load(t, f.Files), f)
 
 		// Publishing the same bundle minus one page makes that page an orphan, which
 		// is the only way a DeleteNode op reaches a backend. Before this fixture no
 		// fixture produced one, so every backend's archive path ran in no test at all.
-		reduced := loadBundle(t, without(f.Files, f.Removable))
+		reduced := bundletest.Load(t, without(f.Files, f.Removable))
 		res := publishBundleWith(t, s, reduced, f)
 		if res.TxnCount == 0 {
 			t.Fatalf("removing %s produced no work at all; the orphan was never noticed", f.Removable)
@@ -366,7 +365,7 @@ func runFixture(t *testing.T, newSubject Factory, f Fixture) {
 		// a fix that silently did not ship (#183). An unchanged re-run publishes
 		// nothing; the same re-run forced must publish the whole fixture.
 		s := newSubject(t)
-		b := loadBundle(t, f.Files)
+		b := bundletest.Load(t, f.Files)
 		publishBundleWith(t, s, b, f)
 
 		steady, err := pipeline.Run(context.Background(), s.Backend, b)
@@ -406,7 +405,7 @@ func runFixture(t *testing.T, newSubject Factory, f Fixture) {
 func republish(t *testing.T, s Subject, f Fixture,
 	capture func() string) (before, after string) {
 	t.Helper()
-	b := loadBundle(t, f.Files)
+	b := bundletest.Load(t, f.Files)
 	publishBundleWith(t, s, b, f)
 	before = capture()
 	publishBundleWith(t, s, b, f)
@@ -416,7 +415,7 @@ func republish(t *testing.T, s Subject, f Fixture,
 // publishFixture builds a fresh subject and publishes the fixture through it.
 func publishFixture(t *testing.T, newSubject Factory, f Fixture) *pipeline.Result {
 	t.Helper()
-	return publishBundle(t, newSubject, f, loadBundle(t, f.Files))
+	return publishBundle(t, newSubject, f, bundletest.Load(t, f.Files))
 }
 
 func publishBundle(t *testing.T, newSubject Factory, f Fixture,
@@ -470,31 +469,6 @@ func relsOf(m map[string]publish.BackendID) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-// loadBundle writes a fixture to a temp directory and loads it, which is what
-// every backend's own suite was doing separately.
-func loadBundle(t *testing.T, files map[string]string) *bundle.Bundle {
-	t.Helper()
-	dir := t.TempDir()
-	for name, content := range files {
-		p := filepath.Join(dir, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	root, cfgPath, err := bundle.Discover(dir, "", "")
-	if err != nil {
-		t.Fatalf("discover: %v", err)
-	}
-	b, err := bundle.Load(root, cfgPath)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	return b
 }
 
 func anchorNames(m map[publish.AnchorName]publish.BackendID) []publish.AnchorName {

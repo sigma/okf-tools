@@ -1,6 +1,7 @@
 package fs_test
 
 import (
+	"github.com/sigma/okf-tools/internal/bundle/bundletest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +14,7 @@ import (
 // the item's own sentence glued to the first cell.
 func TestNestedTableKeepsItsSeparators(t *testing.T) {
 	out := t.TempDir()
-	b := loadBundle(t, map[string]string{
+	b := bundletest.Load(t, map[string]string{
 		"okf.toml":   "[glossary]\nenabled = true\nfiles = [\"CONTEXT.md\"]\n",
 		"index.md":   "---\nokf_version: \"0.1\"\n---\n# Root\n",
 		"CONTEXT.md": "# Glossary\n\n**Root KEK**: the root key-encryption key.\n",

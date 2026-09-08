@@ -3,6 +3,7 @@ package gdocs_test
 import (
 	"context"
 	"fmt"
+	"github.com/sigma/okf-tools/internal/bundle/bundletest"
 	"net/http"
 	"strings"
 	"testing"
@@ -71,7 +72,7 @@ func TestRewriteDoesNotStrandCrossTabLinks(t *testing.T) {
 			defer srv.Close()
 
 			be := newBackend(t, srv.URL)
-			if _, err := pipeline.Run(context.Background(), be, loadBundle(t, lateGlossaryBundle(terms))); err != nil {
+			if _, err := pipeline.Run(context.Background(), be, bundletest.Load(t, lateGlossaryBundle(terms))); err != nil {
 				t.Fatalf("run: %v", err)
 			}
 			t.Logf("writes: %v", fake.writeLog)
@@ -123,7 +124,7 @@ func TestDryRunPlansTheRelink(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
-	if _, err := pipeline.Run(context.Background(), be, loadBundle(t, lateGlossaryBundle(300))); err != nil {
+	if _, err := pipeline.Run(context.Background(), be, bundletest.Load(t, lateGlossaryBundle(300))); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if fake.batchUpdates != 0 {
@@ -192,7 +193,7 @@ func TestSortOrderThatAlreadyWorkedStillDoes(t *testing.T) {
 		"# Alpha\n\nAlpha cites [Term 0](/CONTEXT.md#term-0).\n"
 
 	be := newBackend(t, srv.URL)
-	if _, err := pipeline.Run(context.Background(), be, loadBundle(t, files)); err != nil {
+	if _, err := pipeline.Run(context.Background(), be, bundletest.Load(t, files)); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	assertNoStaleLinks(t, fake, be.DocumentID())

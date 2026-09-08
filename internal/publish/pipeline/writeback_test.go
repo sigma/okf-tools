@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"github.com/sigma/okf-tools/internal/bundle/bundletest"
 	"testing"
 
 	"github.com/sigma/okf-tools/internal/publish"
@@ -12,7 +13,7 @@ import (
 // TestRunScanModeDefaultsToStored: a plain Run scans in the cheap steady-state
 // ScanStored mode; the opt-in WithScanMode(ScanRecompute) reaches the scanner.
 func TestRunScanModeDefaultsToStored(t *testing.T) {
-	b := loadBundle(t, smallBundle())
+	b := bundletest.Load(t, smallBundle())
 
 	def := fake.New(fake.WithScan(scanAfterPublish(b)))
 	if _, err := Run(context.Background(), def, b); err != nil {
@@ -36,7 +37,7 @@ func TestRunScanModeDefaultsToStored(t *testing.T) {
 // provenance for every source node — with the glossary node carrying its hosted
 // anchor id — so the next ScanStored would read current state.
 func TestRunWritesBackEveryPublishedNode(t *testing.T) {
-	b := loadBundle(t, smallBundle())
+	b := bundletest.Load(t, smallBundle())
 	be := fake.New(fake.WithMaxCount(2))
 
 	if _, err := Run(context.Background(), be, b); err != nil {
@@ -71,7 +72,7 @@ func TestRunWritesBackEveryPublishedNode(t *testing.T) {
 // TestRunNearNoopWritesNothingBack: the steady-state unchanged re-run records no
 // write-back — self-description stays a true no-op when nothing changed.
 func TestRunNearNoopWritesNothingBack(t *testing.T) {
-	b := loadBundle(t, smallBundle())
+	b := bundletest.Load(t, smallBundle())
 	be := fake.New(fake.WithScan(scanAfterPublish(b)))
 
 	if _, err := Run(context.Background(), be, b); err != nil {

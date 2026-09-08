@@ -2,11 +2,10 @@ package notion
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/sigma/okf-tools/internal/bundle"
+	"github.com/sigma/okf-tools/internal/bundle/bundletest"
 	"github.com/sigma/okf-tools/internal/publish"
 	"github.com/sigma/okf-tools/internal/publish/backend"
 	"github.com/sigma/okf-tools/internal/publish/graph"
@@ -28,25 +27,7 @@ func loadAnchorBundle(t *testing.T) *bundle.Bundle {
 		"a.md":       "---\ntype: adr\ntitle: A\n---\nThe [root KEK](CONTEXT.md#root-kek) protects everything.\n",
 		"b.md":       "---\ntype: adr\ntitle: B\n---\nAn [envoy](CONTEXT.md#envoy) carries it, guarded by the [root KEK](CONTEXT.md#root-kek).\n",
 	}
-	dir := t.TempDir()
-	for name, content := range files {
-		p := filepath.Join(dir, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	root, cfgPath, err := bundle.Discover(dir, "", "")
-	if err != nil {
-		t.Fatalf("discover: %v", err)
-	}
-	b, err := bundle.Load(root, cfgPath)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	return b
+	return bundletest.Load(t, files)
 }
 
 // publishThrough drives one full publish of b against be, exactly as the pipeline

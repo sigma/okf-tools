@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"github.com/sigma/okf-tools/internal/bundle/bundletest"
 	"testing"
 
 	"github.com/sigma/okf-tools/internal/publish"
@@ -32,7 +33,7 @@ func (p *provisioningBackend) Scan(ctx context.Context, m backend.ScanMode) (*pu
 // that does not implement it (the plain fake) is simply not provisioned — the other
 // pipeline tests exercise that path.
 func TestRunProvisionsBeforeScan(t *testing.T) {
-	b := loadBundle(t, smallBundle())
+	b := bundletest.Load(t, smallBundle())
 	be := &provisioningBackend{Backend: fake.New(fake.WithMaxCount(2))}
 
 	if _, err := Run(context.Background(), be, b); err != nil {

@@ -2,6 +2,7 @@ package gdocs_test
 
 import (
 	"context"
+	"github.com/sigma/okf-tools/internal/bundle/bundletest"
 	"strings"
 	"testing"
 
@@ -22,7 +23,7 @@ func TestMarkerSpansTheRealBody(t *testing.T) {
 	defer srv.Close()
 
 	be := newBackend(t, srv.URL)
-	if _, err := pipeline.Run(context.Background(), be, loadBundle(t, testBundle())); err != nil {
+	if _, err := pipeline.Run(context.Background(), be, bundletest.Load(t, testBundle())); err != nil {
 		t.Fatalf("publish failed on the marker's range: %v", err)
 	}
 
@@ -45,7 +46,7 @@ func TestMarkerRangeSurvivesAContentLengthChange(t *testing.T) {
 	defer srv.Close()
 
 	first := newBackend(t, srv.URL)
-	if _, err := pipeline.Run(context.Background(), first, loadBundle(t, testBundle())); err != nil {
+	if _, err := pipeline.Run(context.Background(), first, bundletest.Load(t, testBundle())); err != nil {
 		t.Fatalf("first publish: %v", err)
 	}
 	docID := first.DocumentID()
@@ -57,7 +58,7 @@ func TestMarkerRangeSurvivesAContentLengthChange(t *testing.T) {
 		edited := testBundle()
 		edited["alpha.md"] = strings.Replace(edited["alpha.md"], "Alpha links to", replacement, 1)
 		be := newBackend(t, srv.URL)
-		if _, err := pipeline.Run(context.Background(), be, loadBundle(t, edited)); err != nil {
+		if _, err := pipeline.Run(context.Background(), be, bundletest.Load(t, edited)); err != nil {
 			t.Fatalf("republish with a %d-character body: %v", len(replacement), err)
 		}
 		if got := fake.namedRangesOf(docID, "Alpha"); len(got) != 1 {

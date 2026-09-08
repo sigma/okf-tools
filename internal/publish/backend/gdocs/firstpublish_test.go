@@ -2,6 +2,7 @@ package gdocs_test
 
 import (
 	"context"
+	"github.com/sigma/okf-tools/internal/bundle/bundletest"
 	"net/http"
 	"strings"
 	"testing"
@@ -24,7 +25,7 @@ func TestFirstPublishIntoAFreshDestination(t *testing.T) {
 	defer srv.Close()
 
 	be := newBackend(t, srv.URL)
-	if _, err := pipeline.Run(context.Background(), be, loadBundle(t, testBundle())); err != nil {
+	if _, err := pipeline.Run(context.Background(), be, bundletest.Load(t, testBundle())); err != nil {
 		t.Fatalf("the FIRST publish into an empty destination failed: %v", err)
 	}
 
@@ -49,7 +50,7 @@ func TestRewriteStillReassertsTheMarker(t *testing.T) {
 	srv := fake.server()
 	defer srv.Close()
 
-	b := loadBundle(t, testBundle())
+	b := bundletest.Load(t, testBundle())
 	first := newBackend(t, srv.URL)
 	if _, err := pipeline.Run(context.Background(), first, b); err != nil {
 		t.Fatalf("first publish: %v", err)
@@ -61,7 +62,7 @@ func TestRewriteStillReassertsTheMarker(t *testing.T) {
 	edited := testBundle()
 	edited["alpha.md"] = strings.Replace(edited["alpha.md"], "Alpha links to", "Alpha now links to", 1)
 	second := newBackend(t, srv.URL)
-	if _, err := pipeline.Run(context.Background(), second, loadBundle(t, edited)); err != nil {
+	if _, err := pipeline.Run(context.Background(), second, bundletest.Load(t, edited)); err != nil {
 		t.Fatalf("republish: %v", err)
 	}
 
@@ -104,7 +105,7 @@ func TestHalfProvisionedDestinationIsResumable(t *testing.T) {
 
 	// The re-run finds the destination by its identity key, not by title.
 	resumed := newBackend(t, srv.URL)
-	if _, err := pipeline.Run(context.Background(), resumed, loadBundle(t, testBundle())); err != nil {
+	if _, err := pipeline.Run(context.Background(), resumed, bundletest.Load(t, testBundle())); err != nil {
 		t.Fatalf("the re-run after a half-provisioned destination failed: %v", err)
 	}
 	if resumed.DocumentID() != provisioned {
@@ -139,7 +140,7 @@ func TestDryRunAgainstAnExistingDestinationReads(t *testing.T) {
 	srv := fake.server()
 	defer srv.Close()
 
-	b := loadBundle(t, testBundle())
+	b := bundletest.Load(t, testBundle())
 	live := newBackend(t, srv.URL)
 	if _, err := pipeline.Run(context.Background(), live, b); err != nil {
 		t.Fatalf("seed publish: %v", err)
@@ -158,7 +159,7 @@ func TestDryRunAgainstAnExistingDestinationReads(t *testing.T) {
 	}
 	edited := testBundle()
 	edited["alpha.md"] = strings.Replace(edited["alpha.md"], "Alpha links to", "Alpha now links to", 1)
-	if _, err := pipeline.Run(context.Background(), dry, loadBundle(t, edited)); err != nil {
+	if _, err := pipeline.Run(context.Background(), dry, bundletest.Load(t, edited)); err != nil {
 		t.Fatalf("dry run against an existing destination: %v", err)
 	}
 

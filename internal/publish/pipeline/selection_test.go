@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/sigma/okf-tools/internal/bundle"
+	"github.com/sigma/okf-tools/internal/bundle/bundletest"
 )
 
 // selectionBundle has two content areas plus a file-backed glossary area, which
@@ -21,25 +22,7 @@ func selectionBundle(t *testing.T) *bundle.Bundle {
 		"concepts/beta.md":  "---\nokf_version: \"0.1\"\ntitle: Beta\ntype: concept\n---\n\n# Beta\n",
 		"adr/0001.md":       "---\nokf_version: \"0.1\"\ntitle: One\ntype: adr\n---\n\n# One\n",
 	}
-	dir := t.TempDir()
-	for name, content := range files {
-		p := filepath.Join(dir, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	root, cfgPath, err := bundle.Discover(dir, "", "")
-	if err != nil {
-		t.Fatalf("discover: %v", err)
-	}
-	b, err := bundle.Load(root, cfgPath)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	return b
+	return bundletest.Load(t, files)
 }
 
 // TestDefaultFansOutPerArea pins the default: one document per area, the glossary
