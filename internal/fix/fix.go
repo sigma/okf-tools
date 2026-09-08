@@ -10,17 +10,13 @@ import (
 	"os"
 	"path"
 	"regexp"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/sigma/okf-tools/internal/bundle"
-	"github.com/sigma/okf-tools/internal/config"
+	"github.com/sigma/okf-tools/internal/convention"
 	"github.com/sigma/okf-tools/internal/rules"
 	"gopkg.in/yaml.v3"
 )
-
-const maxInt = int(^uint(0) >> 1)
 
 // Set is the set of mechanical transforms to apply, keyed by the single
 // rules.FixKind vocabulary a rule declares. It only ever holds enabled kinds, so
@@ -189,23 +185,11 @@ func rewriteWikilinks(b *bundle.Bundle, d *bundle.Doc, body []string) []string {
 	return strings.Split(joined, "\n")
 }
 
-var (
-	citEntryRe         = regexp.MustCompile(`^\[(\d+)\]\s+\[[^\]]*\]\([^)]*\)`)
-	citNumRe           = regexp.MustCompile(`^(\s*)\[\d+\]`)
-	citEntryFootnoteRe = regexp.MustCompile(`^\[\^(\d+)\]:\s+\[[^\]]*\]\([^)]*\)`)
-	citNumFootnoteRe   = regexp.MustCompile(`^(\s*)\[\^\d+\]:`)
-)
-
 func renumberCitations(b *bundle.Bundle, d *bundle.Doc, body []string, bodyStart int) {
-	start, end := citationRange(d, b.Config)
+	cits := convention.CitationsFor(b.Config)
+	start, end := cits.Section(d)
 	if start == 0 {
 		return
-	}
-	entryRe, numRe := citEntryRe, citNumRe
-	repl := func(n int) string { return "${1}[" + strconv.Itoa(n) + "]" }
-	if b.Config.Citations.Style == "footnote" {
-		entryRe, numRe = citEntryFootnoteRe, citNumFootnoteRe
-		repl = func(n int) string { return "${1}[^" + strconv.Itoa(n) + "]:" }
 	}
 	n := 0
 	for bi := 0; bi < len(body); bi++ {
@@ -213,32 +197,11 @@ func renumberCitations(b *bundle.Bundle, d *bundle.Doc, body []string, bodyStart
 		if fileLine < start || fileLine >= end {
 			continue
 		}
-		if entryRe.MatchString(strings.TrimSpace(body[bi])) {
+		if _, ok := cits.Entry(strings.TrimSpace(body[bi])); ok {
 			n++
-			body[bi] = numRe.ReplaceAllString(body[bi], repl(n))
+			body[bi] = cits.Renumber(body[bi], n)
 		}
 	}
-}
-
-func citationRange(d *bundle.Doc, cfg *config.Config) (start, end int) {
-	want := strings.ToLower(strings.TrimSpace(strings.TrimLeft(cfg.Citations.Heading, "# ")))
-	hLine, hLevel := 0, 0
-	for _, h := range d.Headings {
-		if strings.ToLower(strings.TrimSpace(h.Text)) == want {
-			hLine, hLevel = h.Line, h.Level
-			break
-		}
-	}
-	if hLine == 0 {
-		return 0, 0
-	}
-	end = maxInt
-	for _, h := range d.Headings {
-		if h.Line > hLine && h.Level <= hLevel && h.Line < end {
-			end = h.Line
-		}
-	}
-	return hLine + 1, end
 }
 
 // fixFrontmatterHead rebuilds the frontmatter block (including delimiters) with
@@ -329,26 +292,11 @@ func normalizeTimestampOnly(fmRaw, format string) (string, bool) {
 }
 
 func normalizeTimestampValue(raw, format string) (string, bool) {
-	t, ok := parseAnyTimestamp(stripQuotes(strings.TrimSpace(raw)))
+	t, ok := convention.ParseTimestamp(stripQuotes(strings.TrimSpace(raw)))
 	if !ok {
 		return "", false
 	}
-	switch format {
-	case "date":
-		return t.Format("2006-01-02"), true
-	case "rfc3339":
-		return t.Format(time.RFC3339), true
-	}
-	return "", false
-}
-
-func parseAnyTimestamp(v string) (time.Time, bool) {
-	for _, layout := range []string{"2006-01-02", time.RFC3339, time.RFC3339Nano, "2006-01-02T15:04:05"} {
-		if t, err := time.Parse(layout, v); err == nil {
-			return t, true
-		}
-	}
-	return time.Time{}, false
+	return convention.FormatTimestamp(t, format)
 }
 
 func splitFrag(t string) (pathPart, frag string) {

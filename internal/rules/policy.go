@@ -2,11 +2,11 @@ package rules
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/sigma/okf-tools/internal/bundle"
 	"github.com/sigma/okf-tools/internal/config"
+	"github.com/sigma/okf-tools/internal/convention"
 )
 
 // Category B — Policy (OKF1xx). Configurable; defaults are spec-aligned.
@@ -132,8 +132,8 @@ func checkOKF104(ctx *Context) []Finding {
 			continue
 		}
 		val, _ := fmScalar(d.FrontmatterKey, "timestamp")
-		if !matchesTimestamp(val, format) {
-			fs = append(fs, Finding{Path: d.Rel, Line: 1, Fixable: parseableTimestamp(val),
+		if !convention.TimestampMatches(val, format) {
+			fs = append(fs, Finding{Path: d.Rel, Line: 1, Fixable: timestampFixable(val),
 				Message: "timestamp '" + val + "' is not " + formatLabel(format)})
 		}
 	}
@@ -144,12 +144,12 @@ func checkOKF104(ctx *Context) []Finding {
 // (or `[^n]: [label](target)` when citations.style = "footnote").
 func checkOKF105(ctx *Context) []Finding {
 	var fs []Finding
-	entryRe := citationEntryRe(ctx.Config)
-	example := citationEntryExample(ctx.Config)
+	cits := convention.CitationsFor(ctx.Config)
+	example := cits.Example()
 	for _, d := range ctx.Bundle.Concepts {
-		start, lines, found := citationSectionLines(d, ctx.Config)
+		start, lines, found := cits.SectionLines(d)
 		if !found {
-			if ctx.Config.Citations.RequireWhenCited && hasCitationMarkers(d, ctx.Config) {
+			if ctx.Config.Citations.RequireWhenCited && cits.HasMarkers(d.Body) {
 				fs = append(fs, Finding{Path: d.Rel, Line: 1,
 					Message: "citation markers present but no '" + ctx.Config.Citations.Heading + "' section"})
 			}
@@ -161,13 +161,12 @@ func checkOKF105(ctx *Context) []Finding {
 			if line == "" {
 				continue
 			}
-			m := entryRe.FindStringSubmatch(line)
-			if m == nil {
+			n, ok := cits.Entry(line)
+			if !ok {
 				fs = append(fs, Finding{Path: d.Rel, Line: start + i,
 					Message: "malformed citation; expected '" + example + "'"})
 				continue
 			}
-			n, _ := strconv.Atoi(m[1])
 			if n != expected {
 				fs = append(fs, Finding{Path: d.Rel, Line: start + i, Fixable: true,
 					Message: fmt.Sprintf("citation numbered [%d]; expected [%d]", n, expected)})
