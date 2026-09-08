@@ -11,6 +11,7 @@ import (
 
 	"github.com/sigma/okf-tools/internal/bundle"
 	"github.com/sigma/okf-tools/internal/config"
+	"github.com/sigma/okf-tools/internal/convention"
 )
 
 // New scaffolds a conformant concept page (frontmatter + a Citations stub),
@@ -49,7 +50,7 @@ func New(w io.Writer, args []string) (int, error) {
 	}
 
 	base := filepath.Base(target)
-	if cfg.Filenames.Case == "kebab" && !isKebab(base) {
+	if cfg.Filenames.Case == "kebab" && !convention.IsKebabFilename(base) {
 		return 1, fmt.Errorf("filename %q is not kebab-case; rename or set filenames.case", base)
 	}
 
@@ -105,17 +106,6 @@ func scaffold(typ, title string) string {
 	b.WriteString("# Citations\n")
 	return b.String()
 }
-
-var kebabName = func(s string) bool {
-	for _, r := range s {
-		if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-') {
-			return false
-		}
-	}
-	return s != "" && !strings.HasPrefix(s, "-") && !strings.HasSuffix(s, "-") && !strings.Contains(s, "--")
-}
-
-func isKebab(base string) bool { return kebabName(strings.TrimSuffix(base, ".md")) }
 
 func titleFromStem(stem string) string {
 	words := strings.FieldsFunc(stem, func(r rune) bool { return r == '-' || r == '_' })

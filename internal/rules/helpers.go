@@ -1,9 +1,6 @@
 package rules
 
 import (
-	"regexp"
-	"strings"
-
 	"github.com/sigma/okf-tools/internal/bundle"
 	"github.com/sigma/okf-tools/internal/convention"
 	"gopkg.in/yaml.v3"
@@ -24,13 +21,6 @@ func fmScalar(node *yaml.Node, key string) (val string, found bool) {
 		}
 	}
 	return "", false
-}
-
-var kebabRe = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
-
-// isKebabName reports whether a filename's stem is lowercase-hyphenated.
-func isKebabName(name string) bool {
-	return kebabRe.MatchString(strings.TrimSuffix(name, ".md"))
 }
 
 // unambiguousWikilinkTarget returns the single concept a wikilink names, or nil
