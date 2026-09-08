@@ -20,6 +20,9 @@ type bin struct {
 	hasGroup bool
 	cost     int
 	units    []unit
+	// assertsContent records that one of the accepted units is its node's first
+	// content unit, which makes this transaction the start of the tab's rewrite.
+	assertsContent bool
 }
 
 // unit is an accumulated AtomicUnit reduced to what Execute needs.
@@ -38,16 +41,21 @@ func (bn *bin) Add(u publish.AtomicUnit) bool {
 		bn.group, bn.hasGroup = u.Group, true
 	}
 	bn.cost += c
+	bn.assertsContent = bn.assertsContent || u.AssertsContent
 	bn.units = append(bn.units, unit{payload: u.Payload, refs: u.Refs, anchors: u.Anchors})
 	return true
 }
 
 func (bn *bin) Build() publish.Transaction {
-	return &Transaction{group: bn.group, units: bn.units}
+	return &Transaction{group: bn.group, units: bn.units, assertsContent: bn.assertsContent}
 }
 
 // Transaction is one sealed batchUpdate's worth of work.
 type Transaction struct {
 	group publish.GroupKey
 	units []unit
+	// assertsContent marks this transaction as the start of the node's content
+	// assertion, so Execute restarts the tab's accumulation here instead of adding
+	// to whatever a previous run of the same Backend left in pending.
+	assertsContent bool
 }
