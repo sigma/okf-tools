@@ -1,4 +1,4 @@
-package main
+package publishcmd
 
 import (
 	"strings"
@@ -26,8 +26,7 @@ func (b *syncBuf) String() string {
 
 func newTestProgress(label string) (*progress, *syncBuf) {
 	buf := &syncBuf{}
-	p := newProgress(label)
-	p.out = buf
+	p := newProgress(buf, label)
 	return p, buf
 }
 
