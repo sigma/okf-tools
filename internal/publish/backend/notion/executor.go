@@ -64,7 +64,7 @@ func (b *Backend) create(ctx context.Context, t *Transaction, r backend.Resolver
 	if err != nil {
 		return err
 	}
-	hosted := hostedAnchorNames(t.Children)
+	hosted := backend.HostedAnchors(t.Children, func(cb childBlock) []publish.AnchorName { return cb.anchors })
 	postChildren, deferred := deferSelfHostedCites(t.Children, hosted)
 	children, err := b.childrenJSON(postChildren, r)
 	if err != nil {
@@ -190,7 +190,7 @@ func (b *Backend) update(ctx context.Context, t *Transaction, r backend.Resolver
 				return fmt.Errorf("notion: replace content of %s: %w", target, err)
 			}
 		}
-		hosted := hostedAnchorNames(t.Children)
+		hosted := backend.HostedAnchors(t.Children, func(cb childBlock) []publish.AnchorName { return cb.anchors })
 		appendChildren, deferred := deferSelfHostedCites(t.Children, hosted)
 		children, err := b.childrenJSON(appendChildren, r)
 		if err != nil {
@@ -770,21 +770,6 @@ func deferSelfHostedCites(children []childBlock, hosted map[publish.AnchorName]b
 		return children, nil
 	}
 	return out, deferred
-}
-
-// hostedAnchorNames collects the set of anchor names the transaction's own children
-// host, or nil when it hosts none.
-func hostedAnchorNames(children []childBlock) map[publish.AnchorName]bool {
-	var hosted map[publish.AnchorName]bool
-	for _, cb := range children {
-		for _, a := range cb.anchors {
-			if hosted == nil {
-				hosted = map[publish.AnchorName]bool{}
-			}
-			hosted[a] = true
-		}
-	}
-	return hosted
 }
 
 // dropCites returns cb with every run citing a self-hosted anchor removed, and

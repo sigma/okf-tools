@@ -68,3 +68,55 @@ func WithOverlay(base Resolver, local map[publish.SymbolicID]publish.BackendID) 
 	}
 	return overlayResolver{local: local, base: base}
 }
+
+// HostedAnchors collects the set of anchor names a transaction hosts itself, given
+// the transaction's ordered write targets and how to read one's declared anchors.
+// It returns nil when the transaction hosts none, so the common case is a cheap
+// nil check rather than an empty map.
+//
+// Every backend needs this set, because the optimizer SUPPRESSES a Ref that the
+// same transaction satisfies: such a Ref never reaches the transport's readiness
+// gate, so the resolution table cannot answer it mid-Execute and the backend is
+// silently obliged to answer it locally. That obligation used to be discharged by
+// three separate collectors over three payload types, which is how the same defect
+// recurred once per medium — sigma/okf-tools#89 and #102 on Notion, #76 on the
+// filesystem export, #170 and #171 on Google Docs.
+func HostedAnchors[T any](hosts []T, anchorsOf func(T) []publish.AnchorName) map[publish.AnchorName]bool {
+	var hosted map[publish.AnchorName]bool
+	for _, h := range hosts {
+		for _, a := range anchorsOf(h) {
+			if hosted == nil {
+				hosted = map[publish.AnchorName]bool{}
+			}
+			hosted[a] = true
+		}
+	}
+	return hosted
+}
+
+// MintOverlay layers a transaction's own hosted anchors over a base Resolver,
+// minting each one's mid-Execute id through mint. It is the companion to
+// HostedAnchors: together they are the whole of "what does a self-hosted anchor
+// resolve to while this transaction is executing", leaving each backend only the
+// medium-specific answer.
+//
+// What mint returns differs by how the medium assigns ids, and that difference is
+// the entire per-backend part. The filesystem export knows its ids up front and
+// mints the real one, so one pass suffices. Notion and Google Docs cannot: a block
+// id or a headingId is server-minted and unknowable until after the write, so they
+// mint a placeholder here — enough for the citation to render and the transaction
+// not to be rejected as unresolvable — and reconcile it to the real id afterwards,
+// positionally for Notion, by rendered offset for Docs.
+//
+// An empty hosted set returns base unwrapped, so a transaction hosting no anchors
+// pays nothing.
+func MintOverlay(base Resolver, hosted map[publish.AnchorName]bool, mint func(publish.AnchorName) publish.BackendID) Resolver {
+	if len(hosted) == 0 {
+		return base
+	}
+	local := make(map[publish.SymbolicID]publish.BackendID, len(hosted))
+	for name := range hosted {
+		local[publish.AnchorRef(name)] = mint(name)
+	}
+	return WithOverlay(base, local)
+}
