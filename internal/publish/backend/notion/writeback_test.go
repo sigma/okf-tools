@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/sigma/okf-tools/internal/publish"
+	"github.com/sigma/okf-tools/internal/publish/backend"
 	"github.com/sigma/okf-tools/internal/publish/graph"
 	"github.com/sigma/okf-tools/internal/publish/optimize"
 	"github.com/sigma/okf-tools/internal/publish/transport"
@@ -331,5 +332,119 @@ func TestInterruptedPublishLeavesFinishedPagesDescribed(t *testing.T) {
 	}
 	if !recorded {
 		t.Error("the finished page's hash was never recorded — an interrupted run recorded nothing")
+	}
+}
+
+// TestWriteBackForgetsDeletedSubpage: a subpage that left the bundle is dropped
+// from the subtree map of the row that recorded it, so the next scan does not
+// reconstruct a page the run just archived (sigma/okf-tools#189).
+//
+// Archiving the page is only half of a delete. A cluster subpage has no row of its
+// own — its {id, hash} lives in its OWNING ROW's `hashes` map, which the archive
+// does not touch — so a run that stopped at the PATCH left the map naming a page
+// that no longer exists. The next ScanStored folded it back in as a live node,
+// generation saw an orphan again, and the run re-archived it: a bundle that had
+// ever lost a subpage never reached a true noop again.
+func TestWriteBackForgetsDeletedSubpage(t *testing.T) {
+	f := newFakeNotion()
+	// The row is served by both the query (what the scan reads) and GET /pages (what
+	// the read-modify-write reads); the fake keeps the two canned separately.
+	props := map[string]any{
+		"path": richProp("index.md"),
+		"hashes": richProp(mustJSON(t, map[string]subtreeEntry{
+			"retired.md":       {ID: "page-retired", Hash: "hR"},
+			"retired/child.md": {ID: "page-child", Hash: "hC"},
+			"kept.md":          {ID: "page-kept", Hash: "hK"},
+		})),
+	}
+	f.rows = []map[string]any{row("page-root", props)}
+	f.pageProps["page-root"] = props
+	be := newServer(t, f)
+	ctx := context.Background()
+
+	// The scan is where the backend learns WHICH row records a given subpath. Nothing
+	// else can tell it: the deleted node's provenance carries no owner (a delete
+	// writes nothing, so it stamps nothing), and the page itself is already archived.
+	if _, err := be.Scan(ctx, backend.ScanStored); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	// A subtree root and the descendant its single archive took with it. Both are
+	// recorded in the same row, so forgetting them is one read-modify-write.
+	prov := publish.Provenance{Deleted: []publish.SymbolicID{"node:retired.md", "node:retired/child.md"}}
+	if err := be.WriteBack(ctx, prov); err != nil {
+		t.Fatalf("WriteBack: %v", err)
+	}
+
+	patches := f.requestsTo(http.MethodPatch, "/pages/page-root")
+	if len(patches) != 1 {
+		t.Fatalf("want 1 subtree PATCH on the recording row, got %d", len(patches))
+	}
+	var pruned map[string]subtreeEntry
+	if err := json.Unmarshal([]byte(columnText(t, digInto(t, patches[0].Body, "properties"), "hashes")), &pruned); err != nil {
+		t.Fatalf("hashes column not valid JSON: %v", err)
+	}
+	for _, gone := range []string{"retired.md", "retired/child.md"} {
+		if _, still := pruned[gone]; still {
+			t.Errorf("the archived subpage %s is still recorded: %v", gone, pruned)
+		}
+	}
+	if e := pruned["kept.md"]; e.ID != "page-kept" {
+		t.Errorf("forgetting one subpage dropped the row's other entries: %v", pruned)
+	}
+}
+
+// TestWriteBackDoesNotPruneAnArchivedRow: when the recording ROW is itself one of
+// the run's deletions — a whole cluster leaving the bundle — its subtree map is not
+// pruned. The row is archived, so its map is gone with it; PATCHing it would be a
+// write against an archived page, which is at best wasted and at worst refused.
+func TestWriteBackDoesNotPruneAnArchivedRow(t *testing.T) {
+	f := newFakeNotion()
+	props := map[string]any{
+		"path": richProp("cluster/index.md"),
+		"hashes": richProp(mustJSON(t, map[string]subtreeEntry{
+			"cluster/a.md": {ID: "page-a", Hash: "hA"},
+		})),
+	}
+	f.rows = []map[string]any{row("page-cluster", props)}
+	f.pageProps["page-cluster"] = props
+	be := newServer(t, f)
+	ctx := context.Background()
+	if _, err := be.Scan(ctx, backend.ScanStored); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	// The whole cluster goes: the row, and the subpage its single archive covers.
+	prov := publish.Provenance{Deleted: []publish.SymbolicID{
+		"node:cluster/index.md", "node:cluster/a.md",
+	}}
+	before := f.writeCount()
+	if err := be.WriteBack(ctx, prov); err != nil {
+		t.Fatalf("WriteBack: %v", err)
+	}
+	if got := f.writeCount() - before; got != 0 {
+		t.Errorf("forgetting entries of an archived row should write nothing, got %d writes", got)
+	}
+}
+
+// TestWriteBackForgetsNothingUnrecorded: a deleted TOP-LEVEL node has its own row,
+// which the archive removes from the data source's query results, so there is
+// nothing left to forget and write-back writes nothing.
+func TestWriteBackForgetsNothingUnrecorded(t *testing.T) {
+	f := newFakeNotion()
+	f.rows = []map[string]any{
+		row("page-a", map[string]any{"path": richProp("a.md"), "hash": richProp("hA")}),
+	}
+	be := newServer(t, f)
+	ctx := context.Background()
+	if _, err := be.Scan(ctx, backend.ScanStored); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	before := f.writeCount()
+	if err := be.WriteBack(ctx, publish.Provenance{Deleted: []publish.SymbolicID{"node:a.md"}}); err != nil {
+		t.Fatalf("WriteBack: %v", err)
+	}
+	if got := f.writeCount() - before; got != 0 {
+		t.Errorf("forgetting a node no subtree map records should write nothing, got %d writes", got)
 	}
 }

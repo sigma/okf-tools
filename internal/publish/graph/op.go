@@ -65,6 +65,20 @@ type Op struct {
 	// target node, its blocks carry first-class Ref inlines and declared anchors.
 	// Set only for SetContent.
 	Doc *publish.Document
+	// Covers are the other vanished nodes this op's single archive removes: the
+	// descendants of a vanished subtree root, which get no DeleteNode of their own
+	// because one archive on the root takes the whole subtree. Set only for
+	// DeleteNode, and empty for a standalone orphan.
+	//
+	// They are named rather than left implicit because archiving a node and
+	// FORGETTING it are different obligations, and only the first is transitive: a
+	// destination that records a node somewhere other than the node itself — Notion's
+	// cluster subpages, recorded in their owning row's subtree map — has to drop each
+	// covered node's record individually, or the next scan reconstructs pages that are
+	// already gone (sigma/okf-tools#189). Generation is the only stage that can say
+	// which they are: it holds the scanned hierarchy, and by write-back time there is
+	// one archived id and no tree.
+	Covers []publish.SymbolicID
 	// Refs are the symbolic ids this op embeds and the transport must resolve
 	// before executing it — "node:<path>" and "anchor:<name>". Aggregated from
 	// Doc's blocks. Set only for SetContent.

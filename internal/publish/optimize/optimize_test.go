@@ -447,6 +447,51 @@ func TestDeleteExposesTarget(t *testing.T) {
 	if len(d.Txns[0].Produces) != 0 {
 		t.Errorf("delete produces nothing, got %v", d.Txns[0].Produces)
 	}
+	// A delete produces no node, but it does REMOVE one, and that is the only
+	// neutral trace of the archive anything downstream of the backend can read: the
+	// sealed Transaction is opaque, and the NodeStamp is zero. Without it write-back
+	// cannot be told what left, and a destination that records the node elsewhere
+	// keeps naming it forever (sigma/okf-tools#189).
+	if !slices.Equal(d.Txns[0].Deletes, []publish.SymbolicID{node("old.md")}) {
+		t.Errorf("delete should report node:old.md as removed, Deletes = %v", d.Txns[0].Deletes)
+	}
+}
+
+// TestDeleteReportsWhatItCovers: a subtree root's archive names every node it
+// removes, not just the one it addresses — the covered descendants get no
+// transaction of their own, so this is the only place they are ever mentioned.
+func TestDeleteReportsWhatItCovers(t *testing.T) {
+	g := &graph.Graph{Ops: []*graph.Op{
+		{Kind: graph.DeleteNode, Node: node("dead/index.md"),
+			Covers: []publish.SymbolicID{node("dead/a.md"), node("dead/b.md")}},
+	}}
+	be := fake.New()
+
+	d := optimize.Optimize(g, be, be)
+	if len(d.Txns) != 1 {
+		t.Fatalf("want 1 txn, got %d", len(d.Txns))
+	}
+	want := []publish.SymbolicID{node("dead/a.md"), node("dead/b.md"), node("dead/index.md")}
+	if !slices.Equal(d.Txns[0].Deletes, want) {
+		t.Errorf("Deletes = %v, want %v (the root and everything under it)", d.Txns[0].Deletes, want)
+	}
+}
+
+// TestNonDeleteReportsNoDeletes: an ordinary write names nothing as removed, so a
+// backend cannot mistake a rewrite for a deletion.
+func TestNonDeleteReportsNoDeletes(t *testing.T) {
+	g := &graph.Graph{Ops: []*graph.Op{
+		{Kind: graph.CreateNode, Node: node("a.md")},
+	}}
+	be := fake.New()
+
+	d := optimize.Optimize(g, be, be)
+	if len(d.Txns) != 1 {
+		t.Fatalf("want 1 txn, got %d", len(d.Txns))
+	}
+	if len(d.Txns[0].Deletes) != 0 {
+		t.Errorf("a create removes nothing, got %v", d.Txns[0].Deletes)
+	}
 }
 
 // TestParentBeforeChildEdge: a child create referencing a parent created this run

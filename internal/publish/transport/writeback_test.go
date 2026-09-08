@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/sigma/okf-tools/internal/publish"
@@ -76,10 +77,16 @@ func TestTransportWritesBackProvenance(t *testing.T) {
 	}
 }
 
-// TestTransportNoWriteBackWhenNothingWritten: a DeleteNode-only run (no content
-// hashes) records no node provenance, so the transport does not call WriteBack —
-// the near-noop / archive-only path leaves the mirror's columns untouched.
-func TestTransportNoWriteBackWhenNothingWritten(t *testing.T) {
+// TestTransportWritesBackDeletes: a DeleteNode-only run writes no node content,
+// but it does remove a node, and the transport tells the backend so.
+//
+// This inverts the earlier rule that an archive-only run calls WriteBack at all.
+// "Wrote nothing, so record nothing" is true of every column a node writes about
+// ITSELF, and false of any state that names the node from somewhere else: leaving
+// that alone is what made a Notion cluster subpage come back from its owning row's
+// subtree map on every later run (sigma/okf-tools#189). Forgetting is a write-back
+// obligation like any other.
+func TestTransportWritesBackDeletes(t *testing.T) {
 	seed := publish.NewCurrentState(
 		map[publish.SymbolicID]publish.BackendID{"node:old.md": "page-old"},
 		nil, nil,
@@ -87,9 +94,10 @@ func TestTransportNoWriteBackWhenNothingWritten(t *testing.T) {
 	be := fake.New(fake.WithScan(seed))
 	dag := &optimize.TxnDAG{Txns: []publish.PackedTxn{
 		{
-			Txn:   fakeTxn(be, "node:old.md"),
-			Group: "node:old.md",
-			Refs:  []publish.SymbolicID{"node:old.md"}, // scan-seeded archive target
+			Txn:     fakeTxn(be, "node:old.md"),
+			Group:   "node:old.md",
+			Refs:    []publish.SymbolicID{"node:old.md"}, // scan-seeded archive target
+			Deletes: []publish.SymbolicID{"node:old.md"},
 			// no Hash: a DeleteNode writes no content.
 		},
 	}}
@@ -97,8 +105,40 @@ func TestTransportNoWriteBackWhenNothingWritten(t *testing.T) {
 	if _, err := New(be).Run(context.Background(), dag, seed); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+	got := be.WrittenBack()
+	if len(got) != 1 {
+		t.Fatalf("archive-only run should write back once, got %d write-backs", len(got))
+	}
+	if len(got[0].Nodes) != 0 {
+		t.Errorf("an archive writes no node content, so it records none, got %v", got[0].Nodes)
+	}
+	if !slices.Equal(got[0].Deleted, []publish.SymbolicID{"node:old.md"}) {
+		t.Errorf("Deleted = %v, want [node:old.md]", got[0].Deleted)
+	}
+}
+
+// TestTransportNoWriteBackWhenNothingHappened: a run that neither wrote nor removed
+// a node calls WriteBack not at all — the near-noop path stays a true no-op.
+func TestTransportNoWriteBackWhenNothingHappened(t *testing.T) {
+	seed := publish.NewCurrentState(
+		map[publish.SymbolicID]publish.BackendID{"node:a.md": "page-a"},
+		nil, nil,
+	)
+	be := fake.New(fake.WithScan(seed))
+	dag := &optimize.TxnDAG{Txns: []publish.PackedTxn{
+		{
+			Txn:   fakeTxn(be, "node:a.md"),
+			Group: "node:a.md",
+			Refs:  []publish.SymbolicID{"node:a.md"},
+			// neither a Hash nor a Delete: nothing to record either way.
+		},
+	}}
+
+	if _, err := New(be).Run(context.Background(), dag, seed); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
 	if got := be.WrittenBack(); len(got) != 0 {
-		t.Errorf("archive-only run should write nothing back, got %d write-backs", len(got))
+		t.Errorf("a run that recorded nothing should write nothing back, got %d write-backs", len(got))
 	}
 }
 

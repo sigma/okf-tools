@@ -28,7 +28,14 @@ import (
 //     that is a row, which for a one-level cluster is the subpage's parent and for a
 //     nested one is further up (#141) — the distinction the parent-kind rule forces,
 //     since only a row carries the derived columns.
+//
+// It also FORGETS the run's deleted nodes, which is the same obligation read the
+// other way: a subpage's description outlives the subpage, so a delete that only
+// archived the page left the owning row still naming it (sigma/okf-tools#189).
 func (b *Backend) WriteBack(ctx context.Context, prov publish.Provenance) error {
+	if err := b.forget(ctx, prov.Deleted); err != nil {
+		return err
+	}
 	// Group subpages by their OWNING ROW so each row's subtree map is updated in one
 	// merged write, and collect the top-level nodes for their own-row writes.
 	subByOwner := map[publish.BackendID]map[string]subtreeEntry{}
@@ -98,17 +105,86 @@ func (b *Backend) WriteBack(ctx context.Context, prov publish.Provenance) error 
 	return nil
 }
 
-// mergeSubtree read-modify-writes an owning row's `hashes` subtree map: it reads the
-// current column, folds in the run's new/updated subpage entries, and PATCHes the
-// merged map back — so adding one subpage never clobbers the map's other members.
+// forget drops the run's deleted nodes from the subtree maps that recorded them,
+// so the next scan does not reconstruct a page this run just archived.
+//
+// Only a cluster subpage needs it. A top-level node IS a row, and archiving a row
+// takes it out of the data source's query results, so the record dies with the
+// page; a subpage's record lives in someone else's column and does not. A deleted
+// node the run's scan never saw in a subtree map — a top-level row, or an
+// unclaimed one — therefore has nothing to forget and costs no write.
+func (b *Backend) forget(ctx context.Context, deleted []publish.SymbolicID) error {
+	records := make([]record, 0, len(deleted))
+	archivedRows := map[string]bool{}
+	for _, node := range deleted {
+		if _, unclaimed := node.Unclaimed(); unclaimed {
+			// An unclaimed row is one no record ever named — that is what makes it
+			// unclaimed (#135). It has no repo path to look up, and reclaiming it needs
+			// no forgetting.
+			continue
+		}
+		r, recorded := b.recordOf(node.Rel())
+		if !recorded {
+			continue
+		}
+		if r.own {
+			archivedRows[r.row] = true
+		}
+		records = append(records, r)
+	}
+
+	byOwner := map[string][]string{}
+	for _, r := range records {
+		if r.own || archivedRows[r.row] {
+			// Nothing to prune. A node that IS its row has its description archived with
+			// it, and so does every entry of a row this same run is archiving — a whole
+			// cluster leaving the bundle takes both. Writing to an archived page would be
+			// a wasted request at best, and Notion may refuse it outright.
+			continue
+		}
+		byOwner[r.row] = append(byOwner[r.row], r.subpath)
+	}
+	owners := make([]string, 0, len(byOwner))
+	for id := range byOwner {
+		owners = append(owners, id)
+	}
+	sort.Strings(owners)
+	for _, ownerID := range owners {
+		gone := byOwner[ownerID]
+		if err := b.updateSubtree(ctx, ownerID, func(m map[string]subtreeEntry) {
+			for _, subpath := range gone {
+				delete(m, subpath)
+			}
+		}); err != nil {
+			return fmt.Errorf("notion: write-back: forget %v from %s: %w", gone, ownerID, err)
+		}
+	}
+	return nil
+}
+
+// mergeSubtree folds the run's new/updated subpage entries into an owning row's
+// `hashes` subtree map — so adding one subpage never clobbers the map's other
+// members.
 func (b *Backend) mergeSubtree(ctx context.Context, ownerID string, updates map[string]subtreeEntry) error {
+	return b.updateSubtree(ctx, ownerID, func(m map[string]subtreeEntry) {
+		for subpath, e := range updates {
+			m[subpath] = e
+		}
+	})
+}
+
+// updateSubtree read-modify-writes an owning row's `hashes` subtree map: it reads
+// the current column, applies edit to it, and PATCHes the result back. Adding an
+// entry and removing one are the same operation on the same column and differ only
+// in edit, so they share the read, the encode, and the run's memory of what it last
+// wrote there — a prune that re-read the column would undo a merge this same run
+// had just made, and vice versa.
+func (b *Backend) updateSubtree(ctx context.Context, ownerID string, edit func(map[string]subtreeEntry)) error {
 	merged, err := b.currentSubtree(ctx, ownerID)
 	if err != nil {
 		return err
 	}
-	for subpath, e := range updates {
-		merged[subpath] = e
-	}
+	edit(merged)
 	enc, err := json.Marshal(merged)
 	if err != nil {
 		return fmt.Errorf("encode subtree map: %w", err)
@@ -145,6 +221,24 @@ func (b *Backend) currentSubtree(ctx context.Context, ownerID string) (map[strin
 		return nil, err
 	}
 	return storedSubtree(plainText(current["hashes"]), ownerID)
+}
+
+// rememberRecorders records what the run's scan learned about where each node is
+// described — the pairing forget needs and nothing else can supply. A scan replaces
+// it wholesale: it is a description of the destination as that scan found it, not an
+// accumulation across scans.
+func (b *Backend) rememberRecorders(recordedBy map[string]record) {
+	b.subtreeMu.Lock()
+	b.recordedBy = maps.Clone(recordedBy)
+	b.subtreeMu.Unlock()
+}
+
+// recordOf reports where the node at path is described, per the run's scan.
+func (b *Backend) recordOf(path string) (record, bool) {
+	b.subtreeMu.Lock()
+	defer b.subtreeMu.Unlock()
+	r, ok := b.recordedBy[path]
+	return r, ok
 }
 
 // rememberSubtree records the map this run just wrote to an owning row, so the next

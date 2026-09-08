@@ -326,26 +326,38 @@ func runFixture(t *testing.T, newSubject Factory, f Fixture) {
 		// survival is a question for the destination, which only Snapshot can read.
 	})
 
-	// NOT YET ASSERTED: that the delete STICKS — that the run after a delete has
-	// nothing left to do. It does not hold on the Notion backend today
-	// (sigma/okf-tools#189), and the reason is worth recording where the next person
-	// will look.
-	//
-	// A subpage is recorded in its OWNING ROW's `hashes` subtree map, and
-	// mergeSubtree only ever adds and updates entries — it never removes one. The
-	// archive PATCHes the page itself and leaves the owner's map alone, so the next
-	// ScanStored reconstructs the archived page from that map, generation sees an
-	// orphan again, and the run re-archives it. Forever: a bundle that has ever lost
-	// a subpage never reaches a true noop again, and pays one pointless write per
-	// run for it. Re-enabling the assertion below is how #189 reproduces.
-	//
-	// Fixing it means the deleted node reaching write-back, which it currently
-	// cannot: Provenance carries only nodes that were WRITTEN, a delete produces
-	// none, and Transaction is opaque to the transport, so nothing downstream of the
-	// backend knows an archive happened. Either the backend remembers what it
-	// archived and prunes the owner's map in its own WriteBack, or Provenance grows
-	// a deleted set. Until then this property would fail honestly rather than pass
-	// vacuously, so it is named here instead of written green.
+	t.Run("a delete sticks", func(t *testing.T) {
+		if f.Removable == "" {
+			t.Skip("fixture names no removable page")
+		}
+		s := newSubject(t)
+		b := bundletest.Load(t, f.Files)
+		publishBundleWith(t, s, b, f)
+
+		// A backend whose unchanged re-run is not a noop cannot say anything about
+		// whether a DELETE stuck: it rewrites everything every run regardless, so the
+		// assertion below would fail for a reason that has nothing to do with #189.
+		// Establish the baseline before spending the delete on it.
+		requireSteadyNoop(t, s, b, "a delete's durability")
+
+		reduced := bundletest.Load(t, without(f.Files, f.Removable))
+		publishBundleWith(t, s, reduced, f)
+
+		// The run that removed the page is not the interesting one — the NEXT one is.
+		// A destination that archives the orphan but keeps naming it in its own state
+		// rediscovers the same orphan every run afterwards, re-archives it, and never
+		// reaches a true noop again: one pointless write per run, forever, for a page
+		// that left the bundle once (sigma/okf-tools#189).
+		steady, err := pipeline.Run(context.Background(), s.Backend, reduced)
+		if err != nil {
+			t.Fatalf("steady re-run after the delete failed: %v", err)
+		}
+		if steady.TxnCount != 0 {
+			t.Errorf("the run after removing %s still executed %d transaction(s); "+
+				"the destination has not forgotten the page it deleted",
+				f.Removable, steady.TxnCount)
+		}
+	})
 
 	t.Run("republish is a near-noop", func(t *testing.T) {
 		s := newSubject(t)
@@ -368,14 +380,7 @@ func runFixture(t *testing.T, newSubject Factory, f Fixture) {
 		b := bundletest.Load(t, f.Files)
 		publishBundleWith(t, s, b, f)
 
-		steady, err := pipeline.Run(context.Background(), s.Backend, b)
-		if err != nil {
-			t.Fatalf("steady re-run failed: %v", err)
-		}
-		if steady.TxnCount != 0 {
-			t.Skipf("this backend's unchanged re-run is not a noop (%d txns), so a forced one proves nothing",
-				steady.TxnCount)
-		}
+		requireSteadyNoop(t, s, b, "a forced one")
 
 		forced, err := pipeline.Run(context.Background(), s.Backend, b, pipeline.WithForceRewrite())
 		if err != nil {
@@ -397,6 +402,24 @@ func runFixture(t *testing.T, newSubject Factory, f Fixture) {
 				"--- first\n%s\n--- second\n%s", before, after)
 		}
 	})
+}
+
+// requireSteadyNoop skips the calling property unless publishing b again changes
+// nothing. Two properties rest on the same precondition — that this backend HAS a
+// steady state — and neither can distinguish its own failure from a backend that
+// rewrites the world every run, so both establish it the same way rather than
+// reporting the same non-finding twice. what names the property, so the skip says
+// which question went unanswered.
+func requireSteadyNoop(t *testing.T, s Subject, b *bundle.Bundle, what string) {
+	t.Helper()
+	steady, err := pipeline.Run(context.Background(), s.Backend, b)
+	if err != nil {
+		t.Fatalf("steady re-run failed: %v", err)
+	}
+	if steady.TxnCount != 0 {
+		t.Skipf("this backend's unchanged re-run is not a noop (%d txns), so %s proves nothing",
+			steady.TxnCount, what)
+	}
 }
 
 // republish publishes the fixture twice through one subject and reports what

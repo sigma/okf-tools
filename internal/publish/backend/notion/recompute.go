@@ -39,31 +39,20 @@ func (b *Backend) scanRecompute(ctx context.Context) (*publish.CurrentState, err
 		return nil, err
 	}
 
-	nodeIDs := map[publish.SymbolicID]publish.BackendID{}
-	hashes := map[publish.SymbolicID]publish.Hash{}
-	propHashes := map[publish.SymbolicID]publish.Hash{}
-	anchorIDs := map[publish.AnchorName]publish.BackendID{}
-	owner := map[string]string{}
-	claim := func(path, by string) error {
-		if prev, dup := owner[path]; dup {
-			return fmt.Errorf("notion: scan: path %q claimed by two pages (%s and %s)", path, prev, by)
-		}
-		owner[path] = by
-		return nil
-	}
+	t := newScanTables()
+	nodeIDs, hashes, propHashes, anchorIDs := t.nodeIDs, t.hashes, t.propHashes, t.anchorIDs
 
 	for _, row := range rows {
 		path := plainText(row.Properties["path"])
 		if path == "" {
 			// Unclaimed: no path, so no node — reclaimed rather than walked (#135).
-			markUnclaimed(nodeIDs, row.ID)
+			t.markUnclaimed(row.ID)
 			continue
 		}
-		if err := claim(path, row.ID); err != nil {
+		node, err := t.addRow(path, row.ID)
+		if err != nil {
 			return nil, err
 		}
-		node := publish.NodeRef(path)
-		nodeIDs[node] = publish.BackendID(row.ID)
 
 		blocks, err := b.listLiveBlocks(ctx, row.ID)
 		if err != nil {
@@ -92,29 +81,16 @@ func (b *Backend) scanRecompute(ctx context.Context) (*publish.CurrentState, err
 		byID, byTitle := subtreeIndexes(stored)
 		walk := &subtreeWalk{
 			be: b, rowID: row.ID, stored: stored, byID: byID, byTitle: byTitle,
-			claim: claim, nodeIDs: nodeIDs, hashes: hashes, propHashes: propHashes,
+			claim: t.claim, nodeIDs: nodeIDs, hashes: hashes, propHashes: propHashes,
 			anchorIDs: anchorIDs,
 		}
 		if err := walk.descend(ctx, row.ID, blocks); err != nil {
 			return nil, err
 		}
-		for subpath, e := range stored {
-			if err := claim(subpath, "subtree of "+row.ID); err != nil {
-				return nil, err
-			}
-			sub := publish.NodeRef(subpath)
-			if e.ID != "" {
-				nodeIDs[sub] = publish.BackendID(e.ID)
-			}
-			if e.Hash != "" {
-				hashes[sub] = publish.Hash(e.Hash)
-			}
-			if e.PropHash != "" {
-				propHashes[sub] = publish.Hash(e.PropHash)
-			}
-			// Not surfaced by the live walk, so there are no live children to validate
-			// against; fall back to the record, exactly as the id and hash do.
-			foldAnchors(e.Anchors, anchorIDs)
+		// Whatever the live walk did not surface falls back to the record, exactly as
+		// the id and hash do — the same fold the cheap mode applies to the whole map.
+		if err := t.foldSubtree(stored, row.ID); err != nil {
+			return nil, err
 		}
 
 		// Anchors: a row carrying an anchors column is the glossary-role row. Its
@@ -140,7 +116,8 @@ func (b *Backend) scanRecompute(ctx context.Context) (*publish.CurrentState, err
 		}
 	}
 
-	return publish.NewCurrentStateWithProps(nodeIDs, hashes, propHashes, anchorIDs), nil
+	b.rememberRecorders(t.recordedBy)
+	return t.currentState(), nil
 }
 
 // seedRecordedAnchors seeds a glossary row's recorded anchor map into anchorIDs and

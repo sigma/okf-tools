@@ -502,12 +502,33 @@ func orphanOps(docs []*bundle.Doc, cs *publish.CurrentState, ar *areas.Registry)
 	}
 	h := pathHierarchy(scanned, ar)
 
-	var ops []*Op
+	// Every vanished node belongs to exactly one vanished ROOT — itself, or the
+	// highest vanished ancestor above it. The root is what gets archived; the rest
+	// are recorded on it as covered, so a backend can forget them even though it
+	// never sees an op of their own.
+	covers := map[publish.SymbolicID][]publish.SymbolicID{}
+	var roots []publish.SymbolicID
 	for id := range vanished {
-		if p := h.parent(id.Rel()); p != "" && vanished[p] {
-			continue // covered by the ancestor's subtree deletion
+		root := id
+		for {
+			p := h.parent(root.Rel())
+			if p == "" || !vanished[p] {
+				break
+			}
+			root = p
 		}
-		ops = append(ops, &Op{Kind: DeleteNode, Node: id})
+		if root == id {
+			roots = append(roots, id)
+			continue
+		}
+		covers[root] = append(covers[root], id)
+	}
+
+	var ops []*Op
+	for _, id := range roots {
+		covered := covers[id]
+		sort.Slice(covered, func(i, j int) bool { return covered[i] < covered[j] })
+		ops = append(ops, &Op{Kind: DeleteNode, Node: id, Covers: covered})
 	}
 	for _, id := range unclaimed {
 		ops = append(ops, &Op{Kind: DeleteNode, Node: id})

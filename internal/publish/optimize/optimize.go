@@ -68,6 +68,7 @@ const (
 type taggedUnit struct {
 	unit     publish.AtomicUnit
 	produces []publish.SymbolicID
+	deletes  []publish.SymbolicID
 	target   publish.SymbolicID
 	phase    int
 	seq      int
@@ -202,10 +203,15 @@ func tokenize(g *graph.Graph, tk backend.Tokenizer) []taggedUnit {
 			u.Group = publish.GroupKey(op.Node)
 			u.Refs = []publish.SymbolicID{op.Node}
 			out = append(out, taggedUnit{
-				unit:   u,
-				target: op.Node,
-				phase:  phaseDelete,
-				seq:    next(),
+				unit: u,
+				// A delete produces nothing and stamps nothing, so naming what it REMOVES
+				// is the only way the fact survives sealing (#189). One archive takes a
+				// whole subtree, so what it removes is the node AND everything the op says
+				// it covers.
+				deletes: append([]publish.SymbolicID{op.Node}, op.Covers...),
+				target:  op.Node,
+				phase:   phaseDelete,
+				seq:     next(),
 			})
 		}
 	}
@@ -314,6 +320,7 @@ type accumulator struct {
 	group    publish.GroupKey
 	refs     []publish.SymbolicID
 	produces []publish.SymbolicID
+	deletes  []publish.SymbolicID
 	anchors  []publish.AnchorName
 	// NodeStamp is the write-back provenance of the bin's node. Every unit of one node
 	// carries the same stamp; the accumulator keeps the first non-empty field it sees
@@ -330,6 +337,7 @@ func (a *accumulator) add(tu taggedUnit) {
 	a.refs = append(a.refs, tu.unit.Refs...)
 	a.anchors = append(a.anchors, tu.unit.Anchors...)
 	a.produces = append(a.produces, tu.produces...)
+	a.deletes = append(a.deletes, tu.deletes...)
 	a.NodeStamp.FillMissing(tu.NodeStamp)
 }
 
@@ -365,6 +373,7 @@ func (a *accumulator) seal(txn publish.Transaction) publish.PackedTxn {
 		Refs:      dedupSorted(exposed),
 		Anchors:   dedupSorted(a.anchors),
 		Produces:  dedupSorted(a.produces),
+		Deletes:   dedupSorted(a.deletes),
 		NodeStamp: a.NodeStamp,
 	}
 }

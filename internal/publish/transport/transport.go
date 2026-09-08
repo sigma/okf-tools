@@ -194,15 +194,15 @@ func (t *Transport) Run(ctx context.Context, dag *optimize.TxnDAG, seed *publish
 // obligation of the execution path, so the transport owns triggering it; the
 // backend that knows its derived-column shape performs the actual writes.
 //
-// A backend that does not implement WriteBacker, and a group that wrote no node
-// content (a DeleteNode archive, whose provenance is empty), write nothing.
+// A backend that does not implement WriteBacker, and a group that neither wrote a
+// node's content nor removed one, write nothing.
 func (t *Transport) writeBack(ctx context.Context, dag *optimize.TxnDAG, tbl *table, idxs []int) error {
 	wb, ok := t.exec.(backend.WriteBacker)
 	if !ok {
 		return nil
 	}
 	prov := buildProvenance(dag, tbl, idxs)
-	if len(prov.Nodes) == 0 {
+	if len(prov.Nodes) == 0 && len(prov.Deleted) == 0 {
 		return nil
 	}
 	if err := wb.WriteBack(ctx, prov); err != nil {
@@ -218,10 +218,17 @@ func (t *Transport) writeBack(ctx context.Context, dag *optimize.TxnDAG, tbl *ta
 // routing, and any hosted anchors. Transactions of the same node (a fused create
 // plus its content overflow) merge into one record: the hash/parent agree, and the
 // anchor maps union.
+//
+// A transaction that REMOVED nodes contributes them to Deleted instead — the other
+// half of the same record, since a backend has to stop naming a node as
+// deliberately as it started (#189). Both halves are assembled here because both
+// are read off the executed transactions; only the removals need no resolution,
+// their whole content being the symbolic id that is going away.
 func buildProvenance(dag *optimize.TxnDAG, tbl *table, idxs []int) publish.Provenance {
 	prov := publish.Provenance{Nodes: map[publish.SymbolicID]publish.NodeProvenance{}}
 	for _, i := range idxs {
 		txn := dag.Txns[i]
+		prov.Deleted = append(prov.Deleted, txn.Deletes...)
 		if txn.Hash == "" {
 			continue // no node content written (e.g. a DeleteNode) — nothing to record
 		}
