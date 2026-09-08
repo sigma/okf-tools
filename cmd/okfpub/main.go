@@ -10,10 +10,9 @@
 package main
 
 import (
-	"fmt"
-	"io"
 	"os"
 
+	"github.com/sigma/okf-tools/internal/climain"
 	"github.com/sigma/okf-tools/internal/publishcmd"
 )
 
@@ -21,34 +20,11 @@ import (
 var version = "dev"
 
 func main() {
-	if len(os.Args) < 2 {
-		publishcmd.Usage(os.Stderr)
-		os.Exit(2)
+	app := climain.App{
+		Prog:     "okfpub",
+		Version:  version,
+		Usage:    publishcmd.Usage,
+		Commands: map[string]climain.Runner{"run": publishcmd.Run},
 	}
-
-	cmd, args := os.Args[1], os.Args[2:]
-	var run func(io.Writer, []string) (int, error)
-	switch cmd {
-	case "run":
-		run = publishcmd.Run
-	case "version", "--version", "-v":
-		fmt.Println("okfpub " + version)
-		return
-	case "help", "-h", "--help":
-		publishcmd.Usage(os.Stdout)
-		return
-	default:
-		fmt.Fprintf(os.Stderr, "okfpub: unknown command %q\n\n", cmd)
-		publishcmd.Usage(os.Stderr)
-		os.Exit(2)
-	}
-
-	code, err := run(os.Stdout, args)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "okfpub: "+err.Error())
-		if code == 0 {
-			code = 1
-		}
-	}
-	os.Exit(code)
+	os.Exit(app.Run(os.Stdout, os.Stderr, os.Args[1:]))
 }
