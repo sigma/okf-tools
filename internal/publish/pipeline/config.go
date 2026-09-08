@@ -16,7 +16,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/sigma/okf-tools/internal/areas"
 	"github.com/sigma/okf-tools/internal/schema"
 )
 
@@ -47,9 +46,6 @@ const (
 // absent (both are optional: a bundle may be configured entirely through
 // okf.toml, and only the Notion backend needs the credentials).
 type Config struct {
-	// Areas is the parsed /areas.json registry, or nil when none was loaded. It
-	// designates the glossary/anchor-host area via a role marker.
-	Areas *areas.Registry
 	// Schema is the parsed /schema.json column declaration, or nil when none was
 	// loaded.
 	Schema *schema.Schema
@@ -93,8 +89,6 @@ type Config struct {
 // root; an empty path skips that loader, since areas.json and schema.json are both
 // optional in the contract.
 type LoadOptions struct {
-	// AreasPath is the areas.json to load; "" skips it.
-	AreasPath string
 	// SchemaPath is the schema.json to load; "" skips it.
 	SchemaPath string
 	// Token, when non-empty, supplies the Notion credential directly instead of
@@ -127,13 +121,6 @@ func LoadConfig(o LoadOptions) (*Config, error) {
 		GDriveID:         getenv(EnvGDriveID),
 	}
 
-	if o.AreasPath != "" {
-		reg, err := areas.Load(o.AreasPath)
-		if err != nil {
-			return nil, fmt.Errorf("load areas: %w", err)
-		}
-		cfg.Areas = reg
-	}
 	if o.SchemaPath != "" {
 		sc, err := schema.Load(o.SchemaPath)
 		if err != nil {
@@ -142,15 +129,6 @@ func LoadConfig(o LoadOptions) (*Config, error) {
 		cfg.Schema = sc
 	}
 	return cfg, nil
-}
-
-// GlossaryFile reports the anchor-host file the areas.json role marker designates,
-// for diagnostics and the run summary — "" and false when no registry was loaded or
-// none is marked. The publish itself resolves the anchor host through bundle.Load,
-// which reads the same marker; this is a read-only convenience over the shared areas
-// loader (nil-registry safe), not a second resolution path.
-func (c *Config) GlossaryFile() (string, bool) {
-	return c.Areas.GlossaryFile()
 }
 
 func firstNonEmpty(a, b string) string {

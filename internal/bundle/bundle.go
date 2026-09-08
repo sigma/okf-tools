@@ -121,10 +121,30 @@ func declaresOKFVersion(indexPath string) bool {
 	return ok
 }
 
+// LoadOption adjusts what Load reads. The options exist so a caller can steer the
+// bundle's ONE parse of a config file rather than parsing it a second time into a
+// second object — which is how okfpub's --areas came to move a registry nothing
+// downstream read.
+type LoadOption func(*loadOptions)
+
+type loadOptions struct{ areasPath string }
+
+// WithAreasPath overrides where the areas.json registry is read from. Empty keeps
+// the default, <root>/areas.json. The registry it produces is b.Areas — the one
+// every consumer uses, so pointing this elsewhere actually moves publish scope,
+// glossary-host resolution and selection resolution together.
+func WithAreasPath(p string) LoadOption {
+	return func(o *loadOptions) { o.areasPath = p }
+}
+
 // Load builds the Bundle rooted at the discovered root using the config at
 // configPath (empty for defaults). The config's [bundle].root is honoured
 // relative to the config file's directory.
-func Load(root, configPath string) (*Bundle, error) {
+func Load(root, configPath string, opts ...LoadOption) (*Bundle, error) {
+	var lo loadOptions
+	for _, o := range opts {
+		o(&lo)
+	}
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
@@ -160,7 +180,18 @@ func Load(root, configPath string) (*Bundle, error) {
 	// marker-designated anchor-host file, resolved from the role, never from a
 	// filename literal.
 	var glossaryRel string
-	if p := filepath.Join(root, "areas.json"); fileExists(p) {
+	p := lo.areasPath
+	explicit := p != ""
+	if !explicit {
+		p = filepath.Join(root, "areas.json")
+	}
+	// An explicitly pointed registry that is missing is an error, not a silent
+	// fallback: the caller named a file, so failing to read it must not quietly
+	// publish against a different contract.
+	if explicit && !fileExists(p) {
+		return nil, fmt.Errorf("load areas: %s does not exist", p)
+	}
+	if fileExists(p) {
 		reg, aerr := areas.Load(p)
 		if aerr != nil {
 			return nil, fmt.Errorf("load areas: %w", aerr)
