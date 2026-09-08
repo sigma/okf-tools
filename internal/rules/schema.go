@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sigma/okf-tools/internal/config"
+	"github.com/sigma/okf-tools/internal/convention"
 	"github.com/sigma/okf-tools/internal/schema"
 )
 
@@ -134,7 +135,7 @@ func isDateValue(val any) bool {
 	case time.Time:
 		return true
 	case string:
-		return matchesTimestamp(v, "date") || matchesTimestamp(v, "rfc3339")
+		return convention.TimestampMatches(v, "date") || convention.TimestampMatches(v, "rfc3339")
 	}
 	return false
 }
