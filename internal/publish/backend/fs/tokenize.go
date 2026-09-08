@@ -23,46 +23,12 @@ import (
 // second of Notion's two coupled limits simply does not exist for this backend —
 // a concrete demonstration that the char/block caps were Notion's, not the seam's.
 func (b *Backend) Tokenize(doc publish.Document) []publish.AtomicUnit {
-	units := make([]publish.AtomicUnit, 0, len(doc.Blocks))
-	for _, blk := range doc.Blocks {
-		if bc, ok := blk.Content.(graph.BlockContent); ok && bc.Kind == graph.Table {
-			rows, refs := graph.TableRunsOf(bc)
-			u := publish.AtomicUnit{
-				Payload: contentBlock{kind: int(graph.Table), rows: rows, hasColumnHeader: bc.HasColumnHeader, anchors: blk.Anchors},
-				Cost:    1,
-				Group:   doc.Group,
-				Refs:    refs,
-				Anchors: blk.Anchors,
-			}
-			if len(refs) == 0 && len(blk.Refs) > 0 {
-				u.Refs = append(u.Refs, blk.Refs...)
-			}
-			units = append(units, u)
-			continue
+	return graph.TokenizeOnePerBlock(doc, func(d graph.DecodedBlock) publish.BackendBlock {
+		if d.IsTable {
+			return contentBlock{kind: int(graph.Table), rows: d.Rows, hasColumnHeader: d.HasColumnHeader, anchors: d.Anchors}
 		}
-		kind, level, _, runs, hadInlineRefs := graph.RunsOf(blk.Content)
-		u := publish.AtomicUnit{
-			Payload: contentBlock{kind: int(kind), level: level, runs: runs, anchors: blk.Anchors},
-			Cost:    1,
-			Group:   doc.Group,
-			Refs:    publish.RefsOf(runs),
-			Anchors: blk.Anchors,
-		}
-		// If the neutral content exposed no inline refs (a degenerate content
-		// shape), fall back to the block's aggregate Refs so late-bound references
-		// still form their dependency edges even without a rendered placeholder.
-		if !hadInlineRefs && len(blk.Refs) > 0 {
-			u.Refs = append(u.Refs, blk.Refs...)
-		}
-		units = append(units, u)
-	}
-	// The Document is this node's complete expected content, so its first unit is
-	// where the assertion starts; the Executor discards the node's stale content
-	// files there rather than inferring the rewrite from a co-binned create.
-	if len(units) > 0 {
-		units[0].AssertsContent = true
-	}
-	return units
+		return contentBlock{kind: int(d.Kind), level: d.Level, runs: d.Runs, anchors: d.Anchors}
+	})
 }
 
 // TokenizeOp mints the single filesystem AtomicUnit for a non-content op. Every
