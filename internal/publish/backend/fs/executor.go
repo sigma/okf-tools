@@ -201,23 +201,19 @@ type nodeMeta struct {
 	Parent string `json:"parent"`
 }
 
-// withHostedAnchors layers a transaction's own hosted anchors over a Resolver.
-// It maps each anchor "name" that any unit of the transaction hosts to the
-// on-disk id Execute will mint for it (rel + "#" + name) — the identical value
-// that later lands in res.Anchors and, after the transport merges the ExecResult,
-// in the resolver table. If the transaction hosts no anchors the base Resolver is
-// returned unwrapped, so the common no-anchor case pays nothing.
+// withHostedAnchors layers a transaction's own hosted anchors over a Resolver
+// through the shared seam, minting each one's on-disk id (rel + "#" + name) — the
+// identical value that later lands in res.Anchors and, after the transport merges
+// the ExecResult, in the resolver table.
+//
+// This backend is the one-phase case: its ids are DETERMINISTIC, so the minted id
+// is the real one and nothing needs reconciling after the write. Notion and Docs
+// mint a placeholder at the same seam and patch it afterwards.
 func withHostedAnchors(rel string, units []unit, base backend.Resolver) backend.Resolver {
-	var local map[publish.SymbolicID]publish.BackendID
-	for _, u := range units {
-		for _, a := range u.anchors {
-			if local == nil {
-				local = map[publish.SymbolicID]publish.BackendID{}
-			}
-			local[publish.AnchorRef(a)] = publish.BackendID(rel + "#" + string(a))
-		}
-	}
-	return backend.WithOverlay(base, local)
+	hosted := backend.HostedAnchors(units, func(u unit) []publish.AnchorName { return u.anchors })
+	return backend.MintOverlay(base, hosted, func(a publish.AnchorName) publish.BackendID {
+		return publish.BackendID(rel + "#" + string(a))
+	})
 }
 
 // resolveParent resolves a create unit's parent Ref (its single Ref, stamped by

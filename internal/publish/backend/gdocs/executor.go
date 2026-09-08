@@ -156,7 +156,7 @@ func (b *Backend) Execute(ctx context.Context, txn publish.Transaction, r backen
 	// renders, the transaction is not rejected for an "unresolvable" ref (#170),
 	// and its link target is applied below, once harvested.
 	body, err := renderTab(mergedBlocks, mergedProps,
-		backend.WithOverlay(r, deferredAnchors(mergedBlocks, tabID)))
+		deferredAnchors(mergedBlocks, tabID, r))
 	if err != nil {
 		return res, err
 	}

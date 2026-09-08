@@ -97,17 +97,17 @@ const dryRunHeadingID = "would-create-heading"
 // runs during the render and would already have failed. Only hosted anchors go
 // in, so a citation of another tab's term still falls through to the base
 // resolver and links on the first write as it always did.
-func deferredAnchors(blocks []contentBlock, tabID string) map[publish.SymbolicID]publish.BackendID {
-	var local map[publish.SymbolicID]publish.BackendID
-	for _, blk := range blocks {
-		for _, name := range blk.anchors {
-			if local == nil {
-				local = map[publish.SymbolicID]publish.BackendID{}
-			}
-			local[publish.AnchorRef(name)] = anchorID(tabID, deferredHeadingID)
-		}
-	}
-	return local
+//
+// It goes through the shared seam, so "which anchors does this transaction host"
+// is answered the same way here as in the Notion and filesystem backends; only the
+// minted value is this medium's own. This backend is a two-phase case: a headingId
+// is server-minted, so the sentinel below is reconciled to the real id after the
+// write.
+func deferredAnchors(blocks []contentBlock, tabID string, base backend.Resolver) backend.Resolver {
+	hosted := backend.HostedAnchors(blocks, func(b contentBlock) []publish.AnchorName { return b.anchors })
+	return backend.MintOverlay(base, hosted, func(publish.AnchorName) publish.BackendID {
+		return anchorID(tabID, deferredHeadingID)
+	})
 }
 
 // u16 counts a string's length in UTF-16 code units — the unit every Docs index
