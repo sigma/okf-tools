@@ -132,3 +132,61 @@ func TestUsageGoesToTheCallersWriter(t *testing.T) {
 		}
 	}
 }
+
+// TestAreasFlagSteersTheRegistryThePublishUses is the point of routing --areas
+// through bundle.Load. The flag used to feed a SECOND parse into pipeline.Config,
+// whose only consumer was the diagnostic line below — so pointing it elsewhere
+// changed what the run reported while the publish went on using <root>/areas.json.
+// The report and the publish now read one registry.
+func TestAreasFlagSteersTheRegistryThePublishUses(t *testing.T) {
+	dir := bundleDir(t)
+	if err := os.WriteFile(filepath.Join(dir, "CONTEXT.md"),
+		[]byte("# Glossary\n\n**Root KEK**: the root key-encryption key.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The registry at the bundle root marks no glossary host.
+	if err := os.WriteFile(filepath.Join(dir, "areas.json"),
+		[]byte(`{"docs": {"directory": "docs", "type": "adr"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The one --areas points at does.
+	alt := filepath.Join(t.TempDir(), "other-areas.json")
+	if err := os.WriteFile(alt,
+		[]byte(`{"glossary": {"file": "CONTEXT.md", "type": "glossary", "role": "glossary"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	if _, err := Run(&buf, []string{"--backend", "fake", "--bundle", dir, "--areas", alt}); err != nil {
+		t.Fatalf("Run --areas: %v", err)
+	}
+	if !strings.Contains(buf.String(), "glossary/anchor host: CONTEXT.md") {
+		t.Errorf("stdout = %q, want the host from the registry --areas named", buf.String())
+	}
+
+	// Without the flag the root registry applies, and it marks no host.
+	var base bytes.Buffer
+	if _, err := Run(&base, []string{"--backend", "fake", "--bundle", dir}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if strings.Contains(base.String(), "glossary/anchor host") {
+		t.Errorf("stdout = %q, want no host from a registry that marks none", base.String())
+	}
+}
+
+// TestAreasFlagPointingNowhereIsAnError: naming a file that does not exist must
+// fail rather than silently falling back to the bundle root's registry and
+// publishing against a different contract than the operator asked for.
+func TestAreasFlagPointingNowhereIsAnError(t *testing.T) {
+	var buf bytes.Buffer
+	_, err := Run(&buf, []string{
+		"--backend", "fake", "--bundle", bundleDir(t),
+		"--areas", filepath.Join(t.TempDir(), "absent.json"),
+	})
+	if err == nil {
+		t.Fatal("--areas naming a missing file must be an error")
+	}
+	if !strings.Contains(err.Error(), "areas") {
+		t.Errorf("error = %q, want it to name the registry it could not read", err)
+	}
+}

@@ -76,15 +76,17 @@ func Run(out io.Writer, args []string) (int, error) {
 	if err != nil {
 		return 1, err
 	}
-	b, err := bundle.Load(root, cfgPath)
+	// --areas steers the bundle's own parse of the registry rather than a second
+	// one: b.Areas is what drives publish scope, glossary-host resolution and
+	// selection, so a registry loaded anywhere else would be read by nothing.
+	b, err := bundle.Load(root, cfgPath, bundle.WithAreasPath(*areasPath))
 	if err != nil {
 		return 1, err
 	}
 
-	// Resolve the config surface. areas.json / schema.json default to the bundle
-	// root but are optional; the credentials come from --* args or the environment.
+	// Resolve the rest of the config surface. schema.json defaults to the bundle
+	// root but is optional; the credentials come from --* args or the environment.
 	cfg, err := pipeline.LoadConfig(pipeline.LoadOptions{
-		AreasPath:  defaultPath(*areasPath, b.Root, "areas.json"),
 		SchemaPath: defaultPath(*schemaPath, b.Root, "schema.json"),
 	})
 	if err != nil {
@@ -123,7 +125,7 @@ func Run(out io.Writer, args []string) (int, error) {
 
 	// Echo the resolved config surface so a scheduled run's log shows what contract
 	// it published against — and so a mis-pointed --areas/--schema is visible.
-	if host, ok := cfg.GlossaryFile(); ok {
+	if host, ok := b.Areas.GlossaryFile(); ok {
 		fmt.Fprintf(out, "okfpub: glossary/anchor host: %s (areas.json role marker)\n", host)
 	}
 	if cfg.Schema != nil {

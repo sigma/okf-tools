@@ -17,15 +17,12 @@ func writeFile(t *testing.T, dir, name, content string) string {
 	return p
 }
 
-// TestLoadConfigReadsSurface loads the whole config surface: areas.json and
-// schema.json through the shared loaders, plus the two credentials from the
-// injected environment.
+// TestLoadConfigReadsSurface loads the config surface this package owns:
+// schema.json through the shared loader, plus the two credentials from the
+// injected environment. areas.json is deliberately absent — the bundle parses it,
+// and this package reads the result from there rather than parsing it again.
 func TestLoadConfigReadsSurface(t *testing.T) {
 	dir := t.TempDir()
-	areasPath := writeFile(t, dir, "areas.json", `{
-		"docs":     {"directory": "docs", "type": "adr"},
-		"glossary": {"file": "CONTEXT.md", "type": "glossary", "role": "glossary"}
-	}`)
 	schemaPath := writeFile(t, dir, "schema.json", `{
 		"Name":  {"kind": "title", "source": "frontmatter"},
 		"hash":  {"kind": "text",  "source": "derived"}
@@ -33,7 +30,6 @@ func TestLoadConfigReadsSurface(t *testing.T) {
 
 	env := map[string]string{"NOTION_TOKEN": "secret-tok", "NOTION_DB_ID": "ds-42"}
 	cfg, err := LoadConfig(LoadOptions{
-		AreasPath:  areasPath,
 		SchemaPath: schemaPath,
 		Getenv:     func(k string) string { return env[k] },
 	})
@@ -44,11 +40,8 @@ func TestLoadConfigReadsSurface(t *testing.T) {
 	if cfg.NotionToken != "secret-tok" || cfg.NotionDBID != "ds-42" {
 		t.Errorf("credentials = %q/%q, want secret-tok/ds-42", cfg.NotionToken, cfg.NotionDBID)
 	}
-	if cfg.Areas == nil || cfg.Schema == nil {
-		t.Fatalf("areas/schema not loaded: areas=%v schema=%v", cfg.Areas, cfg.Schema)
-	}
-	if f, ok := cfg.GlossaryFile(); !ok || f != "CONTEXT.md" {
-		t.Errorf("GlossaryFile() = %q,%v, want CONTEXT.md from the role marker", f, ok)
+	if cfg.Schema == nil {
+		t.Fatal("schema not loaded")
 	}
 	if _, ok := cfg.Schema.Lookup("Name"); !ok {
 		t.Errorf("schema should declare the Name column")
@@ -73,27 +66,25 @@ func TestLoadConfigArgsOverrideEnv(t *testing.T) {
 	}
 }
 
-// TestLoadConfigOptionalFiles: absent areas/schema paths are not an error (both are
-// optional in the contract), and a nil registry resolves no glossary.
+// TestLoadConfigOptionalFiles: an absent schema path is not an error (schema.json
+// is optional in the contract).
 func TestLoadConfigOptionalFiles(t *testing.T) {
 	cfg, err := LoadConfig(LoadOptions{Getenv: func(string) string { return "" }})
 	if err != nil {
 		t.Fatalf("LoadConfig with no files: %v", err)
 	}
-	if cfg.Areas != nil || cfg.Schema != nil {
-		t.Errorf("no paths given, want nil areas/schema, got %v/%v", cfg.Areas, cfg.Schema)
-	}
-	if _, ok := cfg.GlossaryFile(); ok {
-		t.Errorf("no registry, want no glossary file")
+	if cfg.Schema != nil {
+		t.Errorf("no path given, want nil schema, got %v", cfg.Schema)
 	}
 }
 
-// TestLoadConfigRejectsMalformed: a malformed areas.json fails the load loudly.
+// TestLoadConfigRejectsMalformed: a malformed schema.json fails the load loudly
+// rather than publishing against a half-understood contract.
 func TestLoadConfigRejectsMalformed(t *testing.T) {
 	dir := t.TempDir()
-	bad := writeFile(t, dir, "areas.json", `{"x": {"type": "t"}}`) // names neither dir nor file
-	if _, err := LoadConfig(LoadOptions{AreasPath: bad, Getenv: func(string) string { return "" }}); err == nil {
-		t.Fatal("want an error for a malformed areas.json")
+	bad := writeFile(t, dir, "schema.json", `{"Name": {"kind":`) // truncated JSON
+	if _, err := LoadConfig(LoadOptions{SchemaPath: bad, Getenv: func(string) string { return "" }}); err == nil {
+		t.Fatal("want an error for a malformed schema.json")
 	}
 }
 
