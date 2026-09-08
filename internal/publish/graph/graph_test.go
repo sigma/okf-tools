@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/sigma/okf-tools/internal/bundle"
@@ -520,6 +521,22 @@ func TestOrphanSubtreeRoot(t *testing.T) {
 		if !want[d] {
 			t.Errorf("unexpected DeleteNode %s (a covered subpage should be skipped)", d)
 		}
+	}
+
+	// One op archives the subtree, but the covered nodes still have to be NAMED.
+	// A destination that records a node somewhere other than the node itself has to
+	// stop naming each one individually, and only generation knows which nodes the
+	// root's single archive took with it — the backend sees one id and the scan is
+	// gone by then (sigma/okf-tools#189).
+	root := opFor(g, nodeRef("dead/index.md"), DeleteNode)
+	if root == nil {
+		t.Fatalf("missing the subtree root's DeleteNode")
+	}
+	if !slices.Equal(root.Covers, []publish.SymbolicID{nodeRef("dead/child.md")}) {
+		t.Errorf("root.Covers = %v, want [node:dead/child.md]", root.Covers)
+	}
+	if lone := opFor(g, nodeRef("gone.md"), DeleteNode); lone == nil || len(lone.Covers) != 0 {
+		t.Errorf("a standalone orphan covers nothing, got %v", lone)
 	}
 }
 

@@ -252,6 +252,18 @@ type PackedTxn struct {
 	// Produces are the symbolic ids this transaction creates — used for edge
 	// derivation and, at runtime, to seed the resolution table from ExecResult.
 	Produces []SymbolicID
+	// Deletes are the symbolic ids this transaction REMOVES from the destination
+	// (the nodes its DeleteNode ops archive). It is the mirror of Produces, and it
+	// exists for the same reason Produces does: the sealed Txn is opaque, so a
+	// removal leaves no other neutral trace. Nothing downstream could see one — a
+	// delete writes no content, so its NodeStamp is zero and it contributes no
+	// Provenance — and a destination that records a node somewhere OTHER than the
+	// node itself therefore went on naming it after archiving it, rediscovering the
+	// same orphan every run (sigma/okf-tools#189).
+	//
+	// It wires no edges: a delete's write-target resolves from the scan seed, and no
+	// op this run depends on a node ceasing to exist.
+	Deletes []SymbolicID
 	// NodeStamp is the write-target node's generation-time write-back provenance
 	// (content/property hashes, parent routing, title), threaded through so the
 	// transport can assemble Provenance without re-reading source. Every unit of a
@@ -271,6 +283,21 @@ type Provenance struct {
 	// Nodes is the per-node provenance for every node this run (re)wrote, keyed by
 	// its symbolic id.
 	Nodes map[SymbolicID]NodeProvenance
+	// Deleted are the nodes this run REMOVED from the destination. Write-back is
+	// where a backend forgets them, because forgetting is the same obligation as
+	// recording: whatever state named the node has to stop naming it, or the next
+	// scan reconstructs a page that is already gone and the run archives it again
+	// (sigma/okf-tools#189).
+	//
+	// A backend whose per-node state dies with the node itself — a file tree, a tab
+	// keyed by its own id — has nothing to do here and can ignore it. It matters
+	// where a node's record lives somewhere ELSE: Notion's cluster subpages are
+	// recorded in their owning ROW's subtree map, which outlives the archived page.
+	//
+	// A run that only deletes yields Nodes empty and Deleted non-empty, so write-back
+	// is triggered by EITHER being non-empty; a run that touched nothing yields both
+	// empty and write-back stays a true no-op.
+	Deleted []SymbolicID
 }
 
 // NodeProvenance is one node's write-back record: its real backend id, the content

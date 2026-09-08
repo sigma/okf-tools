@@ -98,6 +98,13 @@ type Backend struct {
 	// write-back from its execution path, which may run concurrently.
 	subtreeMu sync.Mutex
 	subtrees  map[string]map[string]subtreeEntry
+	// recordedBy names, per repo path, WHERE that node's self-description lives, as
+	// the run's scan found it. It is the only route from "this node is gone" to "and
+	// here is the column that still says otherwise": the archive PATCHes the page,
+	// which knows nothing about who describes it (sigma/okf-tools#189). Shares the
+	// guard with subtrees: both describe the same columns, and write-back reads one
+	// while writing the other.
+	recordedBy map[string]record
 
 	// schema is the parsed schema.json driving two things: provisioning (the
 	// Provisioner role reconciles the data source's columns against it) and typed
