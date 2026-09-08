@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"maps"
 	"slices"
 
@@ -56,12 +57,56 @@ func ContentHash(d *bundle.Doc) publish.Hash { return contentHashAt(RendererVers
 
 // contentHashAt is ContentHash at an explicit renderer version. Separated so a
 // test can prove a bump moves every hash without a global to mutate.
+func contentHashAt(version int, d *bundle.Doc) publish.Hash {
+	dig := NewContentDigestAt(version)
+	dig.Writef("%s", d.Content)
+	return dig.Sum()
+}
+
+// ContentDigest is a content hash under construction that has ALREADY folded in
+// the renderer version. It is the seam that makes RendererVersion an obligation a
+// hasher cannot forget rather than one it must remember.
+//
+// There is more than one content hasher — the default one over source bytes, and
+// the Notion backend's over the realized block stream, which REPLACES it — and
+// every one of them must fold the version in or a renderer fix cannot reach an
+// already-published page (#183). That used to be enforced by a comment naming its
+// own failure mode: "the cost is REMEMBERING to bump it… forgetting reproduces the
+// bug silently". The bug is silent because the run reports success while the mirror
+// keeps serving the old output.
+//
+// Starting from a constructor instead means a new hasher gets the version by
+// construction. The unseeded alternative is not reachable: this type has no useful
+// zero value, so the only way to a content hash is through NewContentDigest.
+type ContentDigest struct{ h hash.Hash }
+
+// NewContentDigest opens a content digest seeded with the current renderer
+// version. Every content hasher starts here.
+func NewContentDigest() *ContentDigest { return NewContentDigestAt(RendererVersion) }
+
+// NewContentDigestAt opens a content digest at an explicit renderer version, so a
+// test can prove a bump moves every hash without a global to mutate. Production
+// code calls NewContentDigest.
 //
 // The version is a PREFIX with a NUL separator rather than a suffix or a plain
-// concatenation, so no source text can forge another version's hash.
-func contentHashAt(version int, d *bundle.Doc) publish.Hash {
-	sum := sha256.Sum256(fmt.Appendf(nil, "okf/render/%d\x00%s", version, d.Content))
-	return publish.Hash(hex.EncodeToString(sum[:]))
+// concatenation, so no hashed content can forge another version's hash.
+func NewContentDigestAt(version int) *ContentDigest {
+	h := sha256.New()
+	fmt.Fprintf(h, "okf/render/%d\x00", version)
+	return &ContentDigest{h: h}
+}
+
+// Write folds raw bytes into the digest. It never returns an error (hash.Hash
+// does not), so callers need not check one.
+func (d *ContentDigest) Write(p []byte) (int, error) { return d.h.Write(p) }
+
+// Writef folds formatted content into the digest — the shape both hashers use,
+// one writing a document's source, the other a line per canonical block.
+func (d *ContentDigest) Writef(format string, a ...any) { fmt.Fprintf(d.h, format, a...) }
+
+// Sum seals the digest into the hash the pipeline compares.
+func (d *ContentDigest) Sum() publish.Hash {
+	return publish.Hash(hex.EncodeToString(d.h.Sum(nil)))
 }
 
 // PropertyHash is the expected-state hash of a doc's semantic properties — the

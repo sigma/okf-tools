@@ -121,3 +121,32 @@ func TestForceRewriteLeavesCreatesAndDeletesAlone(t *testing.T) {
 		t.Error("an unchanged page was not re-asserted under a forced rewrite")
 	}
 }
+
+// TestContentDigestIsSeededWithTheRendererVersion pins the seam that replaced the
+// remember-to-fold-it-in comment: a digest is ALREADY carrying the renderer
+// version before a caller writes a byte, so a hasher cannot omit it by forgetting.
+func TestContentDigestIsSeededWithTheRendererVersion(t *testing.T) {
+	empty := sha256.Sum256(nil)
+	if got := NewContentDigest().Sum(); string(got) == hex.EncodeToString(empty[:]) {
+		t.Fatal("a fresh digest must already carry the renderer version, not be an empty hash")
+	}
+	if NewContentDigestAt(RendererVersion).Sum() != NewContentDigest().Sum() {
+		t.Error("NewContentDigest must seed at the current RendererVersion")
+	}
+	if NewContentDigestAt(RendererVersion+1).Sum() == NewContentDigest().Sum() {
+		t.Error("a version bump must move the seed, and so every hash built on it")
+	}
+}
+
+// TestContentDigestSeparatesVersionFromContent is why the version is a NUL-separated
+// PREFIX: no content can be crafted that makes one version's digest collide with
+// another's.
+func TestContentDigestSeparatesVersionFromContent(t *testing.T) {
+	a := NewContentDigestAt(1)
+	a.Writef("%s", "2\x00payload")
+	b := NewContentDigestAt(12)
+	b.Writef("%s", "payload")
+	if a.Sum() == b.Sum() {
+		t.Error("content must not be able to forge another renderer version's hash")
+	}
+}

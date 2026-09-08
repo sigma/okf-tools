@@ -1,9 +1,6 @@
 package notion
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"fmt"
 	"strings"
 
 	"github.com/sigma/okf-tools/internal/bundle"
@@ -84,18 +81,26 @@ type canonBlock struct {
 // #182 both did) and is blind to one that does not — an annotation, a colour, a
 // block property. The version covers what the projection cannot see.
 func hashCanonBlocks(blocks []canonBlock) publish.Hash {
-	return hashCanonBlocksAt(graph.RendererVersion, blocks)
+	return sumCanonBlocks(graph.NewContentDigest(), blocks)
 }
 
 // hashCanonBlocksAt is hashCanonBlocks at an explicit renderer version, separated
 // so a test can prove a bump moves every hash without a global to mutate.
 func hashCanonBlocksAt(version int, blocks []canonBlock) publish.Hash {
-	h := sha256.New()
-	fmt.Fprintf(h, "okf/render/%d\x00", version)
+	return sumCanonBlocks(graph.NewContentDigestAt(version), blocks)
+}
+
+// sumCanonBlocks folds the canonical block stream into an already-seeded digest.
+// Taking the digest rather than opening one is the point: this backend REPLACES
+// the default hasher, and starting from graph's constructor is what guarantees it
+// cannot drift out of step with the renderer version the default hasher folds in
+// (#183). Before, both hashers wrote the same prefix independently and stayed
+// aligned only by each remembering to.
+func sumCanonBlocks(dig *graph.ContentDigest, blocks []canonBlock) publish.Hash {
 	for _, blk := range blocks {
-		fmt.Fprintf(h, "%s:%s\n", blk.typ, blk.text)
+		dig.Writef("%s:%s\n", blk.typ, blk.text)
 	}
-	return publish.Hash(hex.EncodeToString(h.Sum(nil)))
+	return dig.Sum()
 }
 
 // The Notion backend is the one Recomputer: it can reconstruct a content hash
