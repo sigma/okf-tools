@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/sigma/okf-tools/internal/bundle"
+	"github.com/sigma/okf-tools/internal/bundle/bundletest"
 	"github.com/sigma/okf-tools/internal/publish"
 	"github.com/sigma/okf-tools/internal/publish/graph"
 )
@@ -39,7 +40,7 @@ func loadAgreementBundle(t *testing.T) *bundle.Bundle {
 		"docs/adr/b.md": "---\ntype: adr\ntitle: B\n---\nBody of B.\n",
 		"CONTEXT.md":    "# Glossary\n\n**Root KEK**: the root key-encryption key.\n",
 	}
-	return loadTestBundle(t, files)
+	return bundletest.Load(t, files)
 }
 
 func docByRel(t *testing.T, b *bundle.Bundle, rel string) *bundle.Doc {

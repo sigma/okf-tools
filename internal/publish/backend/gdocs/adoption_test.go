@@ -3,6 +3,7 @@ package gdocs_test
 import (
 	"context"
 	"encoding/json"
+	"github.com/sigma/okf-tools/internal/bundle/bundletest"
 	"maps"
 	"strings"
 	"testing"
@@ -25,7 +26,7 @@ func TestMarkedTabsAreAdoptedWhenStateIsBehind(t *testing.T) {
 	defer srv.Close()
 
 	first := newBackend(t, srv.URL)
-	b := loadBundle(t, testBundle())
+	b := bundletest.Load(t, testBundle())
 	if _, err := pipeline.Run(context.Background(), first, b); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
@@ -38,7 +39,7 @@ func TestMarkedTabsAreAdoptedWhenStateIsBehind(t *testing.T) {
 	keepOnly(t, fake, "CONTEXT.md")
 
 	second := newBackend(t, srv.URL)
-	if _, err := pipeline.Run(context.Background(), second, loadBundle(t, testBundle())); err != nil {
+	if _, err := pipeline.Run(context.Background(), second, bundletest.Load(t, testBundle())); err != nil {
 		t.Fatalf("the re-run after a lost sidecar failed; a marked tab must be adopted, not re-created: %v", err)
 	}
 
@@ -79,7 +80,7 @@ func TestPreExistingTitlesAreDisambiguated(t *testing.T) {
 		"alpha/page.md": "---\nokf_version: \"0.1\"\ntitle: \"" + longestTitle + "\"\ntype: concept\n---\n\n# One\n",
 	}
 	first := newBackend(t, srv.URL)
-	if _, err := pipeline.Run(context.Background(), first, loadBundle(t, base)); err != nil {
+	if _, err := pipeline.Run(context.Background(), first, bundletest.Load(t, base)); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
 	docID := first.DocumentID()
@@ -90,7 +91,7 @@ func TestPreExistingTitlesAreDisambiguated(t *testing.T) {
 	grown["beta/page.md"] = "---\nokf_version: \"0.1\"\ntitle: \"" + longestTitle + "\"\ntype: concept\n---\n\n# Two\n"
 
 	second := newBackend(t, srv.URL)
-	if _, err := pipeline.Run(context.Background(), second, loadBundle(t, grown)); err != nil {
+	if _, err := pipeline.Run(context.Background(), second, bundletest.Load(t, grown)); err != nil {
 		t.Fatalf("a new page colliding with an existing tab's title failed to publish: %v", err)
 	}
 
@@ -163,7 +164,7 @@ func TestASidecarPointingAtAnotherNodesTabIsIgnored(t *testing.T) {
 	defer srv.Close()
 
 	first := newBackend(t, srv.URL)
-	if _, err := pipeline.Run(context.Background(), first, loadBundle(t, testBundle())); err != nil {
+	if _, err := pipeline.Run(context.Background(), first, bundletest.Load(t, testBundle())); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
 	docID := first.DocumentID()
@@ -171,7 +172,7 @@ func TestASidecarPointingAtAnotherNodesTabIsIgnored(t *testing.T) {
 	repoint(t, fake, "alpha.md", betaTab)
 
 	second := newBackend(t, srv.URL)
-	if _, err := pipeline.Run(context.Background(), second, loadBundle(t, testBundle())); err != nil {
+	if _, err := pipeline.Run(context.Background(), second, bundletest.Load(t, testBundle())); err != nil {
 		t.Fatalf("re-run with a cross-claiming sidecar failed: %v", err)
 	}
 
@@ -203,7 +204,7 @@ func TestAnAdoptedOrphanIsReclaimed(t *testing.T) {
 	files["gamma.md"] = "---\nokf_version: \"0.1\"\ntitle: Gamma\ntype: concept\n---\n\n# Gamma\n\nGamma stands alone.\n"
 
 	first := newBackend(t, srv.URL)
-	if _, err := pipeline.Run(context.Background(), first, loadBundle(t, files)); err != nil {
+	if _, err := pipeline.Run(context.Background(), first, bundletest.Load(t, files)); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
 	docID := first.DocumentID()
@@ -216,7 +217,7 @@ func TestAnAdoptedOrphanIsReclaimed(t *testing.T) {
 	keepOnly(t, fake, "CONTEXT.md")
 
 	second := newBackend(t, srv.URL)
-	if _, err := pipeline.Run(context.Background(), second, loadBundle(t, files)); err != nil {
+	if _, err := pipeline.Run(context.Background(), second, bundletest.Load(t, files)); err != nil {
 		t.Fatalf("second run: %v", err)
 	}
 	if fake.tabIDOf(docID, "Gamma") != "" {

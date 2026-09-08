@@ -7,41 +7,16 @@ package gdocs_test
 import (
 	"context"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/sigma/okf-tools/internal/bundle"
+	"github.com/sigma/okf-tools/internal/bundle/bundletest"
 	"github.com/sigma/okf-tools/internal/publish/backend/gdocs"
 	"github.com/sigma/okf-tools/internal/publish/graph"
 	"github.com/sigma/okf-tools/internal/publish/pipeline"
 )
 
 const testDriveID = "0ADRIVE"
-
-func loadBundle(t *testing.T, files map[string]string) *bundle.Bundle {
-	t.Helper()
-	dir := t.TempDir()
-	for name, content := range files {
-		p := filepath.Join(dir, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	root, cfgPath, err := bundle.Discover(dir, "", "")
-	if err != nil {
-		t.Fatalf("discover: %v", err)
-	}
-	b, err := bundle.Load(root, cfgPath)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	return b
-}
 
 func testBundle() map[string]string {
 	return map[string]string{
@@ -78,7 +53,7 @@ func TestPublishCreatesATabPerPage(t *testing.T) {
 	defer srv.Close()
 
 	be := newBackend(t, srv.URL)
-	b := loadBundle(t, testBundle())
+	b := bundletest.Load(t, testBundle())
 
 	res, err := pipeline.Run(context.Background(), be, b)
 	if err != nil {
@@ -147,7 +122,7 @@ func TestRerunIsANoop(t *testing.T) {
 	srv := fake.server()
 	defer srv.Close()
 
-	b := loadBundle(t, testBundle())
+	b := bundletest.Load(t, testBundle())
 
 	first := newBackend(t, srv.URL)
 	if _, err := pipeline.Run(context.Background(), first, b); err != nil {
@@ -253,7 +228,7 @@ func TestAreaRootOpensTheDocument(t *testing.T) {
 	srv := fake.server()
 	defer srv.Close()
 
-	b := loadBundle(t, areaBundle())
+	b := bundletest.Load(t, areaBundle())
 	be, err := gdocs.New(context.Background(), gdocs.Config{
 		DriveID: testDriveID, Bundle: "testbundle", Selection: "concepts",
 		DocsEndpoint: srv.URL, DriveEndpoint: srv.URL, HTTPClient: &http.Client{},
@@ -289,7 +264,7 @@ func TestAreaRootOpensTheDocument(t *testing.T) {
 // TestNotionScopeIsUnchanged: a backend that does NOT publish area roots still
 // gets the old node set, so this change cannot leak into the Notion mirror.
 func TestNotionScopeIsUnchanged(t *testing.T) {
-	b := loadBundle(t, areaBundle())
+	b := bundletest.Load(t, areaBundle())
 	var found bool
 	for _, d := range b.PublishDocs() {
 		if d.Rel == "concepts/README.md" {
@@ -316,7 +291,7 @@ func TestSelectionNarrowsTheDocument(t *testing.T) {
 	srv := fake.server()
 	defer srv.Close()
 
-	b := loadBundle(t, testBundle())
+	b := bundletest.Load(t, testBundle())
 	be, err := gdocs.New(context.Background(), gdocs.Config{
 		DriveID: testDriveID, Bundle: "testbundle", Selection: "alpha-only",
 		DocsEndpoint: srv.URL, DriveEndpoint: srv.URL, HTTPClient: &http.Client{},
@@ -384,7 +359,7 @@ func TestBannerRidesEveryTab(t *testing.T) {
 	defer srv.Close()
 
 	be := newBackend(t, srv.URL)
-	b := loadBundle(t, testBundle())
+	b := bundletest.Load(t, testBundle())
 
 	if _, err := pipeline.Run(context.Background(), be, b,
 		pipeline.WithBanner(&graph.Banner{
@@ -449,7 +424,7 @@ func TestDryRunTouchesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
-	b := loadBundle(t, testBundle())
+	b := bundletest.Load(t, testBundle())
 
 	res, err := pipeline.Run(context.Background(), be, b)
 	if err != nil {

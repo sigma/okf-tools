@@ -2,11 +2,10 @@ package graph
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/sigma/okf-tools/internal/bundle"
+	"github.com/sigma/okf-tools/internal/bundle/bundletest"
 	"github.com/sigma/okf-tools/internal/publish"
 )
 
@@ -15,29 +14,6 @@ import (
 // nodeRef is a test shorthand for the node-ref constructor; the "node:"/"anchor:"
 // scheme itself lives only in package publish (ref.go).
 func nodeRef(rel string) publish.SymbolicID { return publish.NodeRef(rel) }
-
-func loadBundle(t *testing.T, files map[string]string) *bundle.Bundle {
-	t.Helper()
-	dir := t.TempDir()
-	for name, content := range files {
-		p := filepath.Join(dir, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	root, cfgPath, err := bundle.Discover(dir, "", "")
-	if err != nil {
-		t.Fatalf("discover: %v", err)
-	}
-	b, err := bundle.Load(root, cfgPath)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	return b
-}
 
 func docByRel(t *testing.T, b *bundle.Bundle, rel string) *bundle.Doc {
 	t.Helper()
@@ -149,7 +125,7 @@ func gen(t *testing.T, b *bundle.Bundle, cs *publish.CurrentState) *Graph {
 // title/type-only edit only SetProperties, and a page unchanged on both stays
 // hash-skipped — none of them coupled the way a single hash forced them to be.
 func TestDiffArmsIndependent(t *testing.T) {
-	b := loadBundle(t, map[string]string{
+	b := bundletest.Load(t, map[string]string{
 		"okf.toml": "",
 		"index.md": "---\nokf_version: \"0.1\"\n---\nRoot.\n",
 		"a.md":     "---\ntype: c\ntitle: A\n---\nBody.\n",
@@ -201,7 +177,7 @@ func workedExample() map[string]string {
 }
 
 func TestWorkedExample(t *testing.T) {
-	b := loadBundle(t, workedExample())
+	b := bundletest.Load(t, workedExample())
 	// 0001, both indexes unchanged; CONTEXT.md exists but changed (so its
 	// SetContent is written and declares the anchor). 0002 is new (absent).
 	cs := seed{
@@ -281,7 +257,7 @@ func scopedBundle() map[string]string {
 }
 
 func TestPublishScopedToAreas(t *testing.T) {
-	b := loadBundle(t, scopedBundle())
+	b := bundletest.Load(t, scopedBundle())
 
 	// The full tree is still loaded (link resolution needs it): the out-of-area
 	// pages are in the bundle even though they will not be published, and each is
@@ -325,7 +301,7 @@ func TestPublishScopedToAreas(t *testing.T) {
 // present in the mirror (leaked by the pre-scoping publisher) reconciles to a
 // deletion, since publish-set liveness no longer covers it.
 func TestPublishScopeReconcilesLeakedPages(t *testing.T) {
-	b := loadBundle(t, scopedBundle())
+	b := bundletest.Load(t, scopedBundle())
 	// The mirror already holds the out-of-area page from a previous whole-tree run.
 	cs := withVanished(t, publish.NewCurrentState(nil, nil, nil), "docs/agents/note.md")
 	g := gen(t, b, cs)
@@ -344,7 +320,7 @@ func TestDiffMapping(t *testing.T) {
 		"same.md":   "---\ntype: c\n---\nUntouched.\n",
 		"edited.md": "---\ntype: c\n---\nEdited body.\n",
 	}
-	b := loadBundle(t, files)
+	b := bundletest.Load(t, files)
 	cs := seed{
 		unchanged: []string{"index.md", "same.md"},
 		changed:   map[string]publish.Hash{"edited.md": "stale"},
@@ -408,7 +384,7 @@ func TestParentBeforeChildEdge(t *testing.T) {
 		"sub/index.md": "Sub area.\n",
 		"sub/a.md":     "---\ntype: c\n---\nLeaf.\n",
 	}
-	b := loadBundle(t, files)
+	b := bundletest.Load(t, files)
 	g := gen(t, b, publish.NewCurrentState(nil, nil, nil))
 
 	parentEdges := edgesByCause(g, ParentBeforeChild)
@@ -443,7 +419,7 @@ func TestContentRefsNodeMutualAcyclic(t *testing.T) {
 		"a.md":     "---\ntype: c\n---\nSee [B](b.md).\n",
 		"b.md":     "---\ntype: c\n---\nSee [A](a.md).\n",
 	}
-	b := loadBundle(t, files)
+	b := bundletest.Load(t, files)
 	// index unchanged so its own listing links don't add noise; a and b new.
 	cs := seed{unchanged: []string{"index.md"}}.build(t, b)
 	g := gen(t, b, cs)
@@ -482,7 +458,7 @@ func TestGlossarySelfReferenceNoSelfEdge(t *testing.T) {
 		// One term cites another, in the same glossary body.
 		"CONTEXT.md": "# Glossary\n\n**Root KEK**: protects the [DEK](CONTEXT.md#dek).\n\n**DEK**: a data key.\n",
 	}
-	b := loadBundle(t, files)
+	b := bundletest.Load(t, files)
 	g := gen(t, b, publish.NewCurrentState(nil, nil, nil)) // all new
 
 	for _, e := range g.Edges {
@@ -500,7 +476,7 @@ func TestGlossarySelfReferenceNoSelfEdge(t *testing.T) {
 // --- near-edgeless: unchanged bundle ---------------------------------------
 
 func TestUnchangedBundleIsEdgeless(t *testing.T) {
-	b := loadBundle(t, workedExample())
+	b := bundletest.Load(t, workedExample())
 	all := []string{"index.md", "docs/adr/index.md", "docs/adr/0001.md", "docs/adr/0002.md", "CONTEXT.md"}
 	cs := seed{
 		unchanged: all,
@@ -524,7 +500,7 @@ func TestOrphanSubtreeRoot(t *testing.T) {
 		"index.md": "---\nokf_version: \"0.1\"\n---\nRoot.\n",
 		"live.md":  "---\ntype: c\n---\nStill here.\n",
 	}
-	b := loadBundle(t, files)
+	b := bundletest.Load(t, files)
 	cs := seed{unchanged: []string{"index.md", "live.md"}}.build(t, b)
 	// A whole vanished cluster plus a standalone orphan.
 	cs = withVanished(t, cs, "dead/index.md", "dead/child.md", "gone.md")
@@ -550,7 +526,7 @@ func TestOrphanSubtreeRoot(t *testing.T) {
 // --- neutral tree carries first-class Ref nodes -----------------------------
 
 func TestNeutralTreeHasRefNodes(t *testing.T) {
-	b := loadBundle(t, workedExample())
+	b := bundletest.Load(t, workedExample())
 	cs := seed{
 		unchanged: []string{"index.md", "docs/adr/index.md", "docs/adr/0001.md"},
 		changed:   map[string]publish.Hash{"CONTEXT.md": "stale"},
@@ -589,7 +565,7 @@ func TestNonConceptLinksAreNotRefs(t *testing.T) {
 		"index.md": "---\nokf_version: \"0.1\"\n---\nRoot.\n",
 		"p.md":     "---\ntype: c\n---\nSee [site](https://example.com) and ![pic](img.png).\n",
 	}
-	b := loadBundle(t, files)
+	b := bundletest.Load(t, files)
 	g := gen(t, b, publish.NewCurrentState(nil, nil, nil))
 	sc := opFor(g, nodeRef("p.md"), SetContent)
 	if len(sc.Refs) != 0 {
@@ -644,7 +620,7 @@ func TestExternalLinkKeepsURL(t *testing.T) {
 			"- [`changes.list` reference](https://example.com/changes/list)\n" +
 			"- [mail us](mailto:okf@example.com)\n",
 	}
-	b := loadBundle(t, files)
+	b := bundletest.Load(t, files)
 	g := gen(t, b, publish.NewCurrentState(nil, nil, nil))
 	inlines := inlinesFor(t, g, "p.md")
 
@@ -673,7 +649,7 @@ func TestCitationLinkKeepsURLOnlyWhenAbsolute(t *testing.T) {
 		"a.md":     "---\ntype: c\n---\nA.\n",
 		"p.md":     "---\ntype: c\n---\nBody.\n\n# Citations\n\n- [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110)\n- [local note](a.md)\n",
 	}
-	b := loadBundle(t, files)
+	b := bundletest.Load(t, files)
 	cs := seed{unchanged: []string{"index.md", "a.md"}}.build(t, b)
 	inlines := inlinesFor(t, gen(t, b, cs), "p.md")
 
@@ -693,7 +669,7 @@ func TestNonExternalLinkClassesMintNoURL(t *testing.T) {
 		"index.md": "---\nokf_version: \"0.1\"\n---\nRoot.\n",
 		"p.md":     "---\ntype: c\n---\n## Later\n\n![pic](img.png) and [[Some Note]] and [jump](#later) and [gone](missing.md).\n",
 	}
-	b := loadBundle(t, files)
+	b := bundletest.Load(t, files)
 	inlines := inlinesFor(t, gen(t, b, publish.NewCurrentState(nil, nil, nil)), "p.md")
 	for _, in := range inlines {
 		if in.URL != "" {
@@ -710,7 +686,7 @@ func TestTableCellExternalLinkKeepsURL(t *testing.T) {
 		"index.md": "---\nokf_version: \"0.1\"\n---\nRoot.\n",
 		"p.md":     "---\ntype: c\n---\n| Doc | Where |\n| --- | --- |\n| API | [spec](https://example.com/spec) |\n",
 	}
-	b := loadBundle(t, files)
+	b := bundletest.Load(t, files)
 	inlines := inlinesFor(t, gen(t, b, publish.NewCurrentState(nil, nil, nil)), "p.md")
 	if got, want := urlOf(inlines, "spec"), "https://example.com/spec"; got != want {
 		t.Errorf("table cell link URL = %q, want %q", got, want)
@@ -731,7 +707,7 @@ func TestLinkedImageOrdinalStaysAligned(t *testing.T) {
 		"b.md":     "---\ntype: c\n---\nB.\n",
 		"p.md":     "---\ntype: c\n---\nBanner [![diagram](d.png)](a.md) then see [B](b.md).\n",
 	}
-	b := loadBundle(t, files)
+	b := bundletest.Load(t, files)
 	cs := seed{unchanged: []string{"index.md", "a.md", "b.md"}}.build(t, b)
 	g := gen(t, b, cs)
 	sc := opFor(g, nodeRef("p.md"), SetContent)
@@ -751,7 +727,7 @@ func TestContentHashCoversFrontmatter(t *testing.T) {
 		"x.md":     "---\ntype: c\ntitle: Old\n---\nIdentical body.\n",
 		"y.md":     "---\ntype: c\ntitle: New\n---\nIdentical body.\n",
 	}
-	b := loadBundle(t, files)
+	b := bundletest.Load(t, files)
 	if ContentHash(docByRel(t, b, "x.md")) == ContentHash(docByRel(t, b, "y.md")) {
 		t.Errorf("frontmatter-only difference must change the content hash")
 	}
@@ -760,7 +736,7 @@ func TestContentHashCoversFrontmatter(t *testing.T) {
 // --- determinism ------------------------------------------------------------
 
 func TestDeterministicAcrossRuns(t *testing.T) {
-	b := loadBundle(t, workedExample())
+	b := bundletest.Load(t, workedExample())
 	cs := func() *publish.CurrentState {
 		return seed{
 			unchanged: []string{"index.md", "docs/adr/index.md", "docs/adr/0001.md"},
@@ -839,7 +815,7 @@ func cyclic(g *Graph) bool {
 // A cluster whose entry point is README.md (no index.md) must parent its sibling
 // pages under that README, and the area-root README must not publish as a row.
 func TestReadmeClusterNesting(t *testing.T) {
-	b := loadBundle(t, map[string]string{
+	b := bundletest.Load(t, map[string]string{
 		"okf.toml": "[glossary]\nenabled = true\nfiles = [\"CONTEXT.md\"]\n",
 		"areas.json": `{
 			"specs":   {"directory": "specs", "type": "spec"},
@@ -901,7 +877,7 @@ func TestReadmeClusterNesting(t *testing.T) {
 // index.md still outranks a sibling README.md as a directory's index, so a
 // mixed directory nests under index.md (README recognition is a fallback only).
 func TestIndexMdOutranksReadme(t *testing.T) {
-	b := loadBundle(t, map[string]string{
+	b := bundletest.Load(t, map[string]string{
 		"okf.toml":      "",
 		"index.md":      "---\nokf_version: \"0.1\"\n---\nRoot.\n",
 		"sub/index.md":  "# Sub\n",

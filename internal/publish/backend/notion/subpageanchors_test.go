@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/sigma/okf-tools/internal/bundle"
+	"github.com/sigma/okf-tools/internal/bundle/bundletest"
 	"github.com/sigma/okf-tools/internal/publish"
 	"github.com/sigma/okf-tools/internal/publish/backend"
 )
@@ -22,7 +23,7 @@ func subpageGlossaryFiles() map[string]string {
 }
 
 func subpageGlossaryBundle(t *testing.T) *bundle.Bundle {
-	return loadBundleFiles(t, subpageGlossaryFiles())
+	return bundletest.Load(t, subpageGlossaryFiles())
 }
 
 // A glossary hosted as a subpage records its anchors — in its entry in the owning
@@ -54,7 +55,7 @@ func TestEditingAPageThatCitesASubpageGlossary(t *testing.T) {
 	files := subpageGlossaryFiles()
 	f := newFakeNotion()
 	be := newServer(t, f)
-	if _, err := runPublish(t, be, loadBundleFiles(t, files), backend.ScanStored); err != nil {
+	if _, err := runPublish(t, be, bundletest.Load(t, files), backend.ScanStored); err != nil {
 		t.Fatalf("first publish: %v", err)
 	}
 
@@ -71,7 +72,7 @@ func TestEditingAPageThatCitesASubpageGlossary(t *testing.T) {
 	// Edit the citing page only. The glossary hash-skips, so nothing in this run
 	// produces its anchors: they must come from the seed.
 	files["a.md"] = "---\ntype: adr\ntitle: A\n---\nThe [root KEK](CONTEXT.md#root-kek) guards the [envoy](CONTEXT.md#envoy), always.\n"
-	if _, err := runPublish(t, be, loadBundleFiles(t, files), backend.ScanStored); err != nil {
+	if _, err := runPublish(t, be, bundletest.Load(t, files), backend.ScanStored); err != nil {
 		t.Fatalf("editing a citing page failed: %v", err)
 	}
 }
@@ -83,7 +84,7 @@ func TestLegacyMirrorWithNoRecordedAnchorsConverges(t *testing.T) {
 	files := subpageGlossaryFiles()
 	f := newFakeNotion()
 	be := newServer(t, f)
-	if _, err := runPublish(t, be, loadBundleFiles(t, files), backend.ScanStored); err != nil {
+	if _, err := runPublish(t, be, bundletest.Load(t, files), backend.ScanStored); err != nil {
 		t.Fatalf("first publish: %v", err)
 	}
 
@@ -98,7 +99,7 @@ func TestLegacyMirrorWithNoRecordedAnchorsConverges(t *testing.T) {
 
 	// Editing a citing page against that state must still publish.
 	files["a.md"] = "---\ntype: adr\ntitle: A\n---\nThe [root KEK](CONTEXT.md#root-kek) and the [envoy](CONTEXT.md#envoy), revised.\n"
-	if _, err := runPublish(t, be, loadBundleFiles(t, files), backend.ScanStored); err != nil {
+	if _, err := runPublish(t, be, bundletest.Load(t, files), backend.ScanStored); err != nil {
 		t.Fatalf("legacy state did not converge: %v", err)
 	}
 	entry := storedMapOf(t, f, rowID)["CONTEXT.md"]

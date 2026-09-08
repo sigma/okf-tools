@@ -2,6 +2,7 @@ package notion
 
 import (
 	"context"
+	"github.com/sigma/okf-tools/internal/bundle/bundletest"
 	"testing"
 
 	"github.com/sigma/okf-tools/internal/publish"
@@ -21,7 +22,7 @@ import (
 // the data source's columns onto a child_page and 400 "Invalid property identifier",
 // aborting the whole drain (and with it write-back, which is #125's mechanism).
 func TestSubpagePropsOnlyUpdateSurvivesMissingPropHash(t *testing.T) {
-	b := loadTestBundle(t, map[string]string{
+	b := bundletest.Load(t, map[string]string{
 		"okf.toml":      "",
 		"docs/index.md": "# Docs\n",
 		"docs/a.md": "---\ntype: note\nstatus: draft\ncreated: \"2026-01-01\"\ntitle: A\n---\n" +

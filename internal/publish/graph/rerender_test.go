@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"github.com/sigma/okf-tools/internal/bundle/bundletest"
 	"testing"
 
 	"github.com/sigma/okf-tools/internal/publish"
@@ -15,7 +16,7 @@ import (
 // #181/#182 cases, corrupt — output, while the run reported "0 transaction(s)"
 // and success.
 func TestContentHashCoversTheRenderer(t *testing.T) {
-	b := loadBundle(t, workedExample())
+	b := bundletest.Load(t, workedExample())
 	d := docByRel(t, b, "docs/adr/0001.md")
 
 	bare := sha256.Sum256([]byte(d.Content))
@@ -27,7 +28,7 @@ func TestContentHashCoversTheRenderer(t *testing.T) {
 // The version is what moves the hash, so a bump re-renders every page exactly
 // once — the property the whole mechanism rests on.
 func TestRendererVersionMovesEveryHash(t *testing.T) {
-	b := loadBundle(t, workedExample())
+	b := bundletest.Load(t, workedExample())
 	d := docByRel(t, b, "docs/adr/0001.md")
 
 	if contentHashAt(RendererVersion, d) != ContentHash(d) {
@@ -42,8 +43,8 @@ func TestRendererVersionMovesEveryHash(t *testing.T) {
 // bundle, which is what a re-run actually is. A steady-state re-run must still be
 // a near-noop, and that is what makes the version mix affordable.
 func TestRendererVersionIsStableAcrossRuns(t *testing.T) {
-	first := ContentHash(docByRel(t, loadBundle(t, workedExample()), "docs/adr/0001.md"))
-	second := ContentHash(docByRel(t, loadBundle(t, workedExample()), "docs/adr/0001.md"))
+	first := ContentHash(docByRel(t, bundletest.Load(t, workedExample()), "docs/adr/0001.md"))
+	second := ContentHash(docByRel(t, bundletest.Load(t, workedExample()), "docs/adr/0001.md"))
 	if first != second {
 		t.Errorf("ContentHash is not stable across runs: %s vs %s", first, second)
 	}
@@ -54,7 +55,7 @@ func TestRendererVersionIsStableAcrossRuns(t *testing.T) {
 // operator can rewrite the mirror without reaching into it by hand and deleting
 // state files.
 func TestForceRewriteReAssertsEveryNode(t *testing.T) {
-	b := loadBundle(t, workedExample())
+	b := bundletest.Load(t, workedExample())
 	all := []string{"index.md", "docs/adr/index.md", "docs/adr/0001.md", "docs/adr/0002.md", "CONTEXT.md"}
 	cs := seed{
 		unchanged: all,
@@ -95,7 +96,7 @@ func TestForceRewriteLeavesCreatesAndDeletesAlone(t *testing.T) {
 		"index.md": "---\nokf_version: \"0.1\"\n---\nRoot.\n",
 		"new.md":   "---\ntype: c\n---\nBrand new.\n",
 	}
-	b := loadBundle(t, files)
+	b := bundletest.Load(t, files)
 	// index.md is published and unchanged; gone.md is in the scan with no source.
 	cs := publish.NewCurrentStateWithProps(
 		map[publish.SymbolicID]publish.BackendID{

@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"github.com/sigma/okf-tools/internal/bundle/bundletest"
 	"testing"
 
 	"github.com/sigma/okf-tools/internal/publish"
@@ -95,7 +96,7 @@ func TestBannerHashFolding(t *testing.T) {
 // carries the banner as a Quote block-0 whose single run links to that page's
 // source file, ahead of the authored body.
 func TestGenerateBannerBlockZero(t *testing.T) {
-	b := loadBundle(t, map[string]string{
+	b := bundletest.Load(t, map[string]string{
 		"okf.toml":   "",
 		"index.md":   "---\nokf_version: \"0.1\"\n---\n# Home\n",
 		"ideas/a.md": "# A\n\nsome body\n",
@@ -133,7 +134,7 @@ func TestGenerateBannerBlockZero(t *testing.T) {
 // TestGenerateBannerOnEveryPage: the banner rides every page, including an index
 // page, each with its own source deep-link.
 func TestGenerateBannerOnEveryPage(t *testing.T) {
-	b := loadBundle(t, map[string]string{
+	b := bundletest.Load(t, map[string]string{
 		"okf.toml":   "",
 		"index.md":   "---\nokf_version: \"0.1\"\n---\n# Home\n",
 		"ideas/a.md": "# A\n\nbody\n",
@@ -161,7 +162,7 @@ func TestGenerateBannerOnEveryPage(t *testing.T) {
 // TestGenerateNoBannerByDefault: without WithBanner, generation is unchanged — no
 // synthetic block-0 is injected.
 func TestGenerateNoBannerByDefault(t *testing.T) {
-	b := loadBundle(t, map[string]string{
+	b := bundletest.Load(t, map[string]string{
 		"okf.toml": "",
 		"index.md": "---\nokf_version: \"0.1\"\n---\nRoot.\n",
 		"a.md":     "# A\n\nbody\n",
@@ -185,7 +186,7 @@ func TestGenerateNoBannerByDefault(t *testing.T) {
 // scan carries the *banner-folded* hash; the plain ContentHash no longer matches,
 // which is exactly what makes a banner change re-publish and prevents a false skip.
 func TestGenerateBannerFoldedHashGatesSkip(t *testing.T) {
-	b := loadBundle(t, map[string]string{
+	b := bundletest.Load(t, map[string]string{
 		"okf.toml": "",
 		"index.md": "---\nokf_version: \"0.1\"\n---\nRoot.\n",
 		"a.md":     "# A\n\nbody\n",

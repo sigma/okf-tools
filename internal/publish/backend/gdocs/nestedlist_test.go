@@ -2,6 +2,7 @@ package gdocs_test
 
 import (
 	"context"
+	"github.com/sigma/okf-tools/internal/bundle/bundletest"
 	"strings"
 	"testing"
 
@@ -38,7 +39,7 @@ func TestNestedListsPublish(t *testing.T) {
 	defer srv.Close()
 
 	be := newBackend(t, srv.URL)
-	b := loadBundle(t, nestedListBundle())
+	b := bundletest.Load(t, nestedListBundle())
 
 	if _, err := pipeline.Run(context.Background(), be, b); err != nil {
 		t.Fatalf("run: %v", err)
@@ -84,7 +85,7 @@ func TestNestedListsRepublish(t *testing.T) {
 	srv := fake.server()
 	defer srv.Close()
 
-	b := loadBundle(t, nestedListBundle())
+	b := bundletest.Load(t, nestedListBundle())
 	for _, pass := range []string{"first", "second"} {
 		be := newBackend(t, srv.URL)
 		if _, err := pipeline.Run(context.Background(), be, b, pipeline.WithForceRewrite()); err != nil {

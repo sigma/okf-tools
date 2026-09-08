@@ -2,6 +2,7 @@ package gdocs_test
 
 import (
 	"context"
+	"github.com/sigma/okf-tools/internal/bundle/bundletest"
 	"net/http"
 	"strings"
 	"testing"
@@ -34,7 +35,7 @@ func TestGlossarySelfReferenceResolves(t *testing.T) {
 	defer srv.Close()
 
 	be := newBackend(t, srv.URL)
-	if _, err := pipeline.Run(context.Background(), be, loadBundle(t, selfCitingBundle())); err != nil {
+	if _, err := pipeline.Run(context.Background(), be, bundletest.Load(t, selfCitingBundle())); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
@@ -99,7 +100,7 @@ func TestDryRunPlansTheSelfReference(t *testing.T) {
 	// is the glossary's citation of itself. With alpha.md present its ordinary
 	// cross-tab link carries the same placeholder, and the assertion below would
 	// pass even if the deferred patch were never dumped.
-	if _, err := pipeline.Run(context.Background(), be, loadBundle(t, glossaryOnlyBundle())); err != nil {
+	if _, err := pipeline.Run(context.Background(), be, bundletest.Load(t, glossaryOnlyBundle())); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if fake.batchUpdates != 0 {
@@ -126,7 +127,7 @@ func TestCrossTabAnchorStillResolves(t *testing.T) {
 	defer srv.Close()
 
 	be := newBackend(t, srv.URL)
-	if _, err := pipeline.Run(context.Background(), be, loadBundle(t, selfCitingBundle())); err != nil {
+	if _, err := pipeline.Run(context.Background(), be, bundletest.Load(t, selfCitingBundle())); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 

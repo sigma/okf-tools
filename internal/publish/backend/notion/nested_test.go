@@ -4,11 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/sigma/okf-tools/internal/bundle"
+	"github.com/sigma/okf-tools/internal/bundle/bundletest"
 	"github.com/sigma/okf-tools/internal/publish"
 	"github.com/sigma/okf-tools/internal/publish/backend"
 	"github.com/sigma/okf-tools/internal/publish/graph"
@@ -20,7 +19,7 @@ import (
 // cluster index below it, and a leaf below that. The leaf's parent is therefore
 // itself a subpage, which is the shape #141 is about.
 func loadNestedBundle(t *testing.T) *bundle.Bundle {
-	return loadBundleFiles(t, map[string]string{
+	return bundletest.Load(t, map[string]string{
 		"okf.toml":          "[glossary]\nenabled = true\nfiles = [\"CONTEXT.md\"]\n",
 		"index.md":          "---\nokf_version: \"0.1\"\n---\n# Root\n",
 		"CONTEXT.md":        "# Glossary\n\n**Root KEK**: the root key-encryption key.\n",
@@ -28,29 +27,6 @@ func loadNestedBundle(t *testing.T) *bundle.Bundle {
 		"docs/adr/a.md":     "---\ntype: adr\ntitle: A\n---\nBody of A.\n",
 		"docs/adr/b.md":     "---\ntype: adr\ntitle: B\n---\nBody of B.\n",
 	})
-}
-
-func loadBundleFiles(t *testing.T, files map[string]string) *bundle.Bundle {
-	t.Helper()
-	dir := t.TempDir()
-	for name, content := range files {
-		p := filepath.Join(dir, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	root, cfgPath, err := bundle.Discover(dir, "", "")
-	if err != nil {
-		t.Fatalf("discover: %v", err)
-	}
-	b, err := bundle.Load(root, cfgPath)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	return b
 }
 
 // runPublish drives Scan → Generate → Optimize → Transport, the pipeline's own
@@ -260,7 +236,7 @@ func TestPartialRunRecordsAgainstAnUntouchedOwner(t *testing.T) {
 	}
 	f := newFakeNotion()
 	be := newServer(t, f)
-	if _, err := runPublish(t, be, loadBundleFiles(t, files), backend.ScanStored); err != nil {
+	if _, err := runPublish(t, be, bundletest.Load(t, files), backend.ScanStored); err != nil {
 		t.Fatalf("first publish: %v", err)
 	}
 	rowID := theOnlyRow(t, f)
@@ -269,7 +245,7 @@ func TestPartialRunRecordsAgainstAnUntouchedOwner(t *testing.T) {
 	// Edit the grandchild alone. Its owning row (the root index) and its parent (the
 	// cluster index) both hash-skip, so neither is in this run's provenance.
 	files["docs/adr/a.md"] = "---\ntype: adr\ntitle: A\n---\nBody of A, revised.\n"
-	edited := loadBundleFiles(t, files)
+	edited := bundletest.Load(t, files)
 	ops, err := runPublish(t, be, edited, backend.ScanStored)
 	if err != nil {
 		t.Fatalf("partial publish: %v", err)

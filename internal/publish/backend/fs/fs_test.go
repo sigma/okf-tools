@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/sigma/okf-tools/internal/bundle"
+	"github.com/sigma/okf-tools/internal/bundle/bundletest"
 	"github.com/sigma/okf-tools/internal/publish"
 	"github.com/sigma/okf-tools/internal/publish/backend"
 	fsbackend "github.com/sigma/okf-tools/internal/publish/backend/fs"
@@ -22,32 +23,6 @@ import (
 	"github.com/sigma/okf-tools/internal/publish/optimize"
 	"github.com/sigma/okf-tools/internal/publish/transport"
 )
-
-// loadBundle materializes an in-memory file set as a real okf bundle on disk and
-// loads it through the production discover/load path, so the export drives Stage 1
-// against genuine parsed input.
-func loadBundle(t *testing.T, files map[string]string) *bundle.Bundle {
-	t.Helper()
-	dir := t.TempDir()
-	for name, content := range files {
-		p := filepath.Join(dir, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	root, cfgPath, err := bundle.Discover(dir, "", "")
-	if err != nil {
-		t.Fatalf("discover: %v", err)
-	}
-	b, err := bundle.Load(root, cfgPath)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	return b
-}
 
 // exportBundle is a small but representative bundle exercising every edge cause the
 // pipeline must sequence — nested indexes (parent-before-child), a cross-document
@@ -92,7 +67,7 @@ func publishToDisk(t *testing.T, b *bundle.Bundle, out string) *transport.Result
 // TestExportTree publishes the bundle to a filesystem backend and asserts the
 // exported tree file-by-file — the seam-didn't-leak regression check.
 func TestExportTree(t *testing.T) {
-	b := loadBundle(t, exportBundle())
+	b := bundletest.Load(t, exportBundle())
 	out := t.TempDir()
 
 	res := publishToDisk(t, b, out)
@@ -166,7 +141,7 @@ func TestExportExternalLinkSurvives(t *testing.T) {
 			"- [Pub/Sub overview](https://docs.cloud.google.com/pubsub/docs/subscription-overview)\n\n" +
 			"# Citations\n\n- [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110)\n",
 	}
-	b := loadBundle(t, files)
+	b := bundletest.Load(t, files)
 	out := t.TempDir()
 	publishToDisk(t, b, out)
 
@@ -205,7 +180,7 @@ func TestExportSelfHostedAnchor(t *testing.T) {
 			"**Emergency block**: when tripped, follow the " +
 			"[emergency block](CONTEXT.md#emergency-block) procedure.\n",
 	}
-	b := loadBundle(t, files)
+	b := bundletest.Load(t, files)
 	out := t.TempDir()
 
 	res := publishToDisk(t, b, out)
@@ -234,7 +209,7 @@ func TestExportSelfHostedAnchor(t *testing.T) {
 // TestExportDeterministic re-exports the same bundle to a second tree and asserts
 // the two trees are byte-identical — reproducible dry-runs.
 func TestExportDeterministic(t *testing.T) {
-	b := loadBundle(t, exportBundle())
+	b := bundletest.Load(t, exportBundle())
 	out1, out2 := t.TempDir(), t.TempDir()
 	publishToDisk(t, b, out1)
 	publishToDisk(t, b, out2)
@@ -254,7 +229,7 @@ func TestExportDeterministic(t *testing.T) {
 // TestScanRoundTrip proves the disk-read Scanner recovers what Execute wrote: a
 // scan of a populated export tree reports every node id and the hosted anchor.
 func TestScanRoundTrip(t *testing.T) {
-	b := loadBundle(t, exportBundle())
+	b := bundletest.Load(t, exportBundle())
 	out := t.TempDir()
 	publishToDisk(t, b, out)
 
@@ -379,7 +354,7 @@ func TestExportContentAssertionDropsStaleSections(t *testing.T) {
 		"okf.toml": "",
 		"index.md": "---\nokf_version: \"0.1\"\n---\n# Root\n\nFirst.\n\nSecond.\n\nThird.\n",
 	}
-	publishToDisk(t, loadBundle(t, long), out)
+	publishToDisk(t, bundletest.Load(t, long), out)
 
 	sections := sectionNames(t, filepath.Join(out, "index.md"))
 	if len(sections) != 4 {
@@ -390,7 +365,7 @@ func TestExportContentAssertionDropsStaleSections(t *testing.T) {
 		"okf.toml": "",
 		"index.md": "---\nokf_version: \"0.1\"\n---\n# Root\n\nOnly.\n",
 	}
-	publishToDisk(t, loadBundle(t, short), out)
+	publishToDisk(t, bundletest.Load(t, short), out)
 
 	sections = sectionNames(t, filepath.Join(out, "index.md"))
 	if len(sections) != 2 {

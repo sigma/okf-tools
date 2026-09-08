@@ -1,6 +1,7 @@
 package fs_test
 
 import (
+	"github.com/sigma/okf-tools/internal/bundle/bundletest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,7 +17,7 @@ func TestExportRendersTable(t *testing.T) {
 		"index.md": "---\nokf_version: \"0.1\"\n---\n# Root\n",
 		"t.md":     "---\ntype: adr\ntitle: T\n---\n| Name | Role |\n| --- | --- |\n| Ada | author |\n",
 	}
-	b := loadBundle(t, files)
+	b := bundletest.Load(t, files)
 	out := t.TempDir()
 	publishToDisk(t, b, out)
 
@@ -43,7 +44,7 @@ func TestExportTableCellLinkResolves(t *testing.T) {
 		"b.md":     "---\ntype: adr\ntitle: B\n---\nJust B.\n",
 		"t.md":     "---\ntype: adr\ntitle: T\n---\n| See |\n| --- |\n| [B](b.md) |\n",
 	}
-	b := loadBundle(t, files)
+	b := bundletest.Load(t, files)
 	out := t.TempDir()
 	publishToDisk(t, b, out)
 

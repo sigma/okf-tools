@@ -2,6 +2,7 @@ package gdocs_test
 
 import (
 	"context"
+	"github.com/sigma/okf-tools/internal/bundle/bundletest"
 	"strings"
 	"testing"
 	"unicode/utf16"
@@ -47,7 +48,7 @@ func TestOverLongTitlesPublish(t *testing.T) {
 	defer srv.Close()
 
 	be := newBackend(t, srv.URL)
-	if _, err := pipeline.Run(context.Background(), be, loadBundle(t, longTitleBundle())); err != nil {
+	if _, err := pipeline.Run(context.Background(), be, bundletest.Load(t, longTitleBundle())); err != nil {
 		t.Fatalf("a bundle with over-long titles failed to publish: %v", err)
 	}
 
@@ -83,7 +84,7 @@ func TestTruncationDoesNotDefeatDisambiguation(t *testing.T) {
 	}
 
 	be := newBackend(t, srv.URL)
-	if _, err := pipeline.Run(context.Background(), be, loadBundle(t, files)); err != nil {
+	if _, err := pipeline.Run(context.Background(), be, bundletest.Load(t, files)); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
@@ -112,7 +113,7 @@ func TestTruncationReadsAsDeliberate(t *testing.T) {
 	defer srv.Close()
 
 	be := newBackend(t, srv.URL)
-	if _, err := pipeline.Run(context.Background(), be, loadBundle(t, longTitleBundle())); err != nil {
+	if _, err := pipeline.Run(context.Background(), be, bundletest.Load(t, longTitleBundle())); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 

@@ -2,43 +2,16 @@ package pipeline
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/sigma/okf-tools/internal/bundle"
+	"github.com/sigma/okf-tools/internal/bundle/bundletest"
 	"github.com/sigma/okf-tools/internal/publish"
 	"github.com/sigma/okf-tools/internal/publish/backend"
 	"github.com/sigma/okf-tools/internal/publish/backend/fake"
 	"github.com/sigma/okf-tools/internal/publish/graph"
 )
-
-// loadBundle materializes an in-memory file set as a real okf bundle on disk and
-// loads it through the production discover/load path, so Run drives Stage 1 against
-// genuine parsed input.
-func loadBundle(t *testing.T, files map[string]string) *bundle.Bundle {
-	t.Helper()
-	dir := t.TempDir()
-	for name, content := range files {
-		p := filepath.Join(dir, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	root, cfgPath, err := bundle.Discover(dir, "", "")
-	if err != nil {
-		t.Fatalf("discover: %v", err)
-	}
-	b, err := bundle.Load(root, cfgPath)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	return b
-}
 
 // smallBundle is a representative bundle: nested indexes (parent-before-child), a
 // cross-document link (content-refs-node), and a glossary hosting a cited anchor
@@ -77,7 +50,7 @@ func scanAfterPublish(b *bundle.Bundle) *publish.CurrentState {
 // executing one transaction per PackedTxn and resolving every source node and the
 // cited anchor.
 func TestRunPublishesEverythingAgainstFake(t *testing.T) {
-	b := loadBundle(t, smallBundle())
+	b := bundletest.Load(t, smallBundle())
 	// maxCount=2 dials packing pressure so a mutual link (a <-> b, both new) stays
 	// acyclic: creates seal separately from content.
 	be := fake.New(fake.WithMaxCount(2))
@@ -127,7 +100,7 @@ func markerBundle() map[string]string {
 // the anchor page purely because areas.json marks it role: glossary, and the anchor a
 // page cites resolves through the pipeline.
 func TestRunHostsAnchorFromAreasMarker(t *testing.T) {
-	b := loadBundle(t, markerBundle())
+	b := bundletest.Load(t, markerBundle())
 
 	// Sanity: the marker (not an okf.toml files list) designated CONTEXT.md.
 	if b.Areas == nil {
@@ -153,7 +126,7 @@ func TestRunHostsAnchorFromAreasMarker(t *testing.T) {
 // against a scan that already reflects the published state hash-skips every page,
 // so the pipeline emits an empty transaction-DAG and makes ZERO backend calls.
 func TestRunNearNoopRerun(t *testing.T) {
-	b := loadBundle(t, smallBundle())
+	b := bundletest.Load(t, smallBundle())
 	seed := scanAfterPublish(b)
 	be := fake.New(fake.WithScan(seed))
 
@@ -177,7 +150,7 @@ func TestRunNearNoopRerun(t *testing.T) {
 // emitted — the re-run is proportional to the change, not to bundle size. This is
 // the "near" in near-noop (an edgeless graph for the untouched pages).
 func TestRunNearNoopSingleChange(t *testing.T) {
-	b := loadBundle(t, smallBundle())
+	b := bundletest.Load(t, smallBundle())
 	seed := scanAfterPublish(b)
 
 	// Drift b.md's stored hash so only it is "changed"; every other page still
@@ -220,7 +193,7 @@ func TestRunNearNoopSingleChange(t *testing.T) {
 // page when a banner is passed. This exercises the pipeline→graph wiring without
 // reaching into the fake's opaque transaction internals.
 func TestRunBannerThreadsIntoChangeDetection(t *testing.T) {
-	b := loadBundle(t, smallBundle())
+	b := bundletest.Load(t, smallBundle())
 	seed := scanAfterPublish(b) // steady-state scan carrying the plain ContentHash
 
 	// Baseline: without a banner, this seed is a near-noop.
@@ -260,7 +233,7 @@ func (m *meteredBackend) RequestStats() publish.RequestStats { return m.stats }
 // A backend that meters its API traffic has that traffic reported in the Result,
 // so the bin can print it alongside the transaction count.
 func TestRunReportsBackendRequestStats(t *testing.T) {
-	b := loadBundle(t, smallBundle())
+	b := bundletest.Load(t, smallBundle())
 	want := publish.RequestStats{Requests: 41, Throttled: 2, Transient: 1}
 	be := &meteredBackend{Backend: fake.New(fake.WithScan(scanAfterPublish(b))), stats: want}
 
@@ -276,7 +249,7 @@ func TestRunReportsBackendRequestStats(t *testing.T) {
 // A backend that meters nothing (the fake, the filesystem export) leaves the
 // stats at zero rather than making the Result unusable.
 func TestRunWithoutRequestReporterReportsZeroStats(t *testing.T) {
-	b := loadBundle(t, smallBundle())
+	b := bundletest.Load(t, smallBundle())
 	res, err := Run(context.Background(), fake.New(), b)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -331,7 +304,7 @@ func TestZeroIntervalIsExplicitNotUnset(t *testing.T) {
 // The run reports how many unclaimed objects it reclaimed, so an operator sees that
 // earlier runs died partway rather than having to go looking.
 func TestRunReportsReclaimedRows(t *testing.T) {
-	b := loadBundle(t, smallBundle())
+	b := bundletest.Load(t, smallBundle())
 	seed := scanAfterPublish(b)
 
 	// Fold two unclaimed rows into the converged seed: rows an aborted run created
@@ -370,7 +343,7 @@ func TestRunReportsReclaimedRows(t *testing.T) {
 
 // A converged run with nothing leaked reports zero, and stays a true no-op.
 func TestRunReportsNoReclamationWhenClean(t *testing.T) {
-	b := loadBundle(t, smallBundle())
+	b := bundletest.Load(t, smallBundle())
 	res, err := Run(context.Background(), fake.New(fake.WithScan(scanAfterPublish(b))), b)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
