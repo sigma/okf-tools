@@ -117,6 +117,15 @@ type Fixture struct {
 	// An area's landing README is deliberately absent: the backends disagree about
 	// publishing it (#163), and that disagreement has its own property below.
 	Nodes []string
+
+	// Removable is a bundle-relative page the delete property removes from the
+	// fixture on a second publish, turning it into an orphan. Empty skips that
+	// property.
+	//
+	// It is named rather than derived because not every page can go: removing one
+	// another page links to would test a broken bundle instead of a delete. The
+	// named page must have no inbound links.
+	Removable string
 }
 
 // Fixtures are the bundles the kit publishes through every backend. They are
@@ -150,6 +159,24 @@ func Fixtures() []Fixture {
 				"alpha.md": frontmatter("Alpha", "concept") + "# Alpha\n\n" +
 					"Alpha cites a [Widget](/CONTEXT.md#widget) and links [Beta](/beta.md).\n",
 				"beta.md": frontmatter("Beta", "concept") + "# Beta\n\nBeta stands alone.\n",
+			},
+		},
+		{
+			Name:      "retired-page",
+			Nodes:     []string{"index.md", "CONTEXT.md", "retired.md"},
+			Removable: "retired.md",
+			Why: "a page that LEAVES the bundle. Deletes had no conformance coverage at " +
+				"all: no fixture produced an orphan, so every backend's archive path — " +
+				"and whether the archive stuck — was asserted nowhere",
+			Files: map[string]string{
+				"okf.toml": "[glossary]\nenabled = true\nfiles = [\"CONTEXT.md\"]\n",
+				"index.md": frontmatter("Index", "index") + "# Index\n\nThe root page.\n",
+				"CONTEXT.md": frontmatter("Context", "context") + "# Keys\n\n" +
+					"- **Widget**: a small thing.\n",
+				// Nothing links here, so removing it leaves the rest of the bundle intact
+				// and the only consequence is the orphan itself.
+				"retired.md": frontmatter("Retired", "concept") +
+					"# Retired\n\nA page about to leave the bundle.\n",
 			},
 		},
 		{
@@ -277,6 +304,50 @@ func runFixture(t *testing.T, newSubject Factory, f Fixture) {
 		}
 	})
 
+	t.Run("a page that leaves the bundle is deleted", func(t *testing.T) {
+		if f.Removable == "" {
+			t.Skip("fixture names no removable page")
+		}
+		s := newSubject(t)
+		publishBundleWith(t, s, loadBundle(t, f.Files), f)
+
+		// Publishing the same bundle minus one page makes that page an orphan, which
+		// is the only way a DeleteNode op reaches a backend. Before this fixture no
+		// fixture produced one, so every backend's archive path ran in no test at all.
+		reduced := loadBundle(t, without(f.Files, f.Removable))
+		res := publishBundleWith(t, s, reduced, f)
+		if res.TxnCount == 0 {
+			t.Fatalf("removing %s produced no work at all; the orphan was never noticed", f.Removable)
+		}
+		if _, still := res.Nodes[publish.SymbolicID("node:"+f.Removable)]; still {
+			t.Errorf("%s was reported as published by the run that removed it", f.Removable)
+		}
+		// Nothing is asserted here about the OTHER nodes. A delete-only run
+		// hash-skips them, so they are legitimately absent from Nodes — their
+		// survival is a question for the destination, which only Snapshot can read.
+	})
+
+	// NOT YET ASSERTED: that the delete STICKS — that the run after a delete has
+	// nothing left to do. It does not hold on the Notion backend today
+	// (sigma/okf-tools#189), and the reason is worth recording where the next person
+	// will look.
+	//
+	// A subpage is recorded in its OWNING ROW's `hashes` subtree map, and
+	// mergeSubtree only ever adds and updates entries — it never removes one. The
+	// archive PATCHes the page itself and leaves the owner's map alone, so the next
+	// ScanStored reconstructs the archived page from that map, generation sees an
+	// orphan again, and the run re-archives it. Forever: a bundle that has ever lost
+	// a subpage never reaches a true noop again, and pays one pointless write per
+	// run for it. Re-enabling the assertion below is how #189 reproduces.
+	//
+	// Fixing it means the deleted node reaching write-back, which it currently
+	// cannot: Provenance carries only nodes that were WRITTEN, a delete produces
+	// none, and Transaction is opaque to the transport, so nothing downstream of the
+	// backend knows an archive happened. Either the backend remembers what it
+	// archived and prunes the owner's map in its own WriteBack, or Provenance grows
+	// a deleted set. Until then this property would fail honestly rather than pass
+	// vacuously, so it is named here instead of written green.
+
 	t.Run("republish is a near-noop", func(t *testing.T) {
 		s := newSubject(t)
 		if s.Writes == nil {
@@ -377,6 +448,18 @@ func declaredAnchors(b *bundle.Bundle) []publish.AnchorName {
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+// without copies a fixture's files minus one page — the smallest edit that turns
+// a published node into an orphan.
+func without(files map[string]string, rel string) map[string]string {
+	out := make(map[string]string, len(files))
+	for name, content := range files {
+		if name != rel {
+			out[name] = content
+		}
+	}
 	return out
 }
 
