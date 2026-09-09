@@ -66,6 +66,7 @@ func (b *Backend) create(ctx context.Context, t *Transaction, r backend.Resolver
 	}
 	hosted := backend.HostedAnchors(t.Children, func(cb childBlock) []publish.AnchorName { return cb.anchors })
 	postChildren, deferred := deferSelfHostedCites(t.Children, hosted)
+	postChildren, overflow := splitOversizedTables(postChildren, b.maxBlocks)
 	children, err := b.childrenJSON(postChildren, r)
 	if err != nil {
 		return err
@@ -78,14 +79,21 @@ func (b *Backend) create(ctx context.Context, t *Transaction, r backend.Resolver
 	}
 	res.Nodes[writeTarget(t)] = publish.BackendID(page.ID)
 
-	if hosted == nil {
+	if hosted == nil && len(overflow) == 0 {
 		return nil
 	}
 	// The POST /pages does not echo the created child ids, so GET them to learn the
-	// server-minted block ids before mapping anchors and patching deferred citations.
+	// server-minted block ids — needed to map anchors, patch deferred citations, and
+	// address a table block whose extra rows still have to be appended.
 	ids, err := b.listChildIDs(ctx, page.ID)
 	if err != nil {
 		return err
+	}
+	if err := b.appendTableOverflow(ctx, fmt.Sprintf("notion: create %s", writeTarget(t)), ids, overflow, r); err != nil {
+		return err
+	}
+	if hosted == nil {
+		return nil
 	}
 	return b.resolveSelfHostedAnchors(ctx, fmt.Sprintf("notion: create %s", writeTarget(t)), t.Children, ids, deferred, res.Anchors, r)
 }
@@ -192,6 +200,7 @@ func (b *Backend) update(ctx context.Context, t *Transaction, r backend.Resolver
 		}
 		hosted := backend.HostedAnchors(t.Children, func(cb childBlock) []publish.AnchorName { return cb.anchors })
 		appendChildren, deferred := deferSelfHostedCites(t.Children, hosted)
+		appendChildren, overflow := splitOversizedTables(appendChildren, b.maxBlocks)
 		children, err := b.childrenJSON(appendChildren, r)
 		if err != nil {
 			return err
@@ -199,6 +208,11 @@ func (b *Backend) update(ctx context.Context, t *Transaction, r backend.Resolver
 		var out appendResult
 		path := "/blocks/" + url.PathEscape(string(id)) + "/children"
 		if err := b.do(ctx, http.MethodPatch, path, appendChildrenReq{Children: children}, &out); err != nil {
+			return err
+		}
+		// The append echoes the minted block ids, so an oversized table's remaining
+		// rows can go straight onto the table block it just created.
+		if err := b.appendTableOverflow(ctx, fmt.Sprintf("notion: append to %s", target), objectIDs(out.Results), overflow, r); err != nil {
 			return err
 		}
 		if hosted != nil {
@@ -404,21 +418,9 @@ func tableBlockJSON(cb childBlock, r backend.Resolver) (string, map[string]any, 
 	if len(cb.rows) > 0 {
 		width = len(cb.rows[0].cells)
 	}
-	children := make([]map[string]any, 0, len(cb.rows))
-	for _, row := range cb.rows {
-		cells := make([]any, 0, len(row.cells))
-		for _, cellRuns := range row.cells {
-			rich, err := richTextJSON(cellRuns, r)
-			if err != nil {
-				return "", nil, err
-			}
-			cells = append(cells, rich)
-		}
-		children = append(children, map[string]any{
-			"object":    "block",
-			"type":      "table_row",
-			"table_row": map[string]any{"cells": cells},
-		})
+	children, err := tableRowsJSON(cb.rows, r)
+	if err != nil {
+		return "", nil, err
 	}
 	payload := map[string]any{
 		"table_width":       width,
@@ -427,6 +429,99 @@ func tableBlockJSON(cb childBlock, r backend.Resolver) (string, map[string]any, 
 		"children":          children,
 	}
 	return "table", payload, nil
+}
+
+// tableRowsJSON serializes table rows into `table_row` child blocks, each carrying
+// its cells as arrays of resolved rich text. Both the rows that ride inline in a
+// table's payload and the overflow rows appended afterwards go through here, so the
+// two paths cannot render a row differently.
+func tableRowsJSON(rows []tableRow, r backend.Resolver) ([]map[string]any, error) {
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		cells := make([]any, 0, len(row.cells))
+		for _, cellRuns := range row.cells {
+			rich, err := richTextJSON(cellRuns, r)
+			if err != nil {
+				return nil, err
+			}
+			cells = append(cells, rich)
+		}
+		out = append(out, map[string]any{
+			"object":    "block",
+			"type":      "table_row",
+			"table_row": map[string]any{"cells": cells},
+		})
+	}
+	return out, nil
+}
+
+// tableOverflow names the rows of one table child that did not fit in the write
+// that created it, keyed by that child's index in the children array — which is
+// positionally the index of its minted block id, exactly as the self-hosted-anchor
+// paths key theirs.
+type tableOverflow struct {
+	index int
+	rows  []tableRow
+}
+
+// splitOversizedTables trims every table child down to the rows one call may carry
+// and returns those trimmed children alongside the rows left over.
+//
+// Notion enforces its ≤100-children ceiling at EVERY nesting level, and a table's
+// rows are that table block's children — so a table over the ceiling 400s the whole
+// call, taking the transaction with it (sigma/okf-tools#207). The Bin cannot see
+// this: a table is one atomic unit of Cost 1 no matter how many rows it holds,
+// because at the top level it really is one block. The rows are therefore capped
+// here, at serialization, and the remainder appended onto the table block itself
+// once the write mints its id — so a long table stays ONE table in Notion rather
+// than being cut into several, and the recompute hash (which projects the untrimmed
+// tokenized rows, and reads live rows back through a paginated walk) still sees the
+// whole table on both sides.
+func splitOversizedTables(children []childBlock, limit int) ([]childBlock, []tableOverflow) {
+	var overflow []tableOverflow
+	out, copied := children, false
+	for i, cb := range children {
+		if cb.kind != int(graph.Table) || limit <= 0 || len(cb.rows) <= limit {
+			continue
+		}
+		// Copy on first trim: the caller's slice is the transaction's own children,
+		// which the anchor paths still read in full.
+		if !copied {
+			out, copied = append([]childBlock(nil), children...), true
+		}
+		out[i].rows = cb.rows[:limit]
+		overflow = append(overflow, tableOverflow{index: i, rows: cb.rows[limit:]})
+	}
+	return out, overflow
+}
+
+// appendTableOverflow lands the rows splitOversizedTables held back, PATCHing them
+// onto the table block's own children in ceiling-sized batches. ids are the minted
+// block ids positionally aligned with the children that were written; errPrefix
+// labels the operation and its write-target. Batches go in order, and an append
+// lands at the end of the table, so the rows keep their source order.
+func (b *Backend) appendTableOverflow(ctx context.Context, errPrefix string, ids []string, overflow []tableOverflow, r backend.Resolver) error {
+	for _, o := range overflow {
+		if o.index >= len(ids) {
+			return fmt.Errorf("%s: table at child %d has no minted block id (got %d ids)", errPrefix, o.index, len(ids))
+		}
+		path := "/blocks/" + url.PathEscape(ids[o.index]) + "/children"
+		for rest := o.rows; len(rest) > 0; {
+			batch := rest
+			if len(batch) > b.maxBlocks {
+				batch = batch[:b.maxBlocks]
+			}
+			rest = rest[len(batch):]
+			rows, err := tableRowsJSON(batch, r)
+			if err != nil {
+				return fmt.Errorf("%s: %w", errPrefix, err)
+			}
+			if err := b.do(ctx, http.MethodPatch, path, appendChildrenReq{Children: rows}, nil); err != nil {
+				return fmt.Errorf("%s: appending table rows: %w", errPrefix, err)
+			}
+		}
+	}
+	return nil
 }
 
 // richTextJSON turns a block's inline runs into Notion rich-text objects: a literal
