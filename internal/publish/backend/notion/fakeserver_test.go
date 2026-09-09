@@ -253,7 +253,7 @@ func (f *fakeNotion) createPage(w http.ResponseWriter, r *http.Request) {
 	// nothing else, so any column property in the create 400s exactly as Notion does.
 	parent, _ := body["parent"].(map[string]any)
 	childPage := parent != nil && parent["type"] == "page_id"
-	if rejectColumnProps(w, body, childPage) {
+	if rejectColumnProps(w, body, childPage) || rejectOverCeiling(w, body) {
 		return
 	}
 
@@ -410,6 +410,45 @@ func rejectColumnProps(w http.ResponseWriter, body map[string]any, childPage boo
 	return true
 }
 
+// rejectOverCeiling models the ≤100-children ceiling Notion enforces at EVERY
+// nesting level, which both write paths share. A children array over the ceiling
+// 400s, and so does a table whose nested table_row children exceed it — the failure
+// sigma/okf-tools#207 is about, invisible to a fake that only counted the top level.
+// The message mirrors the real one, path and count included.
+func rejectOverCeiling(w http.ResponseWriter, body map[string]any) bool {
+	children, _ := body["children"].([]any)
+	over := ""
+	if len(children) > maxBlocksPerTxn {
+		over = fmt.Sprintf("body.children.length should be ≤ `%d`, instead was `%d`", maxBlocksPerTxn, len(children))
+	}
+	for i, raw := range children {
+		blk, ok := raw.(map[string]any)
+		if !ok || over != "" {
+			break
+		}
+		table, ok := blk[nTypeTable].(map[string]any)
+		if !ok {
+			continue
+		}
+		if rows, _ := table["children"].([]any); len(rows) > maxBlocksPerTxn {
+			over = fmt.Sprintf("body.children[%d].table.children.length should be ≤ `%d`, instead was `%d`", i, maxBlocksPerTxn, len(rows))
+		}
+	}
+	if over == "" {
+		return false
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadRequest)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"object":  "error",
+		"status":  400,
+		"code":    "validation_error",
+		"message": "body failed validation: " + over,
+	})
+	return true
+}
+
 func (f *fakeNotion) getChildren(w http.ResponseWriter, r *http.Request) {
 	f.record(r)
 	id := r.PathValue("id")
@@ -460,6 +499,9 @@ func storedBlock(id string, raw any) map[string]any {
 func (f *fakeNotion) appendChildren(w http.ResponseWriter, r *http.Request) {
 	body := f.record(r)
 	pageID := r.PathValue("id")
+	if rejectOverCeiling(w, body) {
+		return
+	}
 
 	f.mu.Lock()
 	var results []map[string]any

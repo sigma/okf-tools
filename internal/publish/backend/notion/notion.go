@@ -47,6 +47,10 @@ import (
 //     accepts at most 100 child blocks. The Bin counts a content unit's Cost
 //     against this ceiling; a create or properties unit costs zero children (they
 //     are the page itself, not its children), which is what makes fusion free.
+//     Notion applies the same ceiling at EVERY nesting level, which the Bin cannot
+//     model: a table is one unit of Cost 1 however many rows it holds, and its rows
+//     are its own children. The Executor caps those separately and appends the
+//     remainder onto the table block (splitOversizedTables, #207).
 //   - maxBlockChars: a single Notion rich-text object holds at most 2000
 //     characters. The Tokenizer enforces this by splitting an oversized block into
 //     several units during tokenization — and because each split adds a block, the
