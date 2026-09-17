@@ -60,6 +60,15 @@ func SelectBackend(ctx context.Context, kind BackendKind, cfg *Config, bundleNam
 			notion.WithDataSourceID(cfg.NotionDBID),
 			notion.WithSchema(cfg.Schema),
 		}
+		// The plan sets the rate; an explicit interval, applied after it, overrides
+		// it. Order is the precedence (#210).
+		if cfg.NotionPlan != "" {
+			plan, err := notion.ParsePlan(cfg.NotionPlan)
+			if err != nil {
+				return nil, fmt.Errorf("backend %q: %w", BackendNotion, err)
+			}
+			opts = append(opts, notion.WithPlan(plan))
+		}
 		if d, ok := intervalOverride(cfg); ok {
 			opts = append(opts, notion.WithInterval(d))
 		}
@@ -90,10 +99,10 @@ func SelectBackend(ctx context.Context, kind BackendKind, cfg *Config, bundleNam
 	}
 }
 
-// intervalOverride reports the write-pacing interval the operator configured, and
+// intervalOverride reports the pacing interval the operator configured, and
 // whether they configured one at all. The two answers must stay separate: unset
-// leaves notion.DefaultInterval in place, while an explicit zero disables pacing —
-// so collapsing them (treating zero as "unset") would make `--interval 0` silently
+// leaves the plan's rate in place, while an explicit zero disables pacing — so
+// collapsing them (treating zero as "unset") would make `--interval 0` silently
 // pace at the default, which is the opposite of what it says.
 func intervalOverride(cfg *Config) (time.Duration, bool) {
 	if cfg == nil || cfg.NotionInterval == nil {

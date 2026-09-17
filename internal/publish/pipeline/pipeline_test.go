@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/sigma/okf-tools/internal/publish"
 	"github.com/sigma/okf-tools/internal/publish/backend"
 	"github.com/sigma/okf-tools/internal/publish/backend/fake"
+	"github.com/sigma/okf-tools/internal/publish/backend/notion"
 	"github.com/sigma/okf-tools/internal/publish/graph"
 )
 
@@ -350,5 +352,39 @@ func TestRunReportsNoReclamationWhenClean(t *testing.T) {
 	}
 	if res.Reclaimed != 0 || res.TxnCount != 0 {
 		t.Errorf("clean run reclaimed=%d txns=%d, want 0 and 0", res.Reclaimed, res.TxnCount)
+	}
+}
+
+// The plan reaches the backend as its sustained rate; an explicit interval still
+// wins over it, and an unknown plan is refused at selection rather than paced at
+// some guess (sigma/okf-tools#210).
+func TestSelectBackendPacesByPlan(t *testing.T) {
+	pacing := func(t *testing.T, cfg *Config) time.Duration {
+		t.Helper()
+		cfg.NotionToken, cfg.NotionDBID = "tok", "ds1"
+		be, err := SelectBackend(context.Background(), BackendNotion, cfg, "bundle")
+		if err != nil {
+			t.Fatalf("SelectBackend: %v", err)
+		}
+		return be.(*notion.Backend).Pacing()
+	}
+	if got := pacing(t, &Config{}); got != notion.DefaultInterval {
+		t.Errorf("no plan: pacing = %v, want the default %v", got, notion.DefaultInterval)
+	}
+	if got := pacing(t, &Config{NotionPlan: "business"}); got != notion.PlanBusiness.Interval() {
+		t.Errorf("business: pacing = %v, want %v", got, notion.PlanBusiness.Interval())
+	}
+	if got := pacing(t, &Config{NotionPlan: "Enterprise"}); got != notion.PlanEnterprise.Interval() {
+		t.Errorf("enterprise (any case): pacing = %v, want %v", got, notion.PlanEnterprise.Interval())
+	}
+	if got := pacing(t, &Config{NotionPlan: "business", NotionInterval: ptr(time.Second)}); got != time.Second {
+		t.Errorf("plan + interval: pacing = %v, want the explicit interval", got)
+	}
+	if got := pacing(t, &Config{NotionPlan: "business", NotionInterval: ptr(0 * time.Second)}); got != 0 {
+		t.Errorf("plan + interval 0: pacing = %v, want pacing off", got)
+	}
+	_, err := SelectBackend(context.Background(), BackendNotion, &Config{NotionToken: "tok", NotionDBID: "ds1", NotionPlan: "team"}, "bundle")
+	if err == nil || !strings.Contains(err.Error(), "team") {
+		t.Errorf("unknown plan: err = %v, want a refusal naming it", err)
 	}
 }

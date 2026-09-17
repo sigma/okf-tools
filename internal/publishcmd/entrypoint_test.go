@@ -2,10 +2,14 @@ package publishcmd
 
 import (
 	"bytes"
+	"flag"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/sigma/okf-tools/internal/publish/backend/notion"
 )
 
 // These tests cross the same seam main.go does — the real (out, args) surface,
@@ -190,3 +194,82 @@ func TestAreasFlagPointingNowhereIsAnError(t *testing.T) {
 		t.Errorf("error = %q, want it to name the registry it could not read", err)
 	}
 }
+
+// An unknown --notion-plan is a usage error naming the accepted plans, refused
+// before any backend is built (sigma/okf-tools#210).
+func TestUnknownNotionPlanExitsTwo(t *testing.T) {
+	var buf bytes.Buffer
+	code, err := Run(&buf, []string{"--backend", "fake", "--bundle", bundleDir(t), "--notion-plan", "team"})
+	if err == nil {
+		t.Fatal("an unknown plan must be an error")
+	}
+	if code != 2 {
+		t.Errorf("exit code = %d, want 2 for a usage error", code)
+	}
+	for _, name := range []string{"free", "plus", "business", "enterprise"} {
+		if !strings.Contains(err.Error(), name) {
+			t.Errorf("error %q does not name the accepted plan %q", err, name)
+		}
+	}
+}
+
+// The plan and its environment variable are documented where the operator looks.
+func TestUsageDocumentsTheNotionPlan(t *testing.T) {
+	var buf bytes.Buffer
+	Usage(&buf)
+	for _, want := range []string{"--notion-plan", "OKFPUB_NOTION_PLAN", "business"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("usage text is missing %q", want)
+		}
+	}
+}
+
+// The two pacing inputs resolve with the precedence the operator expects: an
+// --interval that was not passed does NOT cancel a stated plan (the flag's default
+// is the free rate, which would silently do so), one that was passed does — even
+// at the default value, even at zero — and the log line names whichever won.
+func TestResolvePacingPrecedence(t *testing.T) {
+	parse := func(t *testing.T, args ...string) (*flag.FlagSet, time.Duration) {
+		t.Helper()
+		fs := flag.NewFlagSet("run", flag.ContinueOnError)
+		interval := fs.Duration("interval", notion.DefaultInterval, "")
+		if err := fs.Parse(args); err != nil {
+			t.Fatal(err)
+		}
+		return fs, *interval
+	}
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		plan     string
+		wantSet  *time.Duration
+		wantLine string
+	}{
+		{"nothing stated", nil, "", nil, ""},
+		{"plan alone", nil, "business", nil, "okfpub: notion plan: business (600 requests/min)"},
+		{"unpassed interval keeps the plan", nil, "Business", nil, "okfpub: notion plan: business (600 requests/min)"},
+		{"interval alone", []string{"--interval", "100ms"}, "", ptr(100 * time.Millisecond), "okfpub: notion pacing: 100ms between requests"},
+		{"interval overrides plan", []string{"--interval", "100ms"}, "business", ptr(100 * time.Millisecond), "okfpub: notion pacing: 100ms between requests (--interval overrides plan business)"},
+		{"explicit default still counts as passed", []string{"--interval", notion.DefaultInterval.String()}, "business", ptr(notion.DefaultInterval), "okfpub: notion pacing: " + notion.DefaultInterval.String() + " between requests (--interval overrides plan business)"},
+		{"zero disables", []string{"--interval", "0"}, "business", ptr(time.Duration(0)), "okfpub: notion pacing: 0s between requests (--interval overrides plan business)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fs, interval := parse(t, tc.args...)
+			pc, err := resolvePacing(fs, tc.plan, interval)
+			if err != nil {
+				t.Fatalf("resolvePacing: %v", err)
+			}
+			switch {
+			case tc.wantSet == nil && pc.interval != nil:
+				t.Errorf("interval = %v, want unset", *pc.interval)
+			case tc.wantSet != nil && (pc.interval == nil || *pc.interval != *tc.wantSet):
+				t.Errorf("interval = %v, want %v", pc.interval, *tc.wantSet)
+			}
+			if got := pc.line(); got != tc.wantLine {
+				t.Errorf("line = %q, want %q", got, tc.wantLine)
+			}
+		})
+	}
+}
+
+func ptr[T any](v T) *T { return &v }

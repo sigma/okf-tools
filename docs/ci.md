@@ -172,8 +172,20 @@ OKF_SOURCE_PREFIX   bundle root's path within the repo, e.g. docs
 without it the deep-link omits that path segment and 404s. On Actions it is usually
 inferred correctly from git, but a shallow or unusual checkout can defeat that.
 
-`--interval` paces writes (default 350ms). Raise it if a large bundle is being throttled;
-`--interval 0` disables pacing entirely.
+Notion meters a connection **per minute**, and the budget depends on the workspace plan:
+180 requests/min on Free and Plus, 600/min on Business and Enterprise. okfpub spends that
+budget as a token bucket — a burst on a fresh window waits for nothing, a run that has
+spent it settles at the sustained rate, and a 429 empties it. Tell it the plan, once,
+alongside the credentials:
+
+```
+OKFPUB_NOTION_PLAN  free | plus | business | enterprise   (default: free)
+```
+
+or per run with `--notion-plan business`. Unset, it paces at the Free-tier budget, which
+every plan allows. `--interval <duration>` overrides the plan's sustained rate outright
+(raise it if the `retried after 429` count says a workspace is stricter than its plan
+claims); `--interval 0` disables pacing entirely.
 
 ### Publishing to Google Docs
 
@@ -356,8 +368,8 @@ okfpub: 41 request(s), 0 retried after 429, 0 after 5xx
 ```
 
 A request count far above the transaction count means per-request work nobody planned; a
-high retry count means the service is throttling you, which `--interval` addresses on
-Notion. An unchanged re-run should report **0 transactions** — if it does not, something is
+high retry count means the service is throttling you, which `--notion-plan` (or a longer
+`--interval`) addresses on Notion. An unchanged re-run should report **0 transactions** — if it does not, something is
 re-publishing every time, and that is worth investigating rather than tolerating.
 
 ## Troubleshooting

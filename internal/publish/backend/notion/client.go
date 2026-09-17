@@ -30,21 +30,13 @@ const (
 
 // The rate-limit defenses every Notion call inherits from the do chokepoint.
 //
-// DefaultInterval is the *global* minimum spacing between two Notion requests —
-// Notion rate-limits an integration by requests per second, not per page, so this
-// is keyed on nothing: all traffic (scan, creates, appends, archives, write-back's
-// property PATCHes) queues behind the one gate.
+// DefaultInterval is the *global* sustained spacing between two Notion requests
+// when no plan is stated — the Free/Plus budget, derived from its per-minute
+// figure. Notion rate-limits a connection, not a page, so the gate is keyed on
+// nothing: all traffic (scan, creates, appends, archives, write-back's property
+// PATCHes) spends the one budget.
 const (
-	DefaultInterval = 350 * time.Millisecond
-	// DefaultReadBurst is how many read-only requests the read bucket admits back
-	// to back before it starts pacing them at the sustained rate. Reads are not
-	// serialized like writes: a read changes nothing, so replaying or bunching it
-	// costs Notion only quota, and a scan that must issue a request per page pays
-	// the interval per page for no reason (sigma/okf-tools#134). The bucket refills
-	// at the same sustained rate writes are spaced by, so a relentless reader settles
-	// at that rate rather than outrunning it — the burst only spends the headroom an
-	// idle gate accrued.
-	DefaultReadBurst = 10
+	DefaultInterval = time.Minute / budgetStandard
 	// defaultMaxAttempts bounds a single request's total tries — the first attempt
 	// plus its retries. Exhausting it fails the run naming the status and the count.
 	defaultMaxAttempts = 5
@@ -79,36 +71,32 @@ const (
 // apart from the Backend's Notion domain state (block caps, schema, ids) because
 // it models the transport's constraint, not Notion's content model.
 //
-// It admits traffic under two policies, because Notion's limit is one budget but
-// the two kinds of request spend it differently (#134):
+// It admits traffic from ONE token bucket shaped like the limit Notion documents
+// (sigma/okf-tools#210): a budget per minute, spendable at any pace within the
+// window. The bucket holds a minute's worth of requests, starts full, and refills
+// continuously at the sustained rate — so a burst on a fresh window waits for
+// nothing, and a relentless caller settles at exactly the budget. Reads and writes
+// spend the same tokens, because Notion meters the connection, not the route.
 //
-//   - writes are SERIALIZED at interval, the conservative policy #129 introduced:
-//     a create or a property PATCH mutates the mirror, so bunching them buys
-//     nothing and a 429 mid-burst costs a retry of something not replay-safe;
-//   - reads are admitted from a TOKEN BUCKET of readBurst tokens refilling at that
-//     same sustained rate, so a scan's paginated queries and per-page block
-//     listings spend accrued headroom immediately instead of paying interval each.
+// Two policies preceded this one and are gone on purpose. #129 serialized every
+// write at the interval, on the theory that a 429 mid-burst would cost a retry of
+// something not replay-safe — but a 429 is by definition not applied, and the
+// retry loop has always re-sent one on every route, so that margin bought only
+// wall-clock. #134 then gave reads a small bucket of their own, which was the
+// right shape applied to half the traffic. The remaining safety net is the one that
+// was always doing the work: a 429 is bounded, retried, counted — and now also
+// EMPTIES the bucket (drain), since the server has just said the window is spent.
 //
-// The two gates hold INDEPENDENT budgets against Notion's single one, so a run
-// that saturates both sustains about twice the interval's rate. That is deliberate
-// and it is why the read side exists at all — the pre-#134 policy bought its
-// safety margin by making every scan pay write latency. The margin is recovered
-// where it belongs: a 429 is bounded, retried, and now counted, so overshoot costs
-// a retry rather than a failed run.
+// interval is the sustained spacing, one token per interval; non-positive disables
+// pacing entirely. maxAttempts bounds one request's tries; now/sleep are the clock
+// seam, real time by default and overridable so tests exercise pacing and backoff
+// with no wall-clock delay.
 //
-// interval is the write spacing and the read bucket's refill rate (non-positive
-// disables pacing entirely, for both); readBurst is the bucket's capacity;
-// maxAttempts bounds one request's tries; now/sleep are the clock seam, real time
-// by default and overridable so tests exercise pacing and backoff with no
-// wall-clock delay.
-//
-// mu guards both gates' state: lastReq is the instant the most recently admitted
-// WRITE was (or will be) issued; tokens/filled are the read bucket's level and the
-// instant it was last refilled. Both gates RESERVE their slot before releasing mu,
-// so concurrent callers queue rather than collide.
+// mu guards the bucket: tokens is its level and filled the instant it was last
+// refilled. A waiter RESERVES its token before releasing mu, so concurrent callers
+// queue rather than collide.
 type limiter struct {
 	interval    time.Duration
-	readBurst   int
 	maxAttempts int
 	// timeout bounds one attempt's round trip. Non-positive disables the bound,
 	// which is what the wedged run of #184 effectively ran with.
@@ -116,7 +104,6 @@ type limiter struct {
 	now     func() time.Time
 	sleep   func(context.Context, time.Duration) error
 	mu      sync.Mutex
-	lastReq time.Time
 	tokens  float64
 	filled  time.Time
 }
@@ -185,7 +172,7 @@ type httpDoer interface {
 // defenses live in exactly one place:
 //
 //   - pacing: every attempt passes the global admission gate first, so the whole
-//     run (not just one page) respects Notion's requests-per-second limit;
+//     run (not just one page) spends Notion's per-minute budget;
 //   - retry: a throttled (429) or transient (5xx) failure is retried with the
 //     server's Retry-After or a jittered exponential backoff, bounded by
 //     maxAttempts. Any other non-2xx is a bug in this client's request and fails
@@ -201,7 +188,7 @@ func (b *Backend) do(ctx context.Context, method, path string, body, out any) er
 	}
 
 	for attempt := 1; ; attempt++ {
-		if err := b.limits.admit(ctx, method, path); err != nil {
+		if err := b.limits.admit(ctx); err != nil {
 			return fmt.Errorf("notion: %s %s: %w", method, path, err)
 		}
 
@@ -247,6 +234,9 @@ func (b *Backend) do(ctx context.Context, method, path string, body, out any) er
 		}
 
 		b.stats.retry(status)
+		if status == http.StatusTooManyRequests {
+			b.limits.drain()
+		}
 		delay := b.limits.retryDelay(header, attempt)
 		// A retry is a signal, not a silent recovery: a chronically throttled run must
 		// be visible in its output rather than merely slow.
@@ -390,9 +380,8 @@ func replaySafe(method, path string) bool {
 }
 
 // isQueryRoute reports whether these segments name the data-source query, the one
-// POST that only reads. Both classifiers ask it: replaySafe because replaying a
-// query duplicates nothing, readOnly because it mutates nothing. The two questions
-// stay distinct (see readOnly) — only the route test they share lives here.
+// POST that only reads — and so the one POST replaySafe may re-send, since
+// replaying a query duplicates nothing.
 func isQueryRoute(seg []string) bool {
 	return len(seg) == 3 && seg[0] == "data_sources" && seg[2] == "query"
 }
@@ -423,64 +412,31 @@ func (l *limiter) retryAfter(header http.Header) (time.Duration, bool) {
 	return request.RetryAfter(header, l.now)
 }
 
-// admit passes one request through the gate its own shape selects: the burstable
-// read bucket for a read-only route, the serialized write gate for everything
-// else. Classification is derived from the request itself (readOnly), never from
-// what the caller says it is doing. A non-positive interval disables pacing
-// entirely, for both policies.
-func (l *limiter) admit(ctx context.Context, method, path string) error {
+// capacity is the bucket's size: one minute's budget at the sustained rate, and
+// never less than one token, so a very long interval still admits a request.
+func (l *limiter) capacity() float64 {
+	return max(1, float64(time.Minute/l.interval))
+}
+
+// admit takes one token from the bucket, waiting only when it is empty. The
+// bucket starts full, refills continuously at the sustained rate the interval
+// names (one token per interval), and is capped at capacity — so a fresh window
+// admits a whole budget's worth back to back, and a run that has spent it settles
+// at exactly the sustained rate. A non-positive interval disables pacing entirely.
+//
+// A waiter reserves its token by advancing the refill clock past the wait before
+// releasing mu, so two callers that both find the bucket empty wait different
+// amounts and are admitted in turn instead of together.
+func (l *limiter) admit(ctx context.Context) error {
 	if l.interval <= 0 {
 		return nil
-	}
-	if readOnly(method, path) {
-		return l.admitRead(ctx)
-	}
-	return l.admitWrite(ctx)
-}
-
-// admitWrite enforces the global minimum spacing between Notion writes: it delays
-// this request until at least interval has elapsed since the previously admitted
-// write, and reserves its own slot before releasing the gate — so the spacing
-// holds no matter which route or page the requests target, and no matter how many
-// callers queue behind it.
-func (l *limiter) admitWrite(ctx context.Context) error {
-	l.mu.Lock()
-	var wait time.Duration
-	now := l.now()
-	if !l.lastReq.IsZero() {
-		if w := l.interval - now.Sub(l.lastReq); w > 0 {
-			wait = w
-		}
-	}
-	l.lastReq = now.Add(wait)
-	l.mu.Unlock()
-
-	if wait <= 0 {
-		return ctx.Err()
-	}
-	return l.sleep(ctx, wait)
-}
-
-// admitRead takes one token from the read bucket, waiting only when the bucket is
-// empty. The bucket starts full, refills continuously at the sustained rate the
-// interval names (one token per interval), and is capped at readBurst — so an idle
-// gate accrues at most a burst's worth of headroom, and a run that reads
-// relentlessly settles at exactly the write rate rather than outrunning it.
-//
-// A waiting reader reserves its token by advancing the refill clock past the wait
-// before releasing mu, so two readers that both find the bucket empty wait
-// different amounts and are admitted in turn instead of together.
-func (l *limiter) admitRead(ctx context.Context) error {
-	if l.readBurst <= 0 {
-		// The sibling of a non-positive interval: read pacing off outright.
-		return ctx.Err()
 	}
 	l.mu.Lock()
 	now := l.now()
 	if l.filled.IsZero() {
-		l.filled, l.tokens = now, float64(l.readBurst)
+		l.filled, l.tokens = now, l.capacity()
 	}
-	l.tokens = min(float64(l.readBurst), l.tokens+float64(now.Sub(l.filled))/float64(l.interval))
+	l.tokens = min(l.capacity(), l.tokens+float64(now.Sub(l.filled))/float64(l.interval))
 	l.filled = now
 
 	var wait time.Duration
@@ -488,10 +444,12 @@ func (l *limiter) admitRead(ctx context.Context) error {
 		// tokens goes negative as waiters queue (each parks `filled` past its own
 		// wait), so this product grows with queue depth; clamp it so an absurd
 		// interval cannot overflow the float→Duration conversion into a negative wait.
+		// Rounded UP to the nanosecond: a float wait truncated short by a hair would
+		// admit a request a hair before its token exists.
 		if w := (1 - l.tokens) * float64(l.interval); w >= float64(math.MaxInt64) {
 			wait = time.Duration(math.MaxInt64)
 		} else {
-			wait = time.Duration(w)
+			wait = time.Duration(math.Ceil(w))
 		}
 		l.tokens, l.filled = 1, now.Add(wait)
 	}
@@ -504,31 +462,25 @@ func (l *limiter) admitRead(ctx context.Context) error {
 	return l.sleep(ctx, wait)
 }
 
-// readOnly reports whether a request only reads, and so may be admitted from the
-// burstable bucket rather than serialized behind the write interval.
-//
-// Like replaySafe, it is an explicit allow-list keyed on the request's shape and
-// it fails CLOSED: a route it does not recognize is a write. A call added to this
-// client is therefore never silently promoted to the cheap policy — whoever adds
-// one must come here and state that it mutates nothing.
-//
-// It is deliberately separate from replaySafe despite the overlap. The two answer
-// different questions: replaySafe asks "can re-sending this duplicate an effect?"
-// (a property PATCH is safe to replay but is still a write), readOnly asks "does
-// this change anything at all?". Folding them together would let a route earn the
-// cheap policy by being idempotent.
-func readOnly(method, path string) bool {
-	switch method {
-	case http.MethodGet:
-		// Every GET this client issues is a read: page properties, block children.
-		return true
-	case http.MethodPost:
-		// The data-source query is a read in POST's clothing — its body carries the
-		// pagination cursor. POST /pages, the create, is absent by design.
-		return isQueryRoute(routeSegments(path))
-	default:
-		return false
+// drain empties the bucket: the response to a 429. Whatever the client believed
+// the window still held, the server has said otherwise, and the honest level is
+// zero — refilling from now at the sustained rate. The throttled request itself
+// then waits the server's Retry-After (see do), which refills a little headroom
+// for it; the requests behind it pay refill rather than resuming a burst the
+// server has already refused.
+func (l *limiter) drain() {
+	if l.interval <= 0 {
+		return
 	}
+	l.mu.Lock()
+	// A bucket already below zero is one with waiters parked on it, each holding a
+	// reservation against a refill clock set in the future. Those stand: raising
+	// the level to zero would let new arrivals draw alongside them, admitting MORE
+	// after a 429 than before it.
+	if l.tokens > 0 {
+		l.tokens, l.filled = 0, l.now()
+	}
+	l.mu.Unlock()
 }
 
 // --- wire types shared by the Executor and Scanner --------------------------
