@@ -13,14 +13,19 @@ import (
 // The reconstruction is behind the seam; the product is neutral. How a backend
 // rebuilds ContentHash and AnchorID (hash reconstruction over HTTP, the #146
 // subtree trick, pagination) is invisible here; once produced, a CurrentState is
-// plain neutral data queried through four methods. #163 fixes only these four
-// consumer-side queries — the contract Generation compiles against; the
-// producer-side reconstruction, and any extra fields it needs, are #167's.
+// plain neutral data queried through a handful of methods. #163 fixed the first
+// four consumer-side queries — the contract Generation compiles against — and #209
+// added Owner; the producer-side reconstruction, and any extra fields it needs,
+// are #167's.
 type CurrentState struct {
 	nodeIDs    map[SymbolicID]BackendID
 	hashes     map[SymbolicID]Hash
 	propHashes map[SymbolicID]Hash
 	anchorIDs  map[AnchorName]BackendID
+	// owners is where the scan found each node RECORDED: "" for a node that is its
+	// own row, else the recording ancestor's symbolic id. A node absent here is one
+	// the scanner said nothing about (see Owner).
+	owners map[SymbolicID]SymbolicID
 	// order is the deterministic iteration order for Nodes(), derived once at
 	// construction from the sorted node ids.
 	order []SymbolicID
@@ -39,11 +44,26 @@ func NewCurrentState(nodeIDs map[SymbolicID]BackendID, hashes map[SymbolicID]Has
 // independently of SetContent. It defensively copies the maps and precomputes a
 // deterministic node-iteration order. Passing nil for any table is treated as empty.
 func NewCurrentStateWithProps(nodeIDs map[SymbolicID]BackendID, hashes, propHashes map[SymbolicID]Hash, anchorIDs map[AnchorName]BackendID) *CurrentState {
+	return NewCurrentStateWithOwners(nodeIDs, hashes, propHashes, anchorIDs, nil)
+}
+
+// NewCurrentStateWithOwners builds a neutral CurrentState that also carries, per
+// node, WHERE the destination records it (see Owner): a scanner whose destination
+// keeps a node's record somewhere other than the node itself supplies it here so
+// change detection can see a node whose recording ancestor changed
+// (sigma/okf-tools#209). Passing nil leaves every node's owner unknown, which the
+// diff reads as "no re-parent can be detected" — the behaviour of a scanner that
+// predates the fact.
+func NewCurrentStateWithOwners(nodeIDs map[SymbolicID]BackendID, hashes, propHashes map[SymbolicID]Hash, anchorIDs map[AnchorName]BackendID, owners map[SymbolicID]SymbolicID) *CurrentState {
 	cs := &CurrentState{
 		nodeIDs:    maps.Clone(nodeIDs),
 		hashes:     maps.Clone(hashes),
 		propHashes: maps.Clone(propHashes),
 		anchorIDs:  maps.Clone(anchorIDs),
+		owners:     maps.Clone(owners),
+	}
+	if cs.owners == nil {
+		cs.owners = map[SymbolicID]SymbolicID{}
 	}
 	if cs.nodeIDs == nil {
 		cs.nodeIDs = map[SymbolicID]BackendID{}
@@ -84,6 +104,26 @@ func (cs *CurrentState) ContentHash(id SymbolicID) (Hash, bool) {
 func (cs *CurrentState) PropertyHash(id SymbolicID) (Hash, bool) {
 	h, ok := cs.propHashes[id]
 	return h, ok
+}
+
+// Owner reports where the destination RECORDS a node, per the scan: "" when the
+// node is its own row (it records itself), else the symbolic id of the ancestor
+// row whose subtree map holds it — the stored counterpart of the Owner a source
+// hierarchy stamps on every op. The bool is whether the scanner supplied the fact at
+// all, which is distinct from the "" answer: a snapshot that knows nothing about
+// owners must not read as "every node is a row", or every subpage would look
+// re-parented.
+//
+// It is the "moved?" arm of the diff (sigma/okf-tools#209): a node whose stored owner
+// differs from its expected one is not an update but a re-parent — the old page has
+// to go and a new one be created under the new parent, or two pages end up claiming
+// one path. It deliberately reports the OWNER (the recording row) and not the parent
+// (where the page lives): only the former is stored, so a move that changes the
+// parent but keeps the owning row — between two nested indexes under one row — is
+// invisible to it.
+func (cs *CurrentState) Owner(id SymbolicID) (SymbolicID, bool) {
+	o, ok := cs.owners[id]
+	return o, ok
 }
 
 // AnchorID returns the backend id of an already-hosted anchor, so a page linking

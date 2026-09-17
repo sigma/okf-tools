@@ -108,7 +108,11 @@ type Result struct {
 // only on its own earlier transaction, which is itself waiting on a producer
 // elsewhere.
 func (t *Transport) Run(ctx context.Context, dag *optimize.TxnDAG, seed *publish.CurrentState) (*Result, error) {
-	tbl := newTable(seed)
+	var produced []publish.SymbolicID
+	for _, txn := range dag.Txns {
+		produced = append(produced, txn.Produces...)
+	}
+	tbl := newTable(seed, produced)
 
 	// remaining holds the indices still to execute, kept in ascending order so the
 	// executed stream is deterministic.

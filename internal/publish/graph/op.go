@@ -46,7 +46,10 @@ type Op struct {
 	// Kind selects which of the four operations this is.
 	Kind OpKind
 	// Node is the symbolic id of the node this op acts on or produces:
-	// "node:<bundle-rel-path>" (e.g. "node:docs/adr/0002.md").
+	// "node:<bundle-rel-path>" (e.g. "node:docs/adr/0002.md"). A DeleteNode may
+	// instead address an unclaimed backend object — a row no record names (#135), or
+	// the old page of a node being re-created elsewhere, whose path now names its
+	// replacement (#209).
 	Node publish.SymbolicID
 	// NodeStamp is this op's write-back provenance: the node's expected content and
 	// property hashes, its parent symbolic id, and its display title. Every op a
@@ -65,10 +68,12 @@ type Op struct {
 	// target node, its blocks carry first-class Ref inlines and declared anchors.
 	// Set only for SetContent.
 	Doc *publish.Document
-	// Covers are the other vanished nodes this op's single archive removes: the
-	// descendants of a vanished subtree root, which get no DeleteNode of their own
-	// because one archive on the root takes the whole subtree. Set only for
-	// DeleteNode, and empty for a standalone orphan.
+	// Covers are the other nodes this op's single archive removes: the descendants
+	// of a vanished subtree root, which get no DeleteNode of their own because one
+	// archive on the root takes the whole subtree — and, when the root is a
+	// re-parented node addressed by its old page's id, the root's own path too, since
+	// nothing else on the op names it (#209). Set only for DeleteNode, and empty for
+	// a standalone orphan.
 	//
 	// They are named rather than left implicit because archiving a node and
 	// FORGETTING it are different obligations, and only the first is transitive: a

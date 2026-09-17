@@ -297,6 +297,11 @@ type Provenance struct {
 	// A run that only deletes yields Nodes empty and Deleted non-empty, so write-back
 	// is triggered by EITHER being non-empty; a run that touched nothing yields both
 	// empty and write-back stays a true no-op.
+	//
+	// A node may appear here AND in a later group's Nodes within one run: a re-parent
+	// (#209) archives the old page under the node's path and creates a new one, and
+	// the two are different groups. Forgetting consults where the SCAN recorded the
+	// node, so it prunes the old owner's record whichever order the groups land in.
 	Deleted []SymbolicID
 }
 
