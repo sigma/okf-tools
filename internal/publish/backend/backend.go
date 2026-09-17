@@ -164,6 +164,21 @@ type RequestReporter interface {
 	RequestStats() publish.RequestStats
 }
 
+// ConcurrentExecutor is an OPTIONAL backend role: a backend whose destination can
+// take several transactions in flight at once implements it, and the transport
+// drains up to Concurrency transactions concurrently — across groups only; one
+// node's content stays an ordered sequence (sigma/okf-tools#212). Like the other
+// optional roles it is outside the Backend umbrella, and for a reason beyond
+// convenience: a backend that omits it is drained one transaction at a time in a
+// fixed order, and some DEPEND on that. The Google Docs backend places tabs by
+// the order their groups land, so it must never declare this.
+//
+// The bound caps requests simultaneously in flight; it is not the rate limit,
+// which the backend's own request chokepoint enforces. A value below 1 reads as 1.
+type ConcurrentExecutor interface {
+	Concurrency() int
+}
+
 // Backend is the umbrella that embeds every role for construction and wiring.
 // One concrete backend struct satisfies all of them (sharing, e.g., its HTTP
 // client across them); a stage that needs only one role depends on that role, not

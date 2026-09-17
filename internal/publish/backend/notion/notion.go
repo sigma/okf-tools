@@ -102,6 +102,13 @@ type Backend struct {
 	// write-back from its execution path, which may run concurrently.
 	subtreeMu sync.Mutex
 	subtrees  map[string]map[string]subtreeEntry
+	// subtreeWriteMu serializes whole read-modify-writes of the subtree columns —
+	// the round trip, not only the memory subtreeMu guards. Two groups under one
+	// owning row land concurrently (#212); if their merges overlapped, the second
+	// read would predate the first PATCH and its own PATCH would drop the other's
+	// entry. Write-back is one property PATCH per group, so holding them in line
+	// costs nothing measurable.
+	subtreeWriteMu sync.Mutex
 	// recordedBy names, per repo path, WHERE that node's self-description lives, as
 	// the run's scan found it. It is the only route from "this node is gone" to "and
 	// here is the column that still says otherwise": the archive PATCHes the page,
@@ -230,6 +237,19 @@ func WithPlan(p Plan) Option {
 func WithInterval(d time.Duration) Option {
 	return func(b *Backend) { b.limits.interval = d }
 }
+
+// inFlight is how many transactions the backend holds in flight at once (#212).
+// The per-minute budget bucket is the rate limit; this only caps how many
+// requests are simultaneously open against a service whose concurrency behaviour
+// is undocumented. Small on purpose: the drain is latency-bound, so a handful in
+// flight recovers most of the wall-clock, and Notion's 429 is the backstop for
+// the rest. Not an option, since nothing has asked to turn it; a test that wants
+// the one-at-a-time stream pins the transport instead.
+const inFlight = 8
+
+// Concurrency implements backend.ConcurrentExecutor: this backend takes several
+// transactions in flight at once.
+func (b *Backend) Concurrency() int { return inFlight }
 
 // Pacing reports the sustained spacing the client admits requests at — the rate
 // its budget bucket refills at — so a caller can echo what a plan or an override

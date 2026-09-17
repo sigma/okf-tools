@@ -179,7 +179,13 @@ func (b *Backend) mergeSubtree(ctx context.Context, ownerID string, updates map[
 // in edit, so they share the read, the encode, and the run's memory of what it last
 // wrote there — a prune that re-read the column would undo a merge this same run
 // had just made, and vice versa.
+//
+// The whole round trip runs under one lock: groups land concurrently (#212), and
+// a merge that read the column before another's PATCH landed would write that
+// other's entry away.
 func (b *Backend) updateSubtree(ctx context.Context, ownerID string, edit func(map[string]subtreeEntry)) error {
+	b.subtreeWriteMu.Lock()
+	defer b.subtreeWriteMu.Unlock()
 	merged, err := b.currentSubtree(ctx, ownerID)
 	if err != nil {
 		return err
