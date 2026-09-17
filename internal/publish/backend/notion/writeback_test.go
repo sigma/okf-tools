@@ -302,7 +302,9 @@ func TestInterruptedPublishLeavesFinishedPagesDescribed(t *testing.T) {
 	}
 
 	dag := optimize.Optimize(g, be, be)
-	if _, err := transport.New(be).Run(context.Background(), dag, publish.NewCurrentState(nil, nil, nil)); err == nil {
+	// One at a time: "the second create" is only a definite request in a sequential
+	// stream (#212).
+	if _, err := transport.New(be, transport.WithConcurrency(1)).Run(context.Background(), dag, publish.NewCurrentState(nil, nil, nil)); err == nil {
 		t.Fatal("publish should have failed on the second create")
 	}
 

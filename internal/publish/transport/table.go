@@ -16,9 +16,11 @@ import (
 // table implements backend.Resolver, so the transport hands it directly to
 // Execute; the backend reads through Resolve to perform the physical ref swap.
 // Each method takes the mutex for its own duration, giving per-lookup and
-// per-merge safety — enough for today's sequential drain (readiness is gated
-// before any Execute, so no lookup races a merge) and a foundation a future
-// concurrent drain can build a coarser gate-level lock on.
+// per-merge safety. That is what the concurrent drain needs (#212): a worker's
+// lookups — inside Execute, and in the write-back that follows — run while other
+// workers merge, and a lookup can only ever see a merge as absent or complete,
+// never half-written. Readiness itself is decided on the dispatcher's goroutine
+// between wavefronts, when no merge is in flight, so it needs no coarser gate.
 type table struct {
 	seed *publish.CurrentState
 	// produced is every symbolic id some transaction of this run PRODUCES. Such an

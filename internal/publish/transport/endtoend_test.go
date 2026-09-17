@@ -53,7 +53,11 @@ func pipeline(t *testing.T, files map[string]string) (*Result, *optimize.TxnDAG,
 	}
 	dag := optimize.Optimize(g, be, be)
 
-	res, err := New(be).Run(context.Background(), dag, scan)
+	// Pinned to one at a time. The fake declares no concurrency anyway, but the
+	// determinism these tests assert is a property of the one-at-a-time stream —
+	// minted ids follow dispatch order — and the pin says so rather than relying on
+	// what the fake happens not to implement (#212).
+	res, err := New(be, WithConcurrency(1)).Run(context.Background(), dag, scan)
 	if err != nil {
 		t.Fatalf("transport: %v", err)
 	}

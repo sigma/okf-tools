@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeNotion is a recorded, in-memory stand-in for the Notion API surface the
@@ -76,6 +77,12 @@ type fakeNotion struct {
 	// handler, so it is not recorded: the request log stays the log of what the
 	// workspace actually saw.
 	throttle int
+
+	// slowGet, when set, is how long a GET /pages/{id} takes to answer — the latency
+	// that lets two concurrent read-modify-writes of one row's column overlap on
+	// purpose, so a write-back that does not serialize them loses an entry
+	// deterministically rather than by luck (#212).
+	slowGet time.Duration
 
 	// childPages marks the page ids that live as a `child_page` under another page
 	// rather than as a row of the data source. Such a page has only a title and none
@@ -210,7 +217,9 @@ func (f *fakeNotion) getPage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	f.mu.Lock()
 	props := f.pageProps[id]
+	slow := f.slowGet
 	f.mu.Unlock()
+	time.Sleep(slow)
 	if props == nil {
 		props = map[string]any{}
 	}

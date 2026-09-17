@@ -15,12 +15,15 @@
 // every call passes exactly once (sigma/okf-tools#129); the Notion backend's is
 // notion.(*Backend).do.
 //
-// Concurrency and partial-batch resumability are deferred (see sigma/ideas#172
-// "Out of Scope"). This drain is therefore sequential and executes a wavefront's
-// transactions in deterministic index order, which keeps the recorded
-// transaction stream reproducible; the resolution table's per-lookup mutex is a
-// foundation a future concurrent drain can build on, not a claim that this drain
-// is concurrent.
+// The drain executes a wavefront's transactions in deterministic index order, up
+// to as many at once as the backend declares it can take (backend.
+// ConcurrentExecutor; one, for a backend that declares nothing or a transport
+// pinned with WithConcurrency — which keeps the recorded transaction stream
+// reproducible, and is what the Google Docs backend relies on for tab placement).
+// Readiness is re-read between wavefronts rather than after every landing: the
+// barrier costs a few in-flight latencies per wavefront and is what makes the
+// one-at-a-time stream identical to what it always was. Partial-batch
+// resumability remains deferred (see sigma/ideas#172 "Out of Scope").
 //
 // See sigma/ideas#172 (ratified #162, #163).
 package transport
@@ -28,6 +31,7 @@ package transport
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/sigma/okf-tools/internal/publish"
 	"github.com/sigma/okf-tools/internal/publish/backend"
@@ -44,6 +48,9 @@ type Transport struct {
 	// stalled request went 34 minutes without anyone being able to tell it apart
 	// from a slow one (#184).
 	progress func(done, total int)
+	// concurrency, when > 0, pins how many transactions may be in flight at once,
+	// overriding whatever the backend declares. Zero defers to the backend.
+	concurrency int
 }
 
 // New builds a Transport over exec.
@@ -61,15 +68,35 @@ type Option func(*Transport)
 // WithProgress reports drain progress: after each transaction executes, done is
 // how many have landed of total. A nil function is ignored.
 //
-// It is called from the drain loop, so it must not block — whatever it does costs
-// the run that time, and a reporter that stalls reintroduces exactly the hang it
-// is there to make visible.
+// It is called as each transaction lands, under the drain's own lock so the count
+// it reports never runs backwards — which means it must not block: whatever it
+// does costs the run that time, holds every other landing worker behind it, and a
+// reporter that stalls reintroduces exactly the hang it is there to make visible.
 func WithProgress(f func(done, total int)) Option {
 	return func(t *Transport) {
 		if f != nil {
 			t.progress = f
 		}
 	}
+}
+
+// WithConcurrency pins how many transactions may be in flight at once, whatever
+// the backend declares — the way a test asks for the reproducible one-at-a-time
+// stream from a backend that would otherwise run several. Values below 1 pin to 1.
+func WithConcurrency(n int) Option {
+	return func(t *Transport) { t.concurrency = max(1, n) }
+}
+
+// bound reports how many transactions the drain may hold in flight: the pinned
+// value if one was given, else what the backend declares, else one.
+func (t *Transport) bound() int {
+	if t.concurrency > 0 {
+		return t.concurrency
+	}
+	if c, ok := t.exec.(backend.ConcurrentExecutor); ok {
+		return max(1, c.Concurrency())
+	}
+	return 1
 }
 
 // Result is the outcome of a drained publish: the resolution-table updates
@@ -91,9 +118,13 @@ type Result struct {
 //
 // A wavefront is the set of not-yet-executed transactions whose Refs all resolve
 // against the current table AND whose group has no earlier transaction still
-// pending; its members are executed in ascending index order, each result merged
-// back before the next wavefront is computed. If a wavefront comes up empty while
-// transactions remain, Run fails rather than spinning.
+// pending; its members are dispatched in ascending index order, up to bound() at
+// a time, each result merged back as it lands. Readiness is re-read once the
+// whole wavefront has landed, not after each result: that is what keeps the
+// dispatch order of a one-at-a-time drain identical to what it always was, so a
+// backend that declares no concurrency sees the same request stream as before
+// (sigma/okf-tools#212). If a wavefront comes up empty while transactions remain,
+// Run fails rather than spinning.
 //
 // The in-order rule within a Group is a correctness constraint the Ref edges do not
 // supply. The optimizer packs one node's content as an ordered SEQUENCE of
@@ -103,10 +134,11 @@ type Result struct {
 // created this run waits while a later chunk of the same page runs ahead of it —
 // which lands the page's body out of order, and, since the first chunk is the one
 // that asserts (replaces) the node's content, silently destroys the chunks that
-// jumped the queue (sigma/okf-tools#130). Holding a group to its packing order costs
-// nothing when nothing is blocked and cannot deadlock an acyclic DAG: a group waits
-// only on its own earlier transaction, which is itself waiting on a producer
-// elsewhere.
+// jumped the queue (sigma/okf-tools#130). Under concurrency the rule gains a
+// clause: a group with a transaction IN FLIGHT is held too, so two chunks of one
+// node never overlap. Holding a group to its packing order costs nothing when
+// nothing is blocked and cannot deadlock an acyclic DAG: a group waits only on its
+// own earlier transaction, which is itself waiting on a producer elsewhere.
 func (t *Transport) Run(ctx context.Context, dag *optimize.TxnDAG, seed *publish.CurrentState) (*Result, error) {
 	var produced []publish.SymbolicID
 	for _, txn := range dag.Txns {
@@ -138,8 +170,7 @@ func (t *Transport) Run(ctx context.Context, dag *optimize.TxnDAG, seed *publish
 	for i, txn := range dag.Txns {
 		byGroup[txn.Group] = append(byGroup[txn.Group], i)
 	}
-	done := map[publish.GroupKey]int{}
-	executed := 0
+	d := &drain{t: t, dag: dag, tbl: tbl, byGroup: byGroup, done: map[publish.GroupKey]int{}, bound: t.bound()}
 
 	for len(remaining) > 0 {
 		if err := ctx.Err(); err != nil {
@@ -165,31 +196,113 @@ func (t *Transport) Run(ctx context.Context, dag *optimize.TxnDAG, seed *publish
 				len(blocked), blocked[0], dag.Txns[blocked[0]].Group, tbl.unresolved(dag.Txns[blocked[0]].Refs))
 		}
 
-		for _, i := range ready {
-			txn := dag.Txns[i]
-			res, err := t.exec.Execute(ctx, txn.Txn, tbl)
-			if err != nil {
-				return nil, fmt.Errorf("transport: execute txn %d (group %s): %w", i, txn.Group, err)
-			}
-			tbl.merge(res)
-
-			executed++
-			if t.progress != nil {
-				t.progress(executed, len(dag.Txns))
-			}
-
-			done[txn.Group]++
-			if done[txn.Group] < len(byGroup[txn.Group]) {
-				continue
-			}
-			if err := t.writeBack(ctx, dag, tbl, byGroup[txn.Group]); err != nil {
-				return nil, err
-			}
+		if err := d.wavefront(ctx, ready); err != nil {
+			return nil, err
 		}
 		remaining = blocked
 	}
 
 	return &Result{Nodes: tbl.nodesCopy(), Anchors: tbl.anchorsCopy()}, nil
+}
+
+// drain is one Run's dispatch state: the table results merge into, the per-group
+// completion counts write-back keys on, and the bound on transactions in flight.
+// Its mutex guards done and executed, which workers update as they land.
+type drain struct {
+	t       *Transport
+	dag     *optimize.TxnDAG
+	tbl     *table
+	byGroup map[publish.GroupKey][]int
+	bound   int
+
+	mu       sync.Mutex
+	done     map[publish.GroupKey]int
+	executed int
+}
+
+// landed is what a worker reports back: which transaction finished, and how.
+type landed struct {
+	idx int
+	err error
+}
+
+// wavefront dispatches one wavefront's transactions in index order, holding at
+// most bound in flight and never two of one group, and returns once every one of
+// them has landed. A worker executes its transaction, merges the result, and — if
+// that completed the group — writes the group back, all before it reports in; so
+// the bound covers write-back's requests too, and a group's next transaction (in a
+// later wavefront) never runs ahead of its record.
+//
+// On the first failure nothing further is dispatched; the transactions already in
+// flight are allowed to land (their groups' write-back included, if they complete
+// one), and the first error is returned. Completed groups therefore stay recorded
+// whatever else the run was doing when it died (#135).
+func (d *drain) wavefront(ctx context.Context, ready []int) error {
+	pending := ready // not yet dispatched, in index order
+	inflight := 0    // dispatched, not yet landed
+	busy := map[publish.GroupKey]bool{}
+	results := make(chan landed, len(ready))
+	var firstErr error
+
+	for len(pending) > 0 || inflight > 0 {
+		// Dispatch: the earliest pending transactions whose group is idle, up to the
+		// bound. A group's later member stays pending until its earlier one lands.
+		if firstErr == nil {
+			kept := pending[:0]
+			for _, i := range pending {
+				g := d.dag.Txns[i].Group
+				if inflight < d.bound && !busy[g] {
+					busy[g] = true
+					inflight++
+					go d.execute(ctx, i, results)
+					continue
+				}
+				kept = append(kept, i)
+			}
+			pending = kept
+		} else {
+			pending = nil
+		}
+		if inflight == 0 {
+			break
+		}
+
+		l := <-results
+		inflight--
+		busy[d.dag.Txns[l.idx].Group] = false
+		if l.err != nil && firstErr == nil {
+			firstErr = l.err
+		}
+	}
+	return firstErr
+}
+
+// execute runs one transaction to completion on a worker: Execute, merge, count,
+// write back if that closed the group, report progress, then report in.
+func (d *drain) execute(ctx context.Context, i int, results chan<- landed) {
+	txn := d.dag.Txns[i]
+	res, err := d.t.exec.Execute(ctx, txn.Txn, d.tbl)
+	if err != nil {
+		results <- landed{idx: i, err: fmt.Errorf("transport: execute txn %d (group %s): %w", i, txn.Group, err)}
+		return
+	}
+	d.tbl.merge(res)
+
+	d.mu.Lock()
+	d.executed++
+	d.done[txn.Group]++
+	complete := d.done[txn.Group] == len(d.byGroup[txn.Group])
+	// Reported under the lock so the count a reporter sees never runs backwards:
+	// two workers landing together would otherwise race to report 2 then 1.
+	if d.t.progress != nil {
+		d.t.progress(d.executed, len(d.dag.Txns))
+	}
+	d.mu.Unlock()
+
+	if complete {
+		err = d.t.writeBack(ctx, d.dag, d.tbl, d.byGroup[txn.Group])
+	}
+	results <- landed{idx: i, err: err}
 }
 
 // writeBack persists one completed group's provenance (#167 decision 7, made
