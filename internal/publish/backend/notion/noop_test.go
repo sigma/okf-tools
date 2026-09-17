@@ -16,15 +16,18 @@ import (
 // loadNoopBundle materializes a small bundle on disk and loads it through the
 // production discover/load path, so the near-noop proof drives real Stage-1
 // generation against genuine parsed input.
+//
+// It is deliberately FLAT — no index above the pages — so that every page is a
+// top-level row and the fixtures that seed it as rows describe a mirror a publish
+// would actually have produced. A page seeded as a row where the source expects a
+// subpage is no longer a steady state but a re-parent (sigma/okf-tools#209).
 func loadNoopBundle(t *testing.T) *bundle.Bundle {
 	t.Helper()
 	files := map[string]string{
-		"okf.toml":          "[glossary]\nenabled = true\nfiles = [\"CONTEXT.md\"]\n",
-		"index.md":          "---\nokf_version: \"0.1\"\n---\n# Root\n",
-		"docs/adr/index.md": "# ADRs\n",
-		"docs/adr/a.md":     "---\ntype: adr\ntitle: A\n---\nSee [B](b.md) and the [root KEK](../../CONTEXT.md#root-kek).\n",
-		"docs/adr/b.md":     "---\ntype: adr\ntitle: B\n---\nSee [A](a.md).\n",
-		"CONTEXT.md":        "# Glossary\n\n**Root KEK**: the root key-encryption key.\n",
+		"okf.toml":      "[glossary]\nenabled = true\nfiles = [\"CONTEXT.md\"]\n",
+		"docs/adr/a.md": "---\ntype: adr\ntitle: A\n---\nSee [B](b.md) and the [root KEK](../../CONTEXT.md#root-kek).\n",
+		"docs/adr/b.md": "---\ntype: adr\ntitle: B\n---\nSee [A](a.md).\n",
+		"CONTEXT.md":    "# Glossary\n\n**Root KEK**: the root key-encryption key.\n",
 	}
 	return bundletest.Load(t, files)
 }

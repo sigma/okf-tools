@@ -150,6 +150,9 @@ type scanTables struct {
 	// that describe them — and it cannot be re-derived later, so the scan records it
 	// while it holds both halves (#189).
 	recordedBy map[string]record
+	// rowPath is each row's repo path by row id — what turns a record's row into
+	// the symbolic id the neutral snapshot reports as a node's owner (#209).
+	rowPath map[string]string
 	// owner guards the mirror's 1:1 path invariant: the first page to claim a repo
 	// path owns it; a second claim is a hard error naming both pages, never a silent
 	// last-writer-wins over unrepairable state.
@@ -163,15 +166,29 @@ func newScanTables() *scanTables {
 		propHashes: map[publish.SymbolicID]publish.Hash{},
 		anchorIDs:  map[publish.AnchorName]publish.BackendID{},
 		recordedBy: map[string]record{},
+		rowPath:    map[string]string{},
 		owner:      map[string]string{},
 	}
 }
 
 // currentState projects the filled tables into the neutral snapshot the pipeline
-// consumes. What the scan learned about WHERE nodes are described stays behind,
-// with the backend that has to write those columns.
+// consumes. Which COLUMN describes a node stays behind, with the backend that has
+// to write it; which NODE does — the owner — goes out, because generation compares
+// it against where the source now puts the node and re-parents on a mismatch
+// (sigma/okf-tools#209). A node whose recording row the scan never saw as a row
+// cannot be named that way and reports no owner, so it is never re-parented.
 func (t *scanTables) currentState() *publish.CurrentState {
-	return publish.NewCurrentStateWithProps(t.nodeIDs, t.hashes, t.propHashes, t.anchorIDs)
+	owners := make(map[publish.SymbolicID]publish.SymbolicID, len(t.recordedBy))
+	for path, r := range t.recordedBy {
+		if r.own {
+			owners[publish.NodeRef(path)] = ""
+			continue
+		}
+		if rowPath, ok := t.rowPath[r.row]; ok {
+			owners[publish.NodeRef(path)] = publish.NodeRef(rowPath)
+		}
+	}
+	return publish.NewCurrentStateWithOwners(t.nodeIDs, t.hashes, t.propHashes, t.anchorIDs, owners)
 }
 
 // claim asserts that path is claimed by exactly one page, naming both on a clash.
@@ -192,6 +209,7 @@ func (t *scanTables) addRow(path, rowID string) (publish.SymbolicID, error) {
 	sym := publish.NodeRef(path)
 	t.nodeIDs[sym] = publish.BackendID(rowID)
 	t.recordedBy[path] = record{subpath: path, row: rowID, own: true}
+	t.rowPath[rowID] = path
 	return sym, nil
 }
 

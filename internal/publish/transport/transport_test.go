@@ -244,3 +244,45 @@ func TestExecuteErrorPropagates(t *testing.T) {
 		t.Fatal("want the Executor error to propagate, got nil")
 	}
 }
+
+// --- re-parenting (sigma/okf-tools#209) ------------------------------------
+
+// An id something in this run PRODUCES is resolved by its producer, never by the
+// seed: when a node is re-created under a new parent, the seed still maps its path
+// to the old page, and a citing transaction that resolved from the seed would link
+// to a page this same run archives. It waits for the create instead.
+func TestProducedIDMasksTheSeed(t *testing.T) {
+	moved := publish.SymbolicID("node:dir/a.md")
+	seed := publish.NewCurrentState(map[publish.SymbolicID]publish.BackendID{moved: "be-old"}, nil, nil)
+	citing := &stubTxn{refs: []publish.SymbolicID{moved}, label: "citing"}
+	dag := &optimize.TxnDAG{Txns: []publish.PackedTxn{
+		{Txn: citing, Group: "node:other.md", Refs: citing.refs},
+		packed("node:dir/a.md", nil, []publish.SymbolicID{moved}, nil),
+	}}
+	exec := &stubExec{}
+	res := run(t, dag, seed, exec)
+
+	if len(exec.log) != 2 || exec.log[0].label == "citing" {
+		t.Fatalf("the citing txn ran before the re-create it links to; log=%+v", exec.log)
+	}
+	if got := res.Nodes[moved]; got == "be-old" || got == "" {
+		t.Errorf("node resolved to %q after the run; want the id the create minted, not the seed's", got)
+	}
+}
+
+// An unclaimed ref resolves to the backend id it carries whether or not the seed
+// names it: a re-parent's archive addresses the OLD page that way, since the path
+// now belongs to the new one and no scan minted the unclaimed id.
+func TestUnclaimedRefResolvesToItsID(t *testing.T) {
+	old := publish.UnclaimedRef("be-old")
+	archive := &stubTxn{refs: []publish.SymbolicID{old}, label: "archive"}
+	dag := &optimize.TxnDAG{Txns: []publish.PackedTxn{
+		{Txn: archive, Group: publish.GroupKey(old), Refs: archive.refs, Deletes: []publish.SymbolicID{old}},
+	}}
+	exec := &stubExec{}
+	run(t, dag, nil, exec)
+
+	if len(exec.log) != 1 || !exec.log[0].allResolved {
+		t.Fatalf("archive of an unseeded unclaimed ref should resolve to its own id; log=%+v", exec.log)
+	}
+}

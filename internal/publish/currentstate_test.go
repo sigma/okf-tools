@@ -63,3 +63,29 @@ func TestCurrentStateMissingKeys(t *testing.T) {
 		t.Errorf("Nodes() on empty state = %v, want none", n)
 	}
 }
+
+// Owner reports where the scan found a node RECORDED: "" for a node that is its
+// own row, the recording ancestor's symbolic id for a subpage, and absent when the
+// scanner supplies no such fact at all — three answers, and the diff needs to tell
+// the first from the third (sigma/okf-tools#209).
+func TestCurrentStateOwner(t *testing.T) {
+	cs := publish.NewCurrentStateWithOwners(
+		map[publish.SymbolicID]publish.BackendID{"node:dir/README.md": "r", "node:dir/a.md": "a"},
+		nil, nil, nil,
+		map[publish.SymbolicID]publish.SymbolicID{"node:dir/README.md": "", "node:dir/a.md": "node:dir/README.md"},
+	)
+	if o, ok := cs.Owner("node:dir/README.md"); !ok || o != "" {
+		t.Errorf("Owner(README) = (%q,%v), want (\"\",true): a row records itself", o, ok)
+	}
+	if o, ok := cs.Owner("node:dir/a.md"); !ok || o != "node:dir/README.md" {
+		t.Errorf("Owner(a.md) = (%q,%v), want its recording row", o, ok)
+	}
+	if _, ok := cs.Owner("node:elsewhere.md"); ok {
+		t.Error("Owner of a node the scan never described should report absence")
+	}
+
+	plain := publish.NewCurrentState(map[publish.SymbolicID]publish.BackendID{"node:a.md": "a"}, nil, nil)
+	if _, ok := plain.Owner("node:a.md"); ok {
+		t.Error("a snapshot built without owners must report absence, not a self-owned row")
+	}
+}

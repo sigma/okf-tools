@@ -180,6 +180,7 @@ func Generate(ctx context.Context, b *bundle.Bundle, cs *publish.CurrentState, o
 	// deterministic (docs preserves b.Docs' rel sort) regardless of goroutine
 	// scheduling.
 	src := srcHierarchy(docs, b.Areas)
+	detached := detachedNodes(docs, cs, src)
 	results := make([]docOps, len(docs))
 	var wg sync.WaitGroup
 	for i, d := range docs {
@@ -189,7 +190,7 @@ func Generate(ctx context.Context, b *bundle.Bundle, cs *publish.CurrentState, o
 			if ctx.Err() != nil {
 				return
 			}
-			results[i] = diffDoc(d, cs, &o, src, scope)
+			results[i] = diffDoc(d, cs, &o, src, scope, detached)
 		}(i, d)
 	}
 	wg.Wait()
@@ -208,8 +209,9 @@ func Generate(ctx context.Context, b *bundle.Bundle, cs *publish.CurrentState, o
 	}
 	// Orphans: scanned nodes with no in-scope source → DeleteNode on the subtree
 	// roots. Liveness is the publish set, so a page that fell out of scope (or was
-	// leaked by the pre-scoping publisher) reconciles to a deletion.
-	g.Ops = append(g.Ops, orphanOps(docs, cs, b.Areas)...)
+	// leaked by the pre-scoping publisher) reconciles to a deletion. A detached node's
+	// old page goes the same way: it is a page no source names any more.
+	g.Ops = append(g.Ops, orphanOps(docs, cs, b.Areas, detached)...)
 
 	g.Edges = assembleEdges(g.Ops)
 	return g, nil
@@ -310,11 +312,12 @@ func repairUnhostedAnchors(results []docOps, cs *publish.CurrentState) {
 // diffDoc emits the ops for one source page from the uniform diff→ops mapping:
 //
 //	new              → CreateNode + SetProperties + SetContent
+//	detached         → CreateNode + SetProperties + SetContent (the old page: orphanOps)
 //	changed/drifted  → SetProperties + SetContent
 //	unchanged        → nothing (hash-skip)
 //
 // (Vanished nodes have no source and are handled by orphanOps.)
-func diffDoc(d *bundle.Doc, cs *publish.CurrentState, o *options, src *hierarchy, scope *selectionScope) docOps {
+func diffDoc(d *bundle.Doc, cs *publish.CurrentState, o *options, src *hierarchy, scope *selectionScope, detached map[publish.SymbolicID]publish.BackendID) docOps {
 	node := publish.NodeRef(d.Rel)
 	parent := src.parent(d.Rel)
 	owner := src.owner(d.Rel)
@@ -328,7 +331,12 @@ func diffDoc(d *bundle.Doc, cs *publish.CurrentState, o *options, src *hierarchy
 	setProps := &Op{Kind: SetProperties, Node: node, Props: propsOf(d), NodeStamp: publish.NodeStamp{Parent: parent, Owner: owner, Hash: hash, PropHash: propHash, Title: title}}
 	setContent := &Op{Kind: SetContent, Node: node, Doc: doc, Refs: refs, Anchors: anchors, NodeStamp: publish.NodeStamp{Parent: parent, Owner: owner, Hash: hash, PropHash: propHash, Title: title}}
 
-	if _, exists := cs.NodeID(node); !exists {
+	// A detached node is diffed as new: its existing page is the wrong KIND of object
+	// for where it now belongs (a row where a subpage is expected, or the reverse),
+	// and no update can change that — only a fresh create under the new parent. The
+	// existing page is not this doc's to keep; orphanOps archives it (#209).
+	_, moved := detached[node]
+	if _, exists := cs.NodeID(node); !exists || moved {
 		create := &Op{Kind: CreateNode, Node: node, NodeStamp: publish.NodeStamp{Parent: parent, Owner: owner, Hash: hash, PropHash: propHash, Title: title}}
 		return docOps{ops: []*Op{create, setProps, setContent}, content: setContent, contentEmitted: true}
 	}
@@ -475,15 +483,52 @@ func (h *hierarchy) owner(rel string) publish.SymbolicID {
 	}
 }
 
-// orphanOps emits a DeleteNode for each vanished subtree root: a scanned node
-// with no source, whose parent has not also vanished (an ancestor's single
-// DeleteNode archives the whole subtree, so no per-child ops).
-func orphanOps(docs []*bundle.Doc, cs *publish.CurrentState, ar *areas.Registry) []*Op {
+// detachedNodes reports the in-scope nodes the scan found RECORDED somewhere other
+// than where the source now puts them — a row that became a cluster subpage, a
+// subpage whose cluster README went away, a subpage moved to another cluster —
+// mapped to the backend id of the page each currently has (sigma/okf-tools#209).
+//
+// It compares owners, not hashes: an untouched sibling of the file that changed in
+// the same commit as its new README has moved just the same, and leaving it a row
+// is what strands the cluster half-migrated. A node the scanner supplied no owner
+// fact for is never detached — a backend that cannot see placement keeps updating
+// in place, exactly as it did before the fact existed.
+func detachedNodes(docs []*bundle.Doc, cs *publish.CurrentState, src *hierarchy) map[publish.SymbolicID]publish.BackendID {
+	out := map[publish.SymbolicID]publish.BackendID{}
+	for _, d := range docs {
+		node := publish.NodeRef(d.Rel)
+		id, exists := cs.NodeID(node)
+		if !exists {
+			continue
+		}
+		stored, known := cs.Owner(node)
+		if !known {
+			continue
+		}
+		if stored != src.owner(d.Rel) {
+			out[node] = id
+		}
+	}
+	return out
+}
+
+// orphanOps emits a DeleteNode for each subtree root that is LEAVING the mirror as
+// it stands: a scanned node with no source (vanished), or one whose page is being
+// re-created elsewhere (detached) — whose parent is not also leaving (an ancestor's
+// single DeleteNode archives the whole subtree, so no per-child ops).
+//
+// A detached root's archive is addressed by the old page's backend id, not by
+// "node:<path>": that id names the NEW page this same run creates, and resolving it
+// would archive the page just made. The old page has no other identity left — no
+// source names it — which is exactly what an unclaimed ref is for (#135). Its path
+// still rides the op's Covers, so the backend can forget the old record (#189).
+func orphanOps(docs []*bundle.Doc, cs *publish.CurrentState, ar *areas.Registry, detached map[publish.SymbolicID]publish.BackendID) []*Op {
 	live := map[publish.SymbolicID]bool{}
 	for _, d := range docs {
 		live[publish.NodeRef(d.Rel)] = true
 	}
 	var scanned []string
+	// vanished is every node leaving its current page: sourceless, or detached.
 	vanished := map[publish.SymbolicID]bool{}
 	// An unclaimed object (a row an aborted run created and never recorded, #135)
 	// has no path, so it takes no part in the subtree reasoning below: it can be
@@ -496,7 +541,7 @@ func orphanOps(docs []*bundle.Doc, cs *publish.CurrentState, ar *areas.Registry)
 			continue
 		}
 		scanned = append(scanned, id.Rel())
-		if !live[id] {
+		if _, moved := detached[id]; !live[id] || moved {
 			vanished[id] = true
 		}
 	}
@@ -528,7 +573,14 @@ func orphanOps(docs []*bundle.Doc, cs *publish.CurrentState, ar *areas.Registry)
 	for _, id := range roots {
 		covered := covers[id]
 		sort.Slice(covered, func(i, j int) bool { return covered[i] < covered[j] })
-		ops = append(ops, &Op{Kind: DeleteNode, Node: id, Covers: covered})
+		target := id
+		if old, moved := detached[id]; moved {
+			// The root itself is among what this archive removes from its recorded
+			// place: named first, ahead of its (sorted) descendants.
+			target = publish.UnclaimedRef(old)
+			covered = append([]publish.SymbolicID{id}, covered...)
+		}
+		ops = append(ops, &Op{Kind: DeleteNode, Node: target, Covers: covered})
 	}
 	for _, id := range unclaimed {
 		ops = append(ops, &Op{Kind: DeleteNode, Node: id})
@@ -612,10 +664,16 @@ func sortEdges(edges []Edge) {
 // object rather than archive a vanished node (#135). It lives here because it is a
 // question about this package's op vocabulary; a caller that reports the number
 // should not have to know how a reclaim op is spelled.
+//
+// A re-parent's archive (#209) also addresses its page by an unclaimed ref, but is
+// not a reclaim: that page was recorded, and the run is replacing it, not cleaning
+// up after an interrupted one. The two are told apart by what the op covers — a
+// reclaimed row has no path and so covers nothing, while a re-parented page's
+// archive always names at least the path it is giving up.
 func (g *Graph) UnclaimedDeletes() int {
 	n := 0
 	for _, op := range g.Ops {
-		if op.Kind != DeleteNode {
+		if op.Kind != DeleteNode || len(op.Covers) > 0 {
 			continue
 		}
 		if _, ok := op.Node.Unclaimed(); ok {
