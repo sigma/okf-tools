@@ -357,27 +357,83 @@ func TestPropertyPatchRetriedOn5xx(t *testing.T) {
 	}
 }
 
-// --- pacing -----------------------------------------------------------------
+// --- pacing (#210) ----------------------------------------------------------
 
-// Read pacing is global too — not per page. Reads burst, but they draw on one
-// shared bucket, so a run that reads N pages spends N tokens rather than one each.
-func TestReadBucketIsSharedAcrossRoutes(t *testing.T) {
-	interval := 100 * time.Millisecond
-	be, _, clock := newStub(t, []Option{WithInterval(interval), WithReadBurst(2)},
-		stubResp{status: http.StatusOK, body: `{}`},
-	)
+// The bucket is sized to the plan's per-minute budget: a burst on a fresh window
+// waits for nothing, and only the request past the budget pays — one interval,
+// the sustained rate the budget names.
+func TestBurstWithinTheBudgetIsFree(t *testing.T) {
+	be, _, clock := newStub(t, []Option{WithPlan(PlanFree)}, stubResp{status: http.StatusOK, body: `{}`})
+	budget := PlanFree.Budget()
 
 	ctx := context.Background()
-	for _, path := range []string{"/pages/a", "/pages/b", "/pages/c"} {
-		if err := be.do(ctx, http.MethodGet, path, nil, nil); err != nil {
-			t.Fatalf("do %s: %v", path, err)
+	for i := 0; i < budget; i++ {
+		if err := be.do(ctx, http.MethodPatch, "/pages/x", nil, nil); err != nil {
+			t.Fatalf("write %d: %v", i, err)
 		}
 	}
+	if len(clock.slept) != 0 {
+		t.Fatalf("%d requests within a %d/min budget slept %v, want no wait at all", budget, budget, clock.slept)
+	}
+	if err := be.do(ctx, http.MethodPatch, "/pages/x", nil, nil); err != nil {
+		t.Fatalf("write past the budget: %v", err)
+	}
+	if want := PlanFree.Interval(); len(clock.slept) != 1 || clock.slept[0] != want {
+		t.Errorf("request %d slept %v, want one wait of %v (the sustained rate)", budget+1, clock.slept, want)
+	}
+}
 
-	// Two tokens, three distinct pages: the third waits. A per-page bucket would
-	// have slept never.
+// Reads and writes spend the same budget: Notion meters the connection, not the
+// route, so a read after a write-exhausted window waits exactly as a write would.
+func TestReadsAndWritesShareTheBucket(t *testing.T) {
+	// One token per minute: the bucket holds exactly one request.
+	interval := time.Minute
+	be, _, clock := newStub(t, []Option{WithInterval(interval)}, stubResp{status: http.StatusOK, body: `{}`})
+
+	ctx := context.Background()
+	if err := be.do(ctx, http.MethodPatch, "/pages/x", nil, nil); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := be.do(ctx, http.MethodGet, "/pages/x", nil, nil); err != nil {
+		t.Fatalf("read: %v", err)
+	}
 	if len(clock.slept) != 1 || clock.slept[0] != interval {
-		t.Errorf("slept %v, want one wait of %v — the bucket is shared, not per page", clock.slept, interval)
+		t.Errorf("the read after a spent bucket slept %v, want [%v]", clock.slept, interval)
+	}
+}
+
+// A 429 empties the bucket: the server has said the window is spent, so what the
+// client believed it still had is gone. The throttled request waits the server's
+// Retry-After as before; the ones after it pay refill instead of bursting.
+func TestThrottleEmptiesTheBucket(t *testing.T) {
+	be, _, clock := newStub(t, []Option{WithPlan(PlanFree)},
+		stubResp{status: http.StatusTooManyRequests, body: `{}`, header: map[string]string{"Retry-After": "1"}},
+		stubResp{status: http.StatusOK, body: `{}`},
+		stubResp{status: http.StatusOK, body: `{}`},
+	)
+	ctx := context.Background()
+	if err := be.do(ctx, http.MethodPatch, "/pages/x", nil, nil); err != nil {
+		t.Fatalf("throttled write: %v", err)
+	}
+	if len(clock.slept) != 1 || clock.slept[0] != time.Second {
+		t.Fatalf("slept %v, want the 1s Retry-After alone", clock.slept)
+	}
+	// The retry-after refilled 3 tokens (1s at 3/s); the retry spent one. Two more
+	// requests spend the rest, and the next waits for refill — not the 178 the fresh
+	// bucket would still have held.
+	for i := 0; i < 2; i++ {
+		if err := be.do(ctx, http.MethodGet, "/pages/x", nil, nil); err != nil {
+			t.Fatalf("read %d: %v", i, err)
+		}
+	}
+	if len(clock.slept) != 1 {
+		t.Fatalf("reads within the refilled headroom slept %v, want nothing new", clock.slept[1:])
+	}
+	if err := be.do(ctx, http.MethodGet, "/pages/x", nil, nil); err != nil {
+		t.Fatalf("read past the refill: %v", err)
+	}
+	if want := PlanFree.Interval(); len(clock.slept) != 2 || clock.slept[1] != want {
+		t.Errorf("post-throttle request slept %v, want a refill wait of %v", clock.slept[1:], want)
 	}
 }
 
@@ -395,13 +451,50 @@ func TestZeroIntervalNeverPaces(t *testing.T) {
 	}
 }
 
-// New defaults the global pacing interval to the spec's ~350ms.
-func TestDefaultInterval(t *testing.T) {
+// New paces at the Free/Plus budget unless told the plan — the rate every
+// workspace is allowed, derived from the documented per-minute figure rather
+// than a second table of durations.
+func TestDefaultPacingIsTheFreeTierBudget(t *testing.T) {
 	if got := New().limits.interval; got != DefaultInterval {
 		t.Errorf("default interval = %v, want %v", got, DefaultInterval)
 	}
-	if DefaultInterval != 350*time.Millisecond {
-		t.Errorf("DefaultInterval = %v, want the spec's ~350ms", DefaultInterval)
+	if DefaultInterval != PlanFree.Interval() {
+		t.Errorf("DefaultInterval = %v, want the free tier's %v", DefaultInterval, PlanFree.Interval())
+	}
+	if PlanFree.Budget() != 180 || PlanPlus.Budget() != 180 || PlanBusiness.Budget() != 600 || PlanEnterprise.Budget() != 600 {
+		t.Errorf("budgets = %d/%d/%d/%d, want Notion's documented 180/180/600/600 per minute",
+			PlanFree.Budget(), PlanPlus.Budget(), PlanBusiness.Budget(), PlanEnterprise.Budget())
+	}
+}
+
+// WithPlan sets the sustained rate from the plan's budget, and a WithInterval
+// applied after it overrides it — options apply in order, which is how the
+// pipeline expresses "explicit interval beats plan".
+func TestPlanSetsTheIntervalAndAnExplicitIntervalOverridesIt(t *testing.T) {
+	if got := New(WithPlan(PlanBusiness)).limits.interval; got != PlanBusiness.Interval() {
+		t.Errorf("business interval = %v, want %v", got, PlanBusiness.Interval())
+	}
+	if got := New(WithPlan(PlanBusiness), WithInterval(time.Second)).limits.interval; got != time.Second {
+		t.Errorf("interval after plan = %v, want the explicit 1s", got)
+	}
+}
+
+// ParsePlan accepts the four documented plans, case-insensitively, and names them
+// all on anything else — the message a usage error shows.
+func TestParsePlan(t *testing.T) {
+	for in, want := range map[string]Plan{"free": PlanFree, "Plus": PlanPlus, "BUSINESS": PlanBusiness, "enterprise": PlanEnterprise} {
+		if got, err := ParsePlan(in); err != nil || got != want {
+			t.Errorf("ParsePlan(%q) = (%q, %v), want %q", in, got, err, want)
+		}
+	}
+	_, err := ParsePlan("team")
+	if err == nil {
+		t.Fatal("ParsePlan(team) should fail")
+	}
+	for _, name := range []string{"free", "plus", "business", "enterprise"} {
+		if !strings.Contains(err.Error(), name) {
+			t.Errorf("error %q does not name the accepted plan %q", err, name)
+		}
 	}
 }
 
@@ -449,11 +542,12 @@ func TestThrottledPublishSucceeds(t *testing.T) {
 	}
 }
 
-// Write-back's property PATCHes pass through the same gate: they are paced too.
+// Write-back's property PATCHes pass through the same gate: they spend the
+// budget too.
 func TestWriteBackIsPaced(t *testing.T) {
 	f := newFakeNotion()
 	clock := newFakeClock()
-	interval := 100 * time.Millisecond
+	interval := time.Minute // a one-token bucket
 	be := newServer(t, f, WithInterval(interval), withClock(clock.now, clock.doSleep))
 
 	prov := publish.Provenance{Nodes: map[publish.SymbolicID]publish.NodeProvenance{
@@ -464,141 +558,9 @@ func TestWriteBackIsPaced(t *testing.T) {
 		t.Fatalf("write-back: %v", err)
 	}
 
-	// Two PATCHes: the second one waits out the interval behind the first.
+	// Two PATCHes: the second one waits for the bucket to refill behind the first.
 	if len(clock.slept) != 1 || clock.slept[0] != interval {
 		t.Errorf("slept = %v, want [%v] — write-back must be paced too", clock.slept, interval)
-	}
-}
-
-// --- read/write pacing split (#134) -----------------------------------------
-
-// totalSlept sums a virtual clock's sleeps — the simulated wall time a run spent
-// waiting at the admission gate.
-func totalSlept(c *fakeClock) time.Duration {
-	var sum time.Duration
-	for _, d := range c.slept {
-		sum += d
-	}
-	return sum
-}
-
-// The headline property of #134: read-only traffic is admitted from a burstable
-// bucket rather than serialized at the write interval, so N reads cost materially
-// less simulated time than N writes under the identical configuration.
-func TestReadsCostLessThanWrites(t *testing.T) {
-	const n = 14
-	interval := 100 * time.Millisecond
-	ctx := context.Background()
-
-	reader, _, readClock := newStub(t, []Option{WithInterval(interval)}, stubResp{status: http.StatusOK, body: `{}`})
-	for i := 0; i < n; i++ {
-		if err := reader.do(ctx, http.MethodGet, "/blocks/x/children", nil, nil); err != nil {
-			t.Fatalf("read %d: %v", i, err)
-		}
-	}
-
-	writer, _, writeClock := newStub(t, []Option{WithInterval(interval)}, stubResp{status: http.StatusOK, body: `{}`})
-	for i := 0; i < n; i++ {
-		if err := writer.do(ctx, http.MethodPatch, "/pages/x", nil, nil); err != nil {
-			t.Fatalf("write %d: %v", i, err)
-		}
-	}
-
-	readTime, writeTime := totalSlept(readClock), totalSlept(writeClock)
-	if readTime >= writeTime {
-		t.Errorf("%d reads waited %v, %d writes waited %v — reads must not pay the write pacing",
-			n, readTime, n, writeTime)
-	}
-	// The burst is free: only the reads beyond the bucket's capacity wait at all.
-	if got, want := len(readClock.slept), n-DefaultReadBurst; got != want {
-		t.Errorf("reads slept %d time(s), want %d (burst of %d admitted immediately): %v",
-			got, want, DefaultReadBurst, readClock.slept)
-	}
-}
-
-// Write pacing is untouched by the split: successive writes are still spaced by
-// the interval regardless of which route they target.
-func TestWritesStillPacedAcrossRoutes(t *testing.T) {
-	interval := 100 * time.Millisecond
-	be, _, clock := newStub(t, []Option{WithInterval(interval)}, stubResp{status: http.StatusOK, body: `{}`})
-
-	ctx := context.Background()
-	for _, path := range []string{"/pages/a", "/pages/b", "/blocks/c"} {
-		if err := be.do(ctx, http.MethodPatch, path, nil, nil); err != nil {
-			t.Fatalf("do %s: %v", path, err)
-		}
-	}
-	if len(clock.slept) != 2 {
-		t.Fatalf("slept %d time(s), want 2: %v", len(clock.slept), clock.slept)
-	}
-	for i, d := range clock.slept {
-		if d != interval {
-			t.Errorf("sleep %d = %v, want %v", i, d, interval)
-		}
-	}
-}
-
-// Once its burst is spent, the read bucket refills at the sustained rate the
-// interval names — reads are cheaper than writes, not unlimited.
-func TestReadBucketRefillsAtTheSustainedRate(t *testing.T) {
-	interval := 100 * time.Millisecond
-	be, _, clock := newStub(t, []Option{WithInterval(interval)}, stubResp{status: http.StatusOK, body: `{}`})
-
-	ctx := context.Background()
-	for i := 0; i < DefaultReadBurst+3; i++ {
-		if err := be.do(ctx, http.MethodGet, "/pages/x", nil, nil); err != nil {
-			t.Fatalf("read %d: %v", i, err)
-		}
-	}
-	if len(clock.slept) != 3 {
-		t.Fatalf("slept %d time(s), want 3: %v", len(clock.slept), clock.slept)
-	}
-	for i, d := range clock.slept {
-		if d != interval {
-			t.Errorf("post-burst sleep %d = %v, want the sustained interval %v", i, d, interval)
-		}
-	}
-}
-
-// The classifier reads the request, not a caller's say-so: the data-source query
-// is a read in POST's clothing, and its cursor pages burst like any other read.
-func TestDataSourceQueryIsAdmittedAsARead(t *testing.T) {
-	interval := 100 * time.Millisecond
-	be, _, clock := newStub(t, []Option{WithInterval(interval)}, stubResp{status: http.StatusOK, body: `{}`})
-
-	ctx := context.Background()
-	for i := 0; i < 3; i++ {
-		if err := be.do(ctx, http.MethodPost, "/data_sources/ds1/query", queryReq{PageSize: 100}, nil); err != nil {
-			t.Fatalf("query %d: %v", i, err)
-		}
-	}
-	if len(clock.slept) != 0 {
-		t.Errorf("the paginated scan query must burst, slept %v", clock.slept)
-	}
-}
-
-// The classifier fails CLOSED: a route it does not recognize is paced as a write,
-// so a call added later is never silently promoted to the cheap policy.
-func TestUnknownRouteIsPacedAsAWrite(t *testing.T) {
-	interval := 100 * time.Millisecond
-	ctx := context.Background()
-
-	for _, tc := range []struct{ method, path string }{
-		{http.MethodPost, "/pages"},                  // the create — a write
-		{http.MethodDelete, "/blocks/x"},             // the archive — a write
-		{http.MethodPost, "/data_sources/ds1/embed"}, // not a route this client knows
-		{http.MethodPut, "/pages/x"},                 // not a method this client uses
-	} {
-		be, _, clock := newStub(t, []Option{WithInterval(interval)}, stubResp{status: http.StatusOK, body: `{}`})
-		for i := 0; i < 2; i++ {
-			if err := be.do(ctx, tc.method, tc.path, nil, nil); err != nil {
-				t.Fatalf("%s %s: %v", tc.method, tc.path, err)
-			}
-		}
-		if len(clock.slept) != 1 || (len(clock.slept) == 1 && clock.slept[0] != interval) {
-			t.Errorf("%s %s: slept %v, want one wait of %v — unknown routes pace as writes",
-				tc.method, tc.path, clock.slept, interval)
-		}
 	}
 }
 
@@ -665,34 +627,5 @@ func TestRequestStatsMatchWhatTheServerReceived(t *testing.T) {
 	}
 	if got.Transient != 0 {
 		t.Errorf("transient = %d, want 0 — the fake served no 5xx", got.Transient)
-	}
-}
-
-// WithReadBurst carries WithInterval's contract: a non-positive value disables the
-// policy it configures — here, read pacing — rather than clamping to some minimum.
-func TestNonPositiveReadBurstDisablesReadPacing(t *testing.T) {
-	interval := 100 * time.Millisecond
-	be, _, clock := newStub(t, []Option{WithInterval(interval), WithReadBurst(0)},
-		stubResp{status: http.StatusOK, body: `{}`},
-	)
-
-	ctx := context.Background()
-	for i := 0; i < 5; i++ {
-		if err := be.do(ctx, http.MethodGet, "/pages/x", nil, nil); err != nil {
-			t.Fatalf("read %d: %v", i, err)
-		}
-	}
-	if len(clock.slept) != 0 {
-		t.Errorf("read burst 0 should disable read pacing, slept %v", clock.slept)
-	}
-	// Writes are untouched by it: the two policies are configured independently.
-	if err := be.do(ctx, http.MethodPatch, "/pages/x", nil, nil); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	if err := be.do(ctx, http.MethodPatch, "/pages/x", nil, nil); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	if len(clock.slept) != 1 || clock.slept[0] != interval {
-		t.Errorf("writes slept %v, want one wait of %v", clock.slept, interval)
 	}
 }

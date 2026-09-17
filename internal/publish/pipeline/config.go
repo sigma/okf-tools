@@ -19,12 +19,20 @@ import (
 	"github.com/sigma/okf-tools/internal/schema"
 )
 
-// The two environment variables that carry the Notion credentials in the config
-// contract: NOTION_TOKEN (a secret) and NOTION_DB_ID (the data-source id the scan
-// queries and top-level page-creates parent under).
+// The environment variables of the config contract: the Notion credentials —
+// NOTION_TOKEN (a secret) and NOTION_DB_ID (the data-source id the scan queries
+// and top-level page-creates parent under) — and the settings that ride beside
+// them.
 const (
 	EnvNotionToken = "NOTION_TOKEN"
 	EnvNotionDBID  = "NOTION_DB_ID"
+	// EnvNotionPlan names the Notion workspace plan the mirror lives on, which sets
+	// the per-minute request budget the client paces by (sigma/okf-tools#210). It
+	// lives in the environment beside the credentials so a workflow states it once;
+	// the --notion-plan flag overrides it. It carries the OKFPUB_ prefix the
+	// credentials lack because it is okfpub's own knob, not a value Notion hands
+	// out — nothing else in a workflow's environment would spell it.
+	EnvNotionPlan = "OKFPUB_NOTION_PLAN"
 	// EnvGDocsImpersonate names the service account the Google Docs backend
 	// impersonates. There is deliberately no key-file variable: newer Google
 	// organizations forbid service-account keys outright, so the identity is
@@ -57,15 +65,19 @@ type Config struct {
 	// OutDir is the output directory the filesystem/export backend (the dry-run
 	// mode) writes its exported tree under. Empty means the backend's own default.
 	OutDir string
-	// NotionInterval is the minimum spacing between two Notion WRITES, and the rate
-	// the read bucket refills at (sigma/okf-tools#134). It is the operator's lever on
-	// a run that is pacing-bound — the only remedy for a mirror whose traffic pattern
-	// the default does not suit.
+	// NotionPlan is the Notion workspace plan (OKFPUB_NOTION_PLAN / --notion-plan),
+	// as the operator wrote it: the backend derives its per-minute budget from it,
+	// and refuses a name it does not know. Empty means the plan was not stated, and
+	// the backend paces at the budget every plan is allowed (sigma/okf-tools#210).
+	NotionPlan string
+	// NotionInterval is the sustained spacing between two Notion requests — the rate
+	// the budget bucket refills at. It is the operator's override of the plan's
+	// derived rate, for a mirror whose traffic the plan's figure does not suit.
 	//
 	// It is a POINTER because "unset" and "zero" are different answers and the
-	// backend's contract gives zero a meaning: nil leaves notion.DefaultInterval in
-	// place, while a non-positive value disables pacing outright. Collapsing the two
-	// would make `--interval 0` silently pace at the default.
+	// backend's contract gives zero a meaning: nil leaves the plan's rate in place,
+	// while a non-positive value disables pacing outright. Collapsing the two would
+	// make `--interval 0` silently pace at the default.
 	NotionInterval *time.Duration
 	// GDocsImpersonate is the service account the Google Docs backend impersonates
 	// (GDOCS_IMPERSONATE_SA).
@@ -99,6 +111,9 @@ type LoadOptions struct {
 	// DBID is the same override for NOTION_DB_ID; empty falls back to the
 	// environment.
 	DBID string
+	// Plan is the same override for OKFPUB_NOTION_PLAN — the --notion-plan flag;
+	// empty falls back to the environment.
+	Plan string
 	// Getenv is the environment source, injectable for tests; nil uses os.Getenv.
 	Getenv func(string) string
 }
@@ -117,6 +132,7 @@ func LoadConfig(o LoadOptions) (*Config, error) {
 	cfg := &Config{
 		NotionToken:      firstNonEmpty(o.Token, getenv(EnvNotionToken)),
 		NotionDBID:       firstNonEmpty(o.DBID, getenv(EnvNotionDBID)),
+		NotionPlan:       firstNonEmpty(o.Plan, getenv(EnvNotionPlan)),
 		GDocsImpersonate: getenv(EnvGDocsImpersonate),
 		GDriveID:         getenv(EnvGDriveID),
 	}

@@ -214,23 +214,27 @@ func WithNotionVersion(v string) Option {
 	}
 }
 
-// WithReadBurst sets how many read-only requests may be admitted back to back
-// before reads, too, pace at the sustained rate (DefaultReadBurst by default). A
-// burst of 1 makes reads pace exactly like writes — the pre-#134 behavior, kept
-// reachable for an operator who needs the most conservative possible traffic —
-// and a non-positive burst disables read pacing outright, the sibling of what a
-// non-positive WithInterval does to both policies.
-func WithReadBurst(n int) Option {
-	return func(b *Backend) { b.limits.readBurst = n }
+// WithPlan paces the client at the stated plan's documented budget: the bucket
+// holds that many requests per minute and refills at the matching sustained rate
+// (sigma/okf-tools#210). It is the input an operator actually knows; WithInterval
+// is the override for one who has measured something else.
+func WithPlan(p Plan) Option {
+	return func(b *Backend) { b.limits.interval = p.Interval() }
 }
 
-// WithInterval sets the global minimum spacing between two Notion requests — the
-// pacing every call inherits from the shared request chokepoint, whatever page or
-// route it targets. A non-positive interval disables pacing entirely, which is the
-// setting the offline tests run under so they take no wall-clock delay.
+// WithInterval sets the global sustained spacing between two Notion requests —
+// the rate the bucket refills at, and so the capacity it holds (a minute's worth)
+// — whatever page or route a request targets. It overrides whatever WithPlan set.
+// A non-positive interval disables pacing entirely, which is the setting the
+// offline tests run under so they take no wall-clock delay.
 func WithInterval(d time.Duration) Option {
 	return func(b *Backend) { b.limits.interval = d }
 }
+
+// Pacing reports the sustained spacing the client admits requests at — the rate
+// its budget bucket refills at — so a caller can echo what a plan or an override
+// resolved to. Non-positive means pacing is off.
+func (b *Backend) Pacing() time.Duration { return b.limits.interval }
 
 // WithLogger redirects the backend's operational reporting — currently the retry
 // notices, which must reach the run's output so a chronically throttled publish is
@@ -275,7 +279,6 @@ func New(opts ...Option) *Backend {
 		http:          http.DefaultClient,
 		limits: limiter{
 			interval:    DefaultInterval,
-			readBurst:   DefaultReadBurst,
 			maxAttempts: defaultMaxAttempts,
 			timeout:     DefaultRequestTimeout,
 			now:         time.Now,

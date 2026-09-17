@@ -117,3 +117,25 @@ func TestSelectBackend(t *testing.T) {
 		t.Error("unknown backend kind should error")
 	}
 }
+
+// The Notion plan is read from OKFPUB_NOTION_PLAN, and an explicit arg (the flag)
+// wins over it — the same precedence the credentials have (sigma/okf-tools#210).
+func TestLoadConfigReadsThePlanWithFlagOverEnv(t *testing.T) {
+	env := map[string]string{"OKFPUB_NOTION_PLAN": "business"}
+	getenv := func(k string) string { return env[k] }
+
+	cfg, err := LoadConfig(LoadOptions{Getenv: getenv})
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.NotionPlan != "business" {
+		t.Errorf("plan = %q, want the env's business", cfg.NotionPlan)
+	}
+	cfg, err = LoadConfig(LoadOptions{Plan: "free", Getenv: getenv})
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.NotionPlan != "free" {
+		t.Errorf("plan = %q, want the arg to override env", cfg.NotionPlan)
+	}
+}

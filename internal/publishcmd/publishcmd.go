@@ -50,7 +50,8 @@ func Run(out io.Writer, args []string) (int, error) {
 	dryRun := fs.Bool("dry-run", false, "publish nothing: with --backend gdocs, dump the API writes that would be issued; otherwise export to the filesystem (implies --backend fs)")
 	recompute := fs.Bool("recompute", false, "opt into the full live-block scan (true drift + subpage/anchor self-heal); default is the cheap steady-state scan. Notion only: the gdocs scan reads the whole document either way, and self-heals unconditionally")
 	force := fs.Bool("force", false, "re-publish every page whatever change detection says. The escape hatch when a rendering fix cannot reach an already-published mirror; costs a full rewrite of the destination")
-	interval := fs.Duration("interval", notion.DefaultInterval, "minimum spacing between Notion writes (reads burst ahead of it); zero or less disables pacing")
+	plan := fs.String("notion-plan", "", "Notion workspace plan, which sets the request budget: free|plus|business|enterprise (default: $OKFPUB_NOTION_PLAN, else free)")
+	interval := fs.Duration("interval", notion.DefaultInterval, "sustained spacing between Notion requests, overriding the plan's rate; zero or less disables pacing")
 	if err := fs.Parse(args); err != nil {
 		// -h/--help is a request, not a failure: flag has already written the usage
 		// to out, so there is nothing to add and nothing to fail.
@@ -88,12 +89,17 @@ func Run(out io.Writer, args []string) (int, error) {
 	// root but is optional; the credentials come from --* args or the environment.
 	cfg, err := pipeline.LoadConfig(pipeline.LoadOptions{
 		SchemaPath: defaultPath(*schemaPath, b.Root, "schema.json"),
+		Plan:       *plan,
 	})
 	if err != nil {
 		return 1, err
 	}
 	cfg.OutDir = *outDir
-	cfg.NotionInterval = interval
+	pacing, err := resolvePacing(fs, cfg.NotionPlan, *interval)
+	if err != nil {
+		return 2, err
+	}
+	cfg.NotionInterval = pacing.interval
 
 	ctx := context.Background()
 
@@ -115,12 +121,11 @@ func Run(out io.Writer, args []string) (int, error) {
 	if err != nil {
 		return 1, err
 	}
-	// Echo a non-default pacing choice, but only where it applies: a run that is
-	// unusually fast or slow should say so in its own log rather than leave the
-	// reader to guess at the operator's flags. The fs/fake backends pace nothing, so
-	// printing it there would describe a knob that did not turn.
-	if kind == pipeline.BackendNotion && *interval != notion.DefaultInterval {
-		fmt.Fprintf(out, "okfpub: notion pacing: %v between writes\n", *interval)
+	// Echo a non-default pacing choice, but only where it applies: the fs/fake
+	// backends pace nothing, so printing it there would describe a knob that did
+	// not turn.
+	if line := pacing.line(); kind == pipeline.BackendNotion && line != "" {
+		fmt.Fprintln(out, line)
 	}
 
 	// Echo the resolved config surface so a scheduled run's log shows what contract
@@ -242,6 +247,54 @@ func runFanOut(ctx context.Context, out io.Writer, cfg *pipeline.Config, b *bund
 		return 1, fmt.Errorf("%d of %d selection(s) failed", failed, len(plan.Selections))
 	}
 	return 0, nil
+}
+
+// pacingChoice is what the operator said about Notion pacing, resolved from the
+// two inputs: the plan (flag or environment; "" when unstated) and the interval,
+// present only when the --interval flag was actually passed.
+type pacingChoice struct {
+	plan     notion.Plan
+	interval *time.Duration
+}
+
+// resolvePacing reads the pacing inputs off the parsed flags (#210). A plan name
+// is checked here, whatever backend runs: a typo is a usage error, and it should
+// say so before anything is built or contacted. The interval is an OVERRIDE of the
+// plan's rate, so it is reported only when the operator actually passed it — the
+// flag's default value is the free plan's rate, and handing that over
+// unconditionally would silently cancel a stated plan.
+func resolvePacing(fs *flag.FlagSet, planName string, interval time.Duration) (pacingChoice, error) {
+	var pc pacingChoice
+	if planName != "" {
+		p, err := notion.ParsePlan(planName)
+		if err != nil {
+			return pc, err
+		}
+		pc.plan = p
+	}
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "interval" {
+			pc.interval = &interval
+		}
+	})
+	return pc, nil
+}
+
+// line is the log line that names the pacing in force and, when both inputs were
+// given, which one won — so a run that is unusually fast or slow says why in its
+// own output rather than leaving the reader to guess at the operator's flags.
+// Empty when neither input was given: the default needs no announcing.
+func (pc pacingChoice) line() string {
+	switch {
+	case pc.interval != nil && pc.plan != "":
+		return fmt.Sprintf("okfpub: notion pacing: %v between requests (--interval overrides plan %s)", *pc.interval, pc.plan)
+	case pc.interval != nil:
+		return fmt.Sprintf("okfpub: notion pacing: %v between requests", *pc.interval)
+	case pc.plan != "":
+		return fmt.Sprintf("okfpub: notion plan: %s (%d requests/min)", pc.plan, pc.plan.Budget())
+	default:
+		return ""
+	}
 }
 
 // progressInterval is how often a running drain reports itself. Long enough that
@@ -429,11 +482,17 @@ Run flags:
                                     detection (a full rewrite of the destination)
   --select <area|path>              publish only this area or path as one document;
                                     repeatable (gdocs). Omitted: one document per area
-  --interval  minimum spacing between Notion writes (default 350ms; 0 or less disables)
+  --notion-plan <plan>              Notion workspace plan, which sets the request
+                                    budget the run paces by: free|plus (180/min) or
+                                    business|enterprise (600/min). Default:
+                                    $OKFPUB_NOTION_PLAN, else free
+  --interval  sustained spacing between Notion requests, overriding the plan's
+              rate; 0 or less disables pacing
 
 Environment:
-  NOTION_TOKEN    Notion integration token (required by the notion backend)
-  NOTION_DB_ID    Notion data-source id    (required by the notion backend)
+  NOTION_TOKEN        Notion integration token (required by the notion backend)
+  NOTION_DB_ID        Notion data-source id    (required by the notion backend)
+  OKFPUB_NOTION_PLAN  Notion workspace plan (see --notion-plan)
   OKF_SOURCE_URL  Repo web base for the generated-page banner deep-link
                   (default: GITHUB_SERVER_URL/GITHUB_REPOSITORY, else local git)
   OKF_SOURCE_REF  Branch the banner /edit/ link targets (default: git branch, else main)
