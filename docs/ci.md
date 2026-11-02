@@ -184,7 +184,7 @@ OKFPUB_NOTION_PLAN  free | plus | business | enterprise   (default: free)
 
 or per run with `--notion-plan business`. Unset, it paces at the Free-tier budget, which
 every plan allows. `--interval <duration>` overrides the plan's sustained rate outright
-(raise it if the `retried after 429` count says a workspace is stricter than its plan
+(raise it if the `retried after throttling` count says a workspace is stricter than its plan
 claims); `--interval 0` disables pacing entirely.
 
 ### Publishing to Google Docs
@@ -364,12 +364,15 @@ diagnosable:
 
 ```
 okfpub: published 12 node(s), 4 anchor(s) in 9 transaction(s) via gdocs backend
-okfpub: 41 request(s), 0 retried after 429, 0 after 5xx
+okfpub: 41 request(s), 0 retried after throttling, 0 after a transient failure
 ```
 
 A request count far above the transaction count means per-request work nobody planned; a
 high retry count means the service is throttling you, which `--notion-plan` (or a longer
-`--interval`) addresses on Notion. An unchanged re-run should report **0 transactions** — if it does not, something is
+`--interval`) addresses on Notion. On gdocs a request is retried through 90s of
+backoff, which outlasts a per-minute quota window; a throttled Drive request (a 429, or
+a 403 `rateLimitExceeded`) and a failed token mint are retried too. A selection that
+fails still prints its traffic line, so its retries show. An unchanged re-run should report **0 transactions** — if it does not, something is
 re-publishing every time, and that is worth investigating rather than tolerating.
 
 ## Troubleshooting

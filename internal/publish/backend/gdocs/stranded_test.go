@@ -119,3 +119,23 @@ func assertAllMarked(t *testing.T, fake *fakeGoogle, docID string) {
 		}
 	}
 }
+
+// TestFailedPublishStillReportsItsRetries is #218's fourth point: a selection
+// that failed after retrying logged "0 retried", because the stats only reached
+// the summary through a Result, and a failed run returns none. The backend's own
+// count has to survive the failure for the summary to print it.
+func TestFailedPublishStillReportsItsRetries(t *testing.T) {
+	fake := newFakeGoogle(t)
+	srv := fake.server()
+	defer srv.Close()
+
+	fake.throttleWrites = true
+	be := newBackend(t, srv.URL)
+	be.SkipRetryPauses()
+	if _, err := pipeline.Run(context.Background(), be, bundletest.Load(t, testBundle())); err == nil {
+		t.Fatal("a publish whose every write is throttled succeeded")
+	}
+	if st := be.RequestStats(); st.Throttled < 2 || st.Throttled > st.Requests {
+		t.Errorf("stats = %+v; a failed publish must still report the retries it made", st)
+	}
+}

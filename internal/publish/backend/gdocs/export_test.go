@@ -1,6 +1,9 @@
 package gdocs
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // Internals the external test package asserts against. Re-declaring these as
 // literals over there would let a rename pass the assertion silently — the
@@ -21,3 +24,9 @@ const (
 // test can assert New WIRED the default rather than merely that the default
 // exists (#184).
 func (b *Backend) RequestTimeout() time.Duration { return b.c.timeout }
+
+// SkipRetryPauses makes the client's retry pauses return at once, so a test can
+// exhaust the retry budget without waiting it out.
+func (b *Backend) SkipRetryPauses() {
+	b.c.sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+}

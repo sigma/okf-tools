@@ -374,7 +374,8 @@ type Block struct {
 type RequestStats struct {
 	// Requests is every HTTP attempt the run made, retries included.
 	Requests int
-	// Throttled is how many attempts were retried after a 429.
+	// Throttled is how many attempts were retried after the service throttled
+	// them: a 429, or Drive's rate-limit 403.
 	Throttled int
 	// Transient is how many attempts were retried after a 5xx.
 	Transient int
