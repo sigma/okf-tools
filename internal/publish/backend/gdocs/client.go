@@ -57,8 +57,19 @@ type client struct {
 	stats publish.RequestStats
 }
 
-// do issues one JSON request, retrying 429 and 5xx with exponential backoff. A
-// nil body sends no payload; out may be nil to discard the response.
+// RetryBudget is how long one request may spend paused between retries before
+// it gives up.
+//
+// It is a TIME budget, not an attempt count, because what it has to outlast is
+// a quota window: Docs and Drive write quotas are per minute per user, and five
+// attempts of a 500ms-doubling backoff ended in a few seconds, well inside the
+// window that throttled them (#218). Ninety seconds of pause covers a full
+// minute's window plus the jitter that makes the early pauses short.
+const RetryBudget = 90 * time.Second
+
+// do issues one JSON request, retrying throttling and 5xx with backoff until
+// RetryBudget of pausing is spent. A nil body sends no payload; out may be nil
+// to discard the response.
 func (c *client) do(ctx context.Context, method, url string, body, out any) error {
 	var payload []byte
 	if body != nil {
@@ -68,29 +79,32 @@ func (c *client) do(ctx context.Context, method, url string, body, out any) erro
 		}
 	}
 
+	var paused time.Duration
 	for n := 0; ; n++ {
 		status, header, done, err := c.attempt(ctx, method, url, payload, out)
 		if done {
 			return err
 		}
-		if n >= 4 {
-			return fmt.Errorf("gdocs: %s %s: giving up after %d attempts (last status %d)",
-				method, url, n+1, status)
+		if paused >= RetryBudget {
+			return fmt.Errorf("gdocs: %s %s: giving up after %d attempts over %v of backoff (last status %d)",
+				method, url, n+1, paused.Round(time.Second), status)
 		}
 		// The shared policy honours a server-sent Retry-After and jitters the
 		// backoff. This client did neither: it ignored Retry-After and doubled a bare
 		// 250ms, so a throttled fleet re-collided in lockstep and a server asking for
 		// a specific pause was overruled.
-		if err := c.pause(ctx, request.Delay(header, n+1, c.now)); err != nil {
+		d := request.Delay(header, n+1, c.now)
+		if err := c.pause(ctx, d); err != nil {
 			return fmt.Errorf("gdocs: %s %s: status %d, retry aborted: %w", method, url, status, err)
 		}
+		paused += d
 	}
 }
 
 // attempt performs one round trip. done reports that the call is FINISHED —
 // successfully, or with a failure the retry loop must not re-send — and err
-// carries its outcome; done false is a 429 or 5xx the caller may back off and
-// retry, with status naming which.
+// carries its outcome; done false is a 429, a Drive rate-limit 403 or a 5xx the
+// caller may back off and retry, with status naming which.
 //
 // It is a function rather than the loop's body so the attempt's deadline is
 // released by an ordinary defer on every path, including the ones added later
@@ -139,6 +153,10 @@ func (c *client) attempt(ctx context.Context, method, url string, payload []byte
 		// A response whose body never finishes streaming hangs exactly as a missing
 		// response does, so it is named the same way.
 		return resp.StatusCode, resp.Header, true, c.wrapErr(ctx, "read "+method, url, err)
+	}
+	if resp.StatusCode == http.StatusForbidden && rateLimited(raw) {
+		c.count(func(s *publish.RequestStats) { s.Throttled++ })
+		return resp.StatusCode, resp.Header, false, nil
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return resp.StatusCode, resp.Header, true, apiError(method, url, resp.StatusCode, raw)
@@ -189,6 +207,29 @@ func (c *client) RequestStats() publish.RequestStats {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.stats
+}
+
+// rateLimited reports whether a 403 is Drive's rate limit rather than a refusal.
+// Drive reports exceeding a quota as 403 with the reason in the error body, not
+// as 429, and asks callers to back off and retry it (#218). Every other 403 —
+// a missing grant, a My Drive destination — is terminal.
+func rateLimited(raw []byte) bool {
+	var env struct {
+		Error struct {
+			Errors []struct {
+				Reason string `json:"reason"`
+			} `json:"errors"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(raw, &env) != nil {
+		return false
+	}
+	for _, e := range env.Error.Errors {
+		if e.Reason == "rateLimitExceeded" || e.Reason == "userRateLimitExceeded" {
+			return true
+		}
+	}
+	return false
 }
 
 // apiError turns a Google error envelope into a diagnosable message, naming the

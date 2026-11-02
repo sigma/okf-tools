@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/sigma/okf-tools/internal/bundle"
+	"github.com/sigma/okf-tools/internal/publish"
 	"github.com/sigma/okf-tools/internal/publish/backend"
 	"github.com/sigma/okf-tools/internal/publish/backend/notion"
 	"github.com/sigma/okf-tools/internal/publish/graph"
@@ -254,6 +255,11 @@ func runFanOut(ctx context.Context, out io.Writer, cfg *pipeline.Config, b *bund
 		if err != nil {
 			failed++
 			fmt.Fprintf(out, "okfpub: %s: FAILED: %v\n", sel.Label(), err)
+			// A failed run returns no Result, so its traffic is read off the backend:
+			// the failed runs are the ones whose retries matter most (#218).
+			if rr, ok := be.(backend.RequestReporter); ok {
+				printStats(out, rr.RequestStats())
+			}
 			continue
 		}
 		printResult(out, kind, sel.Label(), res)
@@ -414,8 +420,7 @@ func printResult(out io.Writer, kind pipeline.BackendKind, selection string, res
 	// nobody planned, and one whose retries dominate is throttled. Printed for every
 	// backend that meters traffic, zeros included — "0 request(s)" is an answer.
 	if res.Metered {
-		fmt.Fprintf(out, "okfpub: %d request(s), %d retried after 429, %d after a transient failure\n",
-			res.Stats.Requests, res.Stats.Throttled, res.Stats.Transient)
+		printStats(out, res.Stats)
 	}
 	// Reclaimed rows are worth naming: each one is a row an earlier run created and
 	// died before recording, so a run that keeps reporting them is reporting that
@@ -426,6 +431,12 @@ func printResult(out io.Writer, kind pipeline.BackendKind, selection string, res
 	for _, n := range res.Notices {
 		fmt.Fprintf(out, "okfpub: %snotice: %s\n", label, n)
 	}
+}
+
+// printStats prints a run's traffic line.
+func printStats(out io.Writer, st publish.RequestStats) {
+	fmt.Fprintf(out, "okfpub: %d request(s), %d retried after throttling, %d after a transient failure\n",
+		st.Requests, st.Throttled, st.Transient)
 }
 
 // stringList collects a repeatable string flag. okfpub uses the standard flag

@@ -58,6 +58,9 @@ type fakeGoogle struct {
 	// leave a document over it is refused whole, as the real API refuses a write
 	// to a document over its ~1.02M characters (#216).
 	charLimit int
+	// throttleWrites makes every batchUpdate answer 429, as a Docs write quota
+	// that never resets would.
+	throttleWrites bool
 }
 
 // fakeContainer is a shared drive root or a folder inside one. driveID is the
@@ -358,6 +361,10 @@ func (f *fakeGoogle) batchUpdate(w http.ResponseWriter, r *http.Request, id stri
 	}
 	json.NewDecoder(r.Body).Decode(&in)
 	f.batchUpdates++
+	if f.throttleWrites {
+		http.Error(w, `{"error":{"code":429,"status":"RESOURCE_EXHAUSTED"}}`, http.StatusTooManyRequests)
+		return
+	}
 	if onlyLinkStyles(in.Requests) {
 		f.patchBatches++
 	}

@@ -175,20 +175,22 @@ func New(ctx context.Context, cfg Config) (*Backend, error) {
 		timeout = DefaultRequestTimeout
 	}
 
-	hc := cfg.HTTPClient
-	if hc == nil {
-		ts, err := tokenSource(ctx, cfg.ImpersonateSA, cfg.IAMEndpoint)
+	c := &client{
+		http: cfg.HTTPClient, docs: cfg.DocsEndpoint, drive: cfg.DriveEndpoint,
+		dry: cfg.DryRunWriter, timeout: timeout,
+	}
+	if c.http == nil {
+		// A token minted on a retry is traffic too, so it counts as one (#218).
+		onRetry := func() { c.count(func(s *publish.RequestStats) { s.Transient++ }) }
+		ts, err := tokenSource(ctx, cfg.ImpersonateSA, cfg.IAMEndpoint, onRetry)
 		if err != nil {
 			return nil, err
 		}
-		hc = oauth2.NewClient(ctx, ts)
+		c.http = oauth2.NewClient(ctx, ts)
 	}
 	return &Backend{
-		cfg: cfg,
-		c: &client{
-			http: hc, docs: cfg.DocsEndpoint, drive: cfg.DriveEndpoint,
-			dry: cfg.DryRunWriter, timeout: timeout,
-		},
+		cfg:       cfg,
+		c:         c,
 		tabs:      map[string]string{},
 		citations: map[string][]anchorCitation{},
 		hashes:    map[string]nodeState{},

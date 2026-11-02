@@ -65,8 +65,10 @@ func TestRetriesThrottledThenSucceeds(t *testing.T) {
 	}
 }
 
-// TestRetriesGiveUpBounded pins the bound: a server that throttles forever costs
-// a fixed number of attempts and then fails, rather than retrying without end.
+// TestRetriesGiveUpBounded pins the bound: a server that fails forever costs a
+// bounded amount of backoff and then fails, rather than retrying without end.
+// The bound is TIME, at least RetryBudget, so it outlasts a per-minute quota
+// window (#218).
 func TestRetriesGiveUpBounded(t *testing.T) {
 	var n int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -81,18 +83,92 @@ func TestRetriesGiveUpBounded(t *testing.T) {
 	if err == nil {
 		t.Fatal("a permanently failing server should fail the call")
 	}
-	if n != 5 {
-		t.Errorf("server saw %d attempts, want 5", n)
+	if n != len(delays)+1 {
+		t.Errorf("server saw %d attempts for %d pauses, want one more attempt than pauses", n, len(delays))
 	}
-	if len(delays) != 4 {
-		t.Errorf("paused %d times, want 4", len(delays))
-	}
-	// No Retry-After: every pause falls back to the jittered exponential backoff,
-	// which is bounded by the shared policy's ceiling.
+	var total time.Duration
 	for i, d := range delays {
+		// No Retry-After: every pause falls back to the jittered exponential
+		// backoff, bounded by the shared policy's ceiling.
 		if d <= 0 || d > 8*time.Second {
 			t.Errorf("delay %d = %v, outside (0, 8s]", i, d)
 		}
+		total += d
+	}
+	if total < RetryBudget || total > RetryBudget+8*time.Second {
+		t.Errorf("paused %v in total, want at least the %v budget and at most one pause over it", total, RetryBudget)
+	}
+	if st := c.RequestStats(); st.Transient != n {
+		t.Errorf("stats = %+v; every attempt of a request that ended in failure must count", st)
+	}
+}
+
+// TestThrottlingOutlastsAQuotaWindow is #218's first failure: Docs answered 429
+// for longer than five attempts lasted, and the run gave up inside the
+// per-minute window. A burst covering 65s of backoff must now be ridden out.
+func TestThrottlingOutlastsAQuotaWindow(t *testing.T) {
+	var delays []time.Duration
+	var waited time.Duration
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if waited < 65*time.Second {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	c := newRetryClient(srv, &delays)
+	c.sleep = func(ctx context.Context, d time.Duration) error {
+		delays = append(delays, d)
+		waited += d
+		return ctx.Err()
+	}
+	if err := c.do(context.Background(), http.MethodPost, srv.URL+"/v1/documents/doc-1:batchUpdate", map[string]any{}, nil); err != nil {
+		t.Fatalf("a 65s throttling burst was not ridden out: %v", err)
+	}
+	if st := c.RequestStats(); st.Throttled != len(delays) || st.Throttled < 5 {
+		t.Errorf("stats = %+v after %d pauses; want every throttled attempt counted", st, len(delays))
+	}
+}
+
+// TestDriveRateLimit403IsRetried is #218's second failure: Drive reports its
+// rate limit as a 403 with the reason in the body, and the sidecar write failed
+// on it. Any other 403 must stay terminal.
+func TestDriveRateLimit403IsRetried(t *testing.T) {
+	const limited = `{"error":{"code":403,"message":"User rate limit exceeded.",` +
+		`"errors":[{"domain":"usageLimits","reason":"userRateLimitExceeded","message":"User rate limit exceeded."}]}}`
+	const denied = `{"error":{"code":403,"message":"The user does not have sufficient permissions for this file.",` +
+		`"errors":[{"domain":"global","reason":"insufficientFilePermissions"}]}}`
+
+	for _, tc := range []struct {
+		name  string
+		body  string
+		retry bool
+	}{{"userRateLimitExceeded", limited, true}, {"insufficientFilePermissions", denied, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			var n int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				n++
+				if n == 1 {
+					w.WriteHeader(http.StatusForbidden)
+					w.Write([]byte(tc.body))
+					return
+				}
+				w.Write([]byte(`{}`))
+			}))
+			defer srv.Close()
+
+			var delays []time.Duration
+			c := newRetryClient(srv, &delays)
+			err := c.do(context.Background(), http.MethodPatch, srv.URL+"/upload/drive/v3/files/state", map[string]any{}, nil)
+			if tc.retry && (err != nil || n != 2 || c.RequestStats().Throttled != 1) {
+				t.Errorf("a rate-limit 403 must be retried and counted: err=%v, attempts=%d, stats=%+v", err, n, c.RequestStats())
+			}
+			if !tc.retry && (err == nil || n != 1) {
+				t.Errorf("a permission 403 must fail at once: err=%v, attempts=%d", err, n)
+			}
+		})
 	}
 }
 
