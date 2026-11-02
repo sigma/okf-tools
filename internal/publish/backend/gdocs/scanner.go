@@ -7,6 +7,17 @@ import (
 	"github.com/sigma/okf-tools/internal/publish/backend"
 )
 
+// emptyTab reports whether a tab's body holds nothing but the paragraph every
+// segment ends with.
+func emptyTab(t documentTab) bool {
+	for _, el := range t.DocumentTab.Body.Content {
+		if el.EndIndex > 2 {
+			return false
+		}
+	}
+	return true
+}
+
 // Scan reconstructs the neutral CurrentState from one documents.get plus the
 // sidecar.
 //
@@ -57,6 +68,7 @@ func (b *Backend) Scan(ctx context.Context, _ backend.ScanMode) (*publish.Curren
 	marked := map[string]string{} // rel -> tabId, from the document itself
 	owner := map[string]string{}  // tabId -> the rel its marker names
 	titles := map[string]string{} // fitted title -> the node holding it
+	var strays []strayTab         // unmarked, empty tabs a create can reuse
 	var walk func([]documentTab)
 	walk = func(tabs []documentTab) {
 		for _, t := range tabs {
@@ -77,6 +89,8 @@ func (b *Backend) Scan(ctx context.Context, _ backend.ScanMode) (*publish.Curren
 			if rel != "" {
 				marked[rel] = id
 				owner[id] = rel
+			} else if emptyTab(t) {
+				strays = append(strays, strayTab{id: id, title: t.TabProperties.Title})
 			}
 			// Claim the title even for an UNMARKED tab: the API rejects a duplicate
 			// title whatever wrote it, so a stray tab a human added still blocks the
@@ -145,8 +159,28 @@ func (b *Backend) Scan(ctx context.Context, _ backend.ScanMode) (*publish.Curren
 	// A document Docs just created already holds one empty default tab. If no node
 	// claims a tab yet, the first page adopts that one rather than leaving a stray
 	// "Tab 1" beside the real content.
+	//
+	// An empty, unmarked tab is adopted the same way wherever it sits: it is what a
+	// create leaves when its content write fails, and a run killed before the
+	// failure could be cleaned up leaves it too. Left alone, each one holds a title
+	// and none is ever removed (#216).
+	//
+	// A tab the sidecar placed a node on is not a stray, marker or no.
+	claimed := map[publish.BackendID]bool{}
+	for _, tab := range nodeIDs {
+		claimed[tab] = true
+	}
+	b.adoptable = nil
+	for _, s := range strays {
+		if !claimed[publish.BackendID(s.id)] {
+			b.adoptable = append(b.adoptable, s)
+		}
+	}
 	if len(nodeIDs) == 0 && len(doc.Tabs) > 0 {
-		b.adoptable = doc.Tabs[0].TabProperties.TabID
+		first := doc.Tabs[0].TabProperties
+		if len(b.adoptable) == 0 || b.adoptable[0].id != first.TabID {
+			b.adoptable = append([]strayTab{{id: first.TabID, title: first.Title}}, b.adoptable...)
+		}
 	}
 	b.mu.Unlock()
 

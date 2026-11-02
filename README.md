@@ -184,6 +184,14 @@ than being published as a document of its own. Pages that no area claims are rep
 and skipped. A failed document does not stop its siblings: the run publishes what it
 can, prints a per-selection summary, and exits non-zero.
 
+Google Docs caps a document at about 1.02M characters. An area over 800K characters
+publishes as several documents, `<area> (1/N)` to `<area> (N/N)`, filled in page order;
+a page never spans two, and each carries the glossary. A page over 800K on its own fails
+its area with an error naming it. Each part is its own NotebookLM source, so the run
+summary says when a part is created and when a document stops being published to (an
+area that grew past the cap, or shrank back under it); trash that one and drop its
+source by hand.
+
 Each document is found again by a hidden Drive property, not by its title, so renaming
 it in the UI is safe. Tabs are flat, titled from frontmatter, and an area's `README.md`
 opens its document.

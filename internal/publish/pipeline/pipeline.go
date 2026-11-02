@@ -42,6 +42,9 @@ type Result struct {
 	// error and no Result. It is reported rather than left silent because a mirror
 	// that keeps producing them is telling you runs keep dying partway.
 	Reclaimed int
+	// Notices are what the backend says the operator must act on outside the run,
+	// for a backend with the backend.Noticer role.
+	Notices []string
 }
 
 // Option configures Run.
@@ -171,6 +174,9 @@ func Run(ctx context.Context, be backend.Backend, b *bundle.Bundle, opts ...Opti
 	// Provision, Scan, the drain, and write-back alike.
 	if rr, ok := be.(backend.RequestReporter); ok {
 		out.Stats, out.Metered = rr.RequestStats(), true
+	}
+	if n, ok := be.(backend.Noticer); ok {
+		out.Notices = n.Notices()
 	}
 	return out, nil
 }

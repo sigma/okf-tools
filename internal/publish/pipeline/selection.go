@@ -5,9 +5,11 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/sigma/okf-tools/internal/areas"
 	"github.com/sigma/okf-tools/internal/bundle"
+	"github.com/sigma/okf-tools/internal/publish/graph"
 )
 
 // Selection is one published document's worth of the bundle: a name that
@@ -27,6 +29,19 @@ type Selection struct {
 	Title string
 	// Contains reports whether a bundle-relative page belongs to this selection.
 	Contains func(rel string) bool
+	// Part and Parts place this selection in an area split across several
+	// documents by size: part Part of Parts, 1-based. Both are zero for an area
+	// that fits one document (#216).
+	Part, Parts int
+}
+
+// Label names the selection in a run's output: its name, plus its part when the
+// area is split.
+func (s Selection) Label() string {
+	if s.Parts == 0 {
+		return s.Name
+	}
+	return fmt.Sprintf("%s (%d/%d)", s.Name, s.Part, s.Parts)
 }
 
 // SelectionPlan is the resolved outcome of a run's --select flags: the documents
@@ -204,3 +219,79 @@ func pathMatches(b *bundle.Bundle, p string) bool {
 	}
 	return false
 }
+
+// DocumentBudget is how many characters one published document may carry.
+//
+// Google Docs caps a document at about 1.02M characters and refuses writes above
+// it with an opaque "400 Precondition check failed"; reads of a document near the
+// cap also start timing out (#216). The budget leaves a fifth of the cap as
+// margin, and still holds the largest single page seen in a real bundle (566K).
+const DocumentBudget = 800_000
+
+// SplitBySize divides a selection into parts that each fit budget characters.
+//
+// Pages fill parts in publish order and a page never spans two parts. The
+// glossary host is in EVERY part, and its size counts against each, so a part's
+// citations resolve inside its own document. A selection that fits is returned
+// as is, unnumbered, so an area under the budget keeps the document it has.
+//
+// A page that cannot fit even alone fails the selection, naming the page, rather
+// than letting the API refuse the write with an error that names nothing.
+//
+// shortcut: size is the Markdown source's character count, not the rendered
+// text's; rendering mostly strips syntax, so it overestimates. Measure the render
+// if a part ever lands over the cap.
+func SplitBySize(b *bundle.Bundle, sel Selection, budget int) ([]Selection, error) {
+	glossary, hasGlossary := glossaryHost(b)
+	carry := hasGlossary && sel.Contains(glossary)
+	var (
+		pages []*bundle.Doc
+		fixed int // the glossary, carried by every part
+		total int
+	)
+	for _, d := range graph.DocumentOrder(b) {
+		if !sel.Contains(d.Rel) {
+			continue
+		}
+		if carry && d.Rel == glossary {
+			fixed = docSize(d)
+			continue
+		}
+		pages = append(pages, d)
+		total += docSize(d)
+	}
+	if fixed+total <= budget {
+		return []Selection{sel}, nil
+	}
+
+	var parts []map[string]bool
+	used := budget // forces a first part
+	for _, d := range pages {
+		n := docSize(d)
+		if fixed+n > budget {
+			return nil, fmt.Errorf("selection %q: page %s is %d characters, over the %d-character "+
+				"per-document budget on its own (%d with the glossary); split the page",
+				sel.Name, d.Rel, n, budget, fixed+n)
+		}
+		if used+n > budget {
+			parts = append(parts, map[string]bool{})
+			used = fixed
+		}
+		parts[len(parts)-1][d.Rel] = true
+		used += n
+	}
+
+	out := make([]Selection, len(parts))
+	for i, in := range parts {
+		out[i] = Selection{
+			Name:     sel.Name,
+			Title:    fmt.Sprintf("%s (%d/%d)", sel.Title, i+1, len(parts)),
+			Contains: func(rel string) bool { return in[rel] || (carry && rel == glossary) },
+			Part:     i + 1,
+			Parts:    len(parts),
+		}
+	}
+	return out, nil
+}
+
+func docSize(d *bundle.Doc) int { return utf8.RuneCountInString(d.Content) }

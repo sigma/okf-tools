@@ -220,16 +220,31 @@ func runFanOut(ctx context.Context, out io.Writer, cfg *pipeline.Config, b *bund
 		return 2, fmt.Errorf("no selection to publish")
 	}
 
-	var failed int
+	// An area too big for one document publishes as several (#216). A page too big
+	// for any document fails its own area, not the run: the rest still update.
+	var docs []pipeline.Selection
+	var failed, unsplit int
 	for _, sel := range plan.Selections {
+		parts, err := pipeline.SplitBySize(b, sel, pipeline.DocumentBudget)
+		if err != nil {
+			failed++
+			unsplit++
+			fmt.Fprintf(out, "okfpub: %s: FAILED: %v\n", sel.Name, err)
+			continue
+		}
+		docs = append(docs, parts...)
+	}
+
+	for _, sel := range docs {
 		cfg.GDocsSelection = sel.Name
+		cfg.GDocsPart, cfg.GDocsParts = sel.Part, sel.Parts
 		be, err := pipeline.SelectBackend(ctx, kind, cfg, filepath.Base(b.Root))
 		if err != nil {
 			return 1, err
 		}
 		// Progress is labelled per selection: a fan-out publishes one document at a
 		// time, but "3/12" with no name says which document only by luck of order.
-		prog := newProgress(out, sel.Name)
+		prog := newProgress(out, sel.Label())
 		stop := prog.start()
 		opts := append(append([]pipeline.Option(nil), runOpts...),
 			pipeline.WithSelection(sel.Contains),
@@ -238,13 +253,13 @@ func runFanOut(ctx context.Context, out io.Writer, cfg *pipeline.Config, b *bund
 		stop()
 		if err != nil {
 			failed++
-			fmt.Fprintf(out, "okfpub: %s: FAILED: %v\n", sel.Name, err)
+			fmt.Fprintf(out, "okfpub: %s: FAILED: %v\n", sel.Label(), err)
 			continue
 		}
-		printResult(out, kind, sel.Name, res)
+		printResult(out, kind, sel.Label(), res)
 	}
 	if failed > 0 {
-		return 1, fmt.Errorf("%d of %d selection(s) failed", failed, len(plan.Selections))
+		return 1, fmt.Errorf("%d of %d selection(s) failed", failed, len(docs)+unsplit)
 	}
 	return 0, nil
 }
@@ -407,6 +422,9 @@ func printResult(out io.Writer, kind pipeline.BackendKind, selection string, res
 	// runs keep dying partway (#135).
 	if res.Reclaimed > 0 {
 		fmt.Fprintf(out, "okfpub: reclaimed %d unrecorded row(s) left by an earlier interrupted run\n", res.Reclaimed)
+	}
+	for _, n := range res.Notices {
+		fmt.Fprintf(out, "okfpub: %snotice: %s\n", label, n)
 	}
 }
 

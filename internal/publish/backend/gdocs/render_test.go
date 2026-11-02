@@ -3,6 +3,7 @@
 package gdocs
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/sigma/okf-tools/internal/publish"
@@ -104,11 +105,40 @@ func TestDisambiguateTitles(t *testing.T) {
 	if got := disambiguate("Overview", "concepts/overview.md", taken); got != "concepts / Overview" {
 		t.Errorf("collision not disambiguated by directory: %q", got)
 	}
-	if got := disambiguate("Overview", "overview.md", taken); got != "Overview" {
-		t.Errorf("a root-level collision has no directory to qualify with: %q", got)
+	// A root-level page has no directory to qualify with, and a clashing title is
+	// a 400, so it is numbered instead.
+	if got := disambiguate("Overview", "overview.md", taken); got != "Overview (2)" {
+		t.Errorf("a root-level collision was not numbered: %q", got)
 	}
 	if got := disambiguate("Unique", "a/b.md", taken); got != "Unique" {
 		t.Errorf("a non-colliding title must be left alone: %q", got)
+	}
+}
+
+// TestDisambiguateRetriesUntilFree is the #216 regression: two stray tabs, one
+// holding the title and one the directory-prefixed title, blocked the page on
+// every run, because disambiguate tried one alternative and stopped.
+func TestDisambiguateRetriesUntilFree(t *testing.T) {
+	taken := map[string]string{
+		"Review":                "", // unmarked strays: no owner
+		"brand-ux / Review":     "",
+		"brand-ux / Review (2)": "",
+	}
+	if got := disambiguate("Review", "brand-ux/review.md", taken); got != "brand-ux / Review (3)" {
+		t.Errorf("want the first free numbered title, got %q", got)
+	}
+
+	// Near the ceiling the number must survive the fit: chopping it off would hand
+	// back a title that is already taken.
+	long := fitTabTitle(strings.Repeat("x", 80))
+	prefixed := fitTabTitle("dir / " + long)
+	taken = map[string]string{long: "", prefixed: ""}
+	got := disambiguate(long, "dir/page.md", taken)
+	if !strings.HasSuffix(got, " (2)") || u16(got) > maxTabTitle {
+		t.Errorf("a long title lost its number or overran the ceiling: %q (%d units)", got, u16(got))
+	}
+	if _, clash := taken[got]; clash {
+		t.Errorf("disambiguate returned a taken title: %q", got)
 	}
 }
 

@@ -15,10 +15,9 @@ import (
 //
 // It is stated only in end-user help, not in the API reference, and no error code
 // is documented for exceeding it (#147) — so this backend enforces it itself,
-// with a message naming the selection and the count. Splitting into a second
-// document would invent an identity key, a second NotebookLM source slot, and an
-// arbitrary boundary through the middle of an area; truncating would be silent
-// data loss (#155).
+// with a message naming the selection and the count. Truncating would be silent
+// data loss (#155). An area over the character budget is split across documents
+// (#216), but by size only: the count ceiling is not part of the packing.
 const maxTabs = 100
 
 // bodyBase is where a tab's body begins once it has been emptied: index 1, since
@@ -84,21 +83,7 @@ func (b *Backend) Execute(ctx context.Context, txn publish.Transaction, r backen
 			if err := b.deleteTab(ctx, docID, tabID); err != nil {
 				return res, err
 			}
-			b.mu.Lock()
-			delete(b.tabs, rel)
-			// Drop its remembered citations too, or a later re-link would style a
-			// range in a tab that no longer exists.
-			delete(b.citations, tabID)
-			// And release its title: the scan seeds the claimed-title map from the
-			// document, so a title deleted during this run would otherwise stay
-			// claimed and push a later node with the same name into a needless
-			// directory prefix (#180).
-			for title, owner := range b.titles {
-				if owner == rel {
-					delete(b.titles, title)
-				}
-			}
-			b.mu.Unlock()
+			b.forgetTab(rel, tabID)
 		}
 		return res, nil
 	}
@@ -107,19 +92,59 @@ func (b *Backend) Execute(ctx context.Context, txn publish.Transaction, r backen
 		b.mu.Lock()
 		taken := b.titles
 		b.mu.Unlock()
-		// Fit BEFORE disambiguating as well as after: the claimed-title map holds
-		// fitted titles, so comparing a raw one against it would miss every clash
-		// between titles that differ only past the ceiling — exactly the titles most
-		// likely to collide once truncated (#178). The outer fit then re-bounds the
-		// directory prefix disambiguate may have added.
-		title := fitTabTitle(disambiguate(fitTabTitle(tabTitle(rel, propOps)), rel, taken))
-		id, err := b.createTab(ctx, docID, rel, title)
+		adopt, adopting := b.takeAdoptableTab()
+		// Fit BEFORE disambiguating: the claimed-title map holds fitted titles, so
+		// comparing a raw one against it would miss every clash between titles that
+		// differ only past the ceiling — exactly the titles most likely to collide
+		// once truncated (#178). disambiguate keeps what it returns within the
+		// ceiling itself.
+		title := disambiguate(fitTabTitle(tabTitle(rel, propOps)), rel, taken)
+		id, err := b.createTab(ctx, docID, rel, title, adopt.id)
 		if err != nil {
+			if adopting {
+				b.returnAdoptableTab(adopt)
+			}
 			return res, err
 		}
 		tabID = id
 		res.Nodes[createID] = publish.BackendID(id)
+		b.mu.Lock()
+		b.unmarked[rel] = createdTab{strayTab{id: id, title: title}, adopting}
+		b.mu.Unlock()
 	}
+
+	res, err = b.fill(ctx, t, docID, tabID, rel, blocks, propOps, r, res)
+	if err != nil {
+		b.unstrand(ctx, docID, rel)
+	}
+	return res, err
+}
+
+// unstrand undoes the create of a node whose write failed before its tab was
+// marked. Left in place it is an unmarked tab whose title the next scan counts as
+// taken, and enough of those block the page for good (#216).
+//
+// An adopted tab goes back to being adoptable, since a document's last tab
+// cannot be deleted; an added one is deleted. Best effort: the write's own error
+// is the one to report, and a tab that will not delete stays adoptable, as the
+// next scan would find it.
+func (b *Backend) unstrand(ctx context.Context, docID, rel string) {
+	b.mu.Lock()
+	c, ok := b.unmarked[rel]
+	delete(b.unmarked, rel)
+	b.mu.Unlock()
+	if !ok {
+		return
+	}
+	b.forgetTab(rel, c.id)
+	if c.adopted || b.deleteTab(ctx, docID, c.id) != nil {
+		b.returnAdoptableTab(c.strayTab)
+	}
+}
+
+// fill writes a transaction's properties and content into the node's tab.
+func (b *Backend) fill(ctx context.Context, t *Transaction, docID, tabID, rel string,
+	blocks []contentBlock, propOps []setProps, r backend.Resolver, res publish.ExecResult) (publish.ExecResult, error) {
 	if len(blocks) == 0 && len(propOps) == 0 {
 		return res, nil
 	}
@@ -174,6 +199,12 @@ func (b *Backend) Execute(ctx context.Context, txn publish.Transaction, r backen
 	// one batch acts on both.
 	if err := b.assertTabState(ctx, docID, tabID, rel, body, res.Anchors); err != nil {
 		return res, err
+	}
+	if body.text != "" {
+		// The marker is on: the tab is recognisable from now on, whatever fails next.
+		b.mu.Lock()
+		delete(b.unmarked, rel)
+		b.mu.Unlock()
 	}
 	// This tab's own citations are re-rendered from scratch on every write, so the
 	// remembered set is REPLACED rather than extended: the previous write's ranges
@@ -546,8 +577,8 @@ func (s tabState) anchorHeadings(starts map[publish.AnchorName]int) map[publish.
 //
 // parentTabId is never set: tabs are flat (#155). The parent Ref the optimizer
 // stamped is still consumed by the transport's readiness gate, so ordering holds.
-func (b *Backend) createTab(ctx context.Context, docID, rel, title string) (string, error) {
-	if adopt := b.takeAdoptableTab(); adopt != "" {
+func (b *Backend) createTab(ctx context.Context, docID, rel, title, adopt string) (string, error) {
+	if adopt != "" {
 		if _, err := b.c.batchUpdate(ctx, docID, []map[string]any{
 			{"updateDocumentTabProperties": map[string]any{
 				"tabProperties": map[string]any{"tabId": adopt, "title": title},
@@ -605,6 +636,24 @@ func (b *Backend) isAreaRoot(rel string) bool {
 	return path.Dir(rel) == sel
 }
 
+// forgetTab drops a deleted tab from the run state.
+func (b *Backend) forgetTab(rel, tabID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.tabs, rel)
+	// Drop its remembered citations too, or a later re-link would style a range in
+	// a tab that no longer exists.
+	delete(b.citations, tabID)
+	// And release its title: the scan seeds the claimed-title map from the
+	// document, so a title deleted during this run would otherwise stay claimed and
+	// push a later node with the same name into a needless directory prefix (#180).
+	for title, owner := range b.titles {
+		if owner == rel {
+			delete(b.titles, title)
+		}
+	}
+}
+
 func (b *Backend) recordTab(rel, id, title string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -612,13 +661,31 @@ func (b *Backend) recordTab(rel, id, title string) {
 	b.titles[title] = rel
 }
 
-// takeAdoptableTab consumes the document's default tab, if it is still unclaimed.
-func (b *Backend) takeAdoptableTab() string {
+// takeAdoptableTab consumes the next tab a create can retitle, if any, and
+// releases the title it holds so the page adopting it may take that title.
+func (b *Backend) takeAdoptableTab() (strayTab, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	id := b.adoptable
-	b.adoptable = ""
-	return id
+	if len(b.adoptable) == 0 {
+		return strayTab{}, false
+	}
+	s := b.adoptable[0]
+	b.adoptable = b.adoptable[1:]
+	if owner, ok := b.titles[s.title]; ok && owner == "" {
+		delete(b.titles, s.title)
+	}
+	return s, true
+}
+
+// returnAdoptableTab puts back a tab no page ended up holding: still in the
+// document, still holding its title, and first in line for the next create.
+func (b *Backend) returnAdoptableTab(s strayTab) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.adoptable = append([]strayTab{s}, b.adoptable...)
+	if s.title != "" {
+		b.titles[s.title] = ""
+	}
 }
 
 // deleteTab removes a tab. It CASCADES to child tabs, which is safe only because
@@ -734,17 +801,21 @@ const maxTabTitle = 50
 //
 // It runs AFTER disambiguate, whose directory prefix can itself push a title
 // over the ceiling.
-func fitTabTitle(title string) string {
-	if u16(title) <= maxTabTitle {
+func fitTabTitle(title string) string { return fitWithin(title, maxTabTitle) }
+
+// fitWithin is fitTabTitle against an arbitrary ceiling, so a suffix can be kept
+// whole after a title shortened to leave room for it.
+func fitWithin(title string, limit int) string {
+	if u16(title) <= limit {
 		return title
 	}
 	// Cut on a RUNE boundary at or under the unit ceiling, so the result is never
 	// a split surrogate pair — which would be invalid text, not a short title.
-	kept := make([]rune, 0, maxTabTitle)
+	kept := make([]rune, 0, limit)
 	used := 0
 	for _, r := range title {
 		n := u16(string(r))
-		if used+n > maxTabTitle-1 { // -1 leaves room for the ellipsis
+		if used+n > limit-1 { // -1 leaves room for the ellipsis
 			break
 		}
 		kept = append(kept, r)
@@ -755,19 +826,34 @@ func fitTabTitle(title string) string {
 }
 
 // disambiguate qualifies a title with its parent directory when another page in
-// the same document already claimed it. Duplicate titles across directories are
-// normal, so a collision must not fail a publish — and nothing looks a tab up BY
-// title, since identity is the tabId.
+// the same document already claimed it, then numbers it until it is free.
+// Duplicate titles across directories are normal, so a collision must not fail a
+// publish — and nothing looks a tab up BY title, since identity is the tabId.
+//
+// The numbering is what keeps a page publishable: the directory prefix alone is
+// one more title, and a stray tab already holding it used to block the page on
+// every run with "Tab title must be unique" (#216). Every candidate is fitted
+// within the ceiling, keeping the number whole.
 func disambiguate(title, rel string, taken map[string]string) string {
-	other, clash := taken[title]
-	if !clash || other == rel {
+	free := func(t string) bool {
+		other, clash := taken[t]
+		return !clash || other == rel
+	}
+	if free(title) {
 		return title
 	}
-	dir := path.Dir(rel)
-	if dir == "." || dir == "" {
-		return title
+	if dir := path.Dir(rel); dir != "." && dir != "" {
+		title = path.Base(dir) + " / " + title
+		if t := fitTabTitle(title); free(t) {
+			return t
+		}
 	}
-	return path.Base(dir) + " / " + title
+	for n := 2; ; n++ {
+		suffix := fmt.Sprintf(" (%d)", n)
+		if t := fitWithin(title, maxTabTitle-u16(suffix)) + suffix; free(t) {
+			return t
+		}
+	}
 }
 
 // tabIDFromReply digs the minted tabId out of an addDocumentTab reply.

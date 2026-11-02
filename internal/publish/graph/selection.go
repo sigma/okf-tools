@@ -74,6 +74,14 @@ func (s *selectionScope) demote(id publish.SymbolicID, rl *bundle.ResolvedLink) 
 	return text, url, true
 }
 
+// DocumentOrder is the order a document-shaped backend publishes pages in: the
+// publish set with each area's landing README placed first in its directory. A
+// caller packing pages into documents fills in this order, so a document's tabs
+// run in the same sequence a single document's would (#216).
+func DocumentOrder(b *bundle.Bundle) []*bundle.Doc {
+	return withAreaRoots(b.PublishDocs(), b.AreaRootDocs())
+}
+
 // withAreaRoots splices each area's root README.md into the publish set, placed
 // immediately BEFORE the first page of its own directory so a document opens with
 // its area's overview.
