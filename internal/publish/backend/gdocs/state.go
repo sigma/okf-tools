@@ -63,6 +63,10 @@ func (b *Backend) Provision(ctx context.Context) error {
 		return fmt.Errorf("gdocs: provision: resolve destination: %w", err)
 	}
 
+	if err := b.noticeSuperseded(ctx, loc); err != nil {
+		return fmt.Errorf("gdocs: provision: %w", err)
+	}
+
 	doc, err := b.c.findByAppProperty(ctx, loc, appPropKeyDoc, key)
 	if err != nil {
 		return fmt.Errorf("gdocs: provision: find document: %w", err)
@@ -88,6 +92,10 @@ func (b *Backend) Provision(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("gdocs: provision: create document: %w", err)
 		}
+		if b.cfg.Parts > 0 {
+			b.notify("created document %s for part %d of %d of %q; add it to any NotebookLM notebook that loads the area",
+				doc.ID, b.cfg.Part, b.cfg.Parts, b.cfg.Selection)
+		}
 	}
 
 	state, err := b.c.findByAppProperty(ctx, loc, appPropKeyState, key)
@@ -110,6 +118,48 @@ func (b *Backend) Provision(ctx context.Context) error {
 	b.docID, b.stateID = doc.ID, state.ID
 	b.mu.Unlock()
 	return nil
+}
+
+// noticeSuperseded reports the documents an earlier split of this selection
+// published into and this run no longer writes to (#216). A stale part still
+// feeds its old pages to any notebook holding it, so it must not go unsaid. It
+// is reported rather than trashed: removing a notebook's source is the
+// operator's call, and a trashed document is no longer found here.
+//
+// The first part looks for the unsplit document, and the last part (or the
+// unsplit document, part 0) for every part after it — the two ways the count can
+// have changed.
+func (b *Backend) noticeSuperseded(ctx context.Context, loc driveLocation) error {
+	var probe []int
+	if b.cfg.Part == 1 {
+		probe = append(probe, 0)
+	}
+	if b.cfg.Part == b.cfg.Parts {
+		probe = append(probe, b.cfg.Parts+1)
+	}
+	for len(probe) > 0 {
+		part := probe[0]
+		probe = probe[1:]
+		f, err := b.c.findByAppProperty(ctx, loc, appPropKeyDoc, b.keyFor(part))
+		if err != nil {
+			return fmt.Errorf("look for superseded documents: %w", err)
+		}
+		if f == nil {
+			continue
+		}
+		b.notify("document %s (%q) is no longer published to: %q now publishes as %d document(s); "+
+			"trash it and remove it from any NotebookLM notebook", f.ID, f.Name, b.cfg.Selection, max(b.cfg.Parts, 1))
+		if part > 0 {
+			probe = append(probe, part+1)
+		}
+	}
+	return nil
+}
+
+func (b *Backend) notify(format string, args ...any) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.notices = append(b.notices, fmt.Sprintf(format, args...))
 }
 
 // readState loads the sidecar. A missing or unparsable file is an EMPTY state,

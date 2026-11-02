@@ -164,6 +164,14 @@ type RequestReporter interface {
 	RequestStats() publish.RequestStats
 }
 
+// Noticer is an OPTIONAL backend role: a backend with something to say that the
+// operator must act on OUTSIDE the run — a destination it created, or one it
+// stopped writing to — reports it, and the pipeline carries it into the run's
+// summary. A backend with nothing to say omits the role.
+type Noticer interface {
+	Notices() []string
+}
+
 // ConcurrentExecutor is an OPTIONAL backend role: a backend whose destination can
 // take several transactions in flight at once implements it, and the transport
 // drains up to Concurrency transactions concurrently — across groups only; one

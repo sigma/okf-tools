@@ -3,6 +3,7 @@ package pipeline
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sigma/okf-tools/internal/bundle"
@@ -141,5 +142,53 @@ func TestNoAreasRegistryPublishesWholeBundle(t *testing.T) {
 	}
 	if !plan.Selections[0].Contains("a.md") || !plan.Selections[0].Contains("index.md") {
 		t.Error("the whole-bundle selection must contain every page")
+	}
+}
+
+// TestSplitBySize pins the packing rules of #216: an area that fits is left
+// whole and unnumbered, and a page that cannot fit any document fails its area,
+// naming the page.
+func TestSplitBySize(t *testing.T) {
+	b := selectionBundle(t)
+	plan, err := ResolveSelections(b, []string{"concepts"})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	sel := plan.Selections[0]
+
+	parts, err := SplitBySize(b, sel, DocumentBudget)
+	if err != nil || len(parts) != 1 || parts[0].Parts != 0 || parts[0].Label() != "concepts" {
+		t.Fatalf("an area under the budget must stay one unnumbered selection: %+v, %v", parts, err)
+	}
+
+	size := map[string]int{}
+	for _, d := range b.Docs {
+		size[d.Rel] = docSize(d)
+	}
+	// Room for the glossary and one page a part, not two.
+	glossaryAndOne := size["CONTEXT.md"] + max(size["concepts/alpha.md"], size["concepts/beta.md"])
+	parts, err = SplitBySize(b, sel, glossaryAndOne)
+	if err != nil {
+		t.Fatalf("split: %v", err)
+	}
+	if len(parts) != 2 || parts[0].Label() != "concepts (1/2)" || parts[1].Label() != "concepts (2/2)" {
+		t.Fatalf("want two numbered parts, got %d: %+v", len(parts), parts)
+	}
+	for i, page := range []string{"concepts/alpha.md", "concepts/beta.md"} {
+		for j, p := range parts {
+			if p.Contains(page) != (i == j) {
+				t.Errorf("part %d contains %s = %v; pages fill parts in order, each in one", j+1, page, p.Contains(page))
+			}
+		}
+	}
+	for _, p := range parts {
+		if !p.Contains("CONTEXT.md") {
+			t.Errorf("%s does not carry the glossary", p.Label())
+		}
+	}
+
+	_, err = SplitBySize(b, sel, size["CONTEXT.md"]+size["concepts/alpha.md"]-1)
+	if err == nil || !strings.Contains(err.Error(), "concepts/alpha.md") || !strings.Contains(err.Error(), "split the page") {
+		t.Errorf("a page over the budget on its own must fail naming it, got %v", err)
 	}
 }

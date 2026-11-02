@@ -71,10 +71,18 @@ type Backend struct {
 	// missing records that a dry run found no destination, so reads are skipped and
 	// the dump shows what a first publish would do.
 	missing bool
-	// adoptable is the document's default tab, which Docs creates with every new
-	// document. The first published page adopts it instead of adding a tab beside
-	// it; empty once claimed or once the document has real content.
-	adoptable string
+	// adoptable are tabs a create retitles instead of adding one beside them: the
+	// default tab Docs creates with every new document, and any empty tab with no
+	// identity marker, which is what a create whose content write failed leaves
+	// behind (#216). Consumed in document order.
+	adoptable []strayTab
+	// unmarked are the tabs this run created whose identity marker is not on yet,
+	// keyed by node: the marker goes on with the content, usually in a LATER
+	// transaction, so a failure there is what strands a tab (#216).
+	unmarked map[string]createdTab
+	// notices are what Provision found the operator must act on: a part created,
+	// or a document an earlier split published into and this one no longer does.
+	notices []string
 }
 
 // Config is the backend's construction input. Endpoints default to the real
@@ -97,6 +105,11 @@ type Config struct {
 	// appProperties, so two bundles publishing into one drive cannot collide (#151).
 	Bundle    string
 	Selection string
+	// Part and Parts place this document in an area split across several by size:
+	// part Part of Parts, 1-based, and both zero when the area fits one (#216).
+	// The part index extends the identity key, so each part is found again by its
+	// own; Parts only titles the document at creation.
+	Part, Parts int
 	// Title is the document's display name at creation. A later human rename is
 	// never re-asserted: the document is found by key, so the rename sticks (#151).
 	Title string
@@ -132,6 +145,7 @@ var (
 	_ backend.Backend         = (*Backend)(nil)
 	_ backend.Provisioner     = (*Backend)(nil)
 	_ backend.RequestReporter = (*Backend)(nil)
+	_ backend.Noticer         = (*Backend)(nil)
 	_ graph.AreaRootPublisher = (*Backend)(nil)
 )
 
@@ -180,6 +194,7 @@ func New(ctx context.Context, cfg Config) (*Backend, error) {
 		hashes:    map[string]nodeState{},
 		titles:    map[string]string{},
 		pending:   map[string]*pendingTab{},
+		unmarked:  map[string]createdTab{},
 	}, nil
 }
 
@@ -198,6 +213,25 @@ func (b *Backend) DocumentID() string {
 	return b.docID
 }
 
+// Notices reports what the run found that the operator must act on outside it.
+// Each part of a split area is one NotebookLM source, so a change in how many
+// parts there are is a change to every notebook that loads the area (#216).
+func (b *Backend) Notices() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]string(nil), b.notices...)
+}
+
+// strayTab is a tab no node claims, as the scan found it.
+type strayTab struct{ id, title string }
+
+// createdTab is a tab this run created and has not marked yet, and whether it
+// was adopted rather than added.
+type createdTab struct {
+	strayTab
+	adopted bool
+}
+
 // pendingTab is one node's accumulated body for this run.
 type pendingTab struct {
 	props  []setProps
@@ -206,23 +240,39 @@ type pendingTab struct {
 
 // selectionKey is the identity stamped into appProperties: bundle-qualified so
 // two bundles publishing into one shared drive cannot collide (#151).
-func (b *Backend) selectionKey() string {
+func (b *Backend) selectionKey() string { return b.keyFor(b.cfg.Part) }
+
+// keyFor is the identity key of one part of this selection; part 0 is the
+// unsplit document.
+func (b *Backend) keyFor(part int) string {
 	sel := b.cfg.Selection
 	if sel == "" {
 		sel = "."
 	}
-	return b.cfg.Bundle + "/" + sel
+	key := b.cfg.Bundle + "/" + sel
+	if part > 0 {
+		key += fmt.Sprintf("#%d", part)
+	}
+	return key
 }
 
 // docTitle is the document's name at creation.
+//
+// A part's "(i/N)" is set only here, like the rest of the title: a later run
+// that splits the area differently does not retitle a document it finds.
 func (b *Backend) docTitle() string {
-	if b.cfg.Title != "" {
-		return b.cfg.Title
+	title := b.cfg.Title
+	switch {
+	case title != "":
+	case b.cfg.Selection != "":
+		title = fmt.Sprintf("%s — %s", b.cfg.Bundle, b.cfg.Selection)
+	default:
+		title = b.cfg.Bundle
 	}
-	if b.cfg.Selection != "" {
-		return fmt.Sprintf("%s — %s", b.cfg.Bundle, b.cfg.Selection)
+	if b.cfg.Parts > 0 {
+		title += fmt.Sprintf(" (%d/%d)", b.cfg.Part, b.cfg.Parts)
 	}
-	return b.cfg.Bundle
+	return title
 }
 
 // relOf recovers a node's bundle-relative path from a transaction's group.

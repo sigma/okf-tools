@@ -163,7 +163,7 @@ func Generate(ctx context.Context, b *bundle.Bundle, cs *publish.CurrentState, o
 	// there is unchanged.
 	docs := b.PublishDocs()
 	if o.areaRoots {
-		docs = withAreaRoots(docs, b.AreaRootDocs())
+		docs = DocumentOrder(b)
 	}
 	scope := newSelectionScope(o.selection, o.banner)
 	if scope != nil {

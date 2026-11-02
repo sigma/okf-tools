@@ -54,6 +54,10 @@ type fakeGoogle struct {
 	// untabbedWrites counts requests that omitted a tabId — the silent
 	// first-tab-targeting footgun (#147). It must stay zero.
 	untabbedWrites int
+	// charLimit, when set, is a document's character cap: a batch that would
+	// leave a document over it is refused whole, as the real API refuses a write
+	// to a document over its ~1.02M characters (#216).
+	charLimit int
 }
 
 // fakeContainer is a shared drive root or a folder inside one. driveID is the
@@ -370,6 +374,12 @@ func (f *fakeGoogle) batchUpdate(w http.ResponseWriter, r *http.Request, id stri
 		return
 	}
 
+	if f.charLimit > 0 && charsAfter(doc, in.Requests) > f.charLimit {
+		http.Error(w, `{"error":{"code":400,"message":"Precondition check failed.","status":"FAILED_PRECONDITION"}}`,
+			http.StatusBadRequest)
+		return
+	}
+
 	replies := make([]map[string]any, 0, len(in.Requests))
 	for i, req := range in.Requests {
 		switch {
@@ -559,6 +569,53 @@ func (f *fakeGoogle) batchUpdate(w http.ResponseWriter, r *http.Request, id stri
 		}
 	}
 	writeJSON(w, map[string]any{"replies": replies})
+}
+
+// charsAfter is the document's character count once a batch applies: every
+// body, less the ones the batch clears, plus everything it inserts.
+func charsAfter(doc *fakeDoc, reqs []map[string]any) int {
+	cleared := map[string]bool{}
+	n := 0
+	for _, req := range reqs {
+		if dcr, ok := req["deleteContentRange"].(map[string]any); ok {
+			rng, _ := dcr["range"].(map[string]any)
+			id, _ := rng["tabId"].(string)
+			cleared[id] = true
+		}
+		if ins, ok := req["insertText"].(map[string]any); ok {
+			text, _ := ins["text"].(string)
+			n += u16len(text)
+		}
+	}
+	for _, tab := range doc.tabs {
+		if !cleared[tab.id] {
+			n += u16len(tab.body)
+		}
+	}
+	return n
+}
+
+// docByKey finds the document stamped with an identity key, and its name.
+func (f *fakeGoogle) docByKey(key string) (id, name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, file := range f.files {
+		if file.mimeType == mimeDocument && file.appProps["okf"] == key {
+			return file.id, file.name
+		}
+	}
+	return "", ""
+}
+
+// addStrayTab adds a tab with no identity marker: empty, as a failed create
+// leaves it, or with a body, as a human might.
+func (f *fakeGoogle) addStrayTab(docID, title, body string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	doc := f.docs[docID]
+	tab := newFakeTab(f.next("t."), title)
+	tab.body = body
+	doc.tabs = append(doc.tabs, tab)
 }
 
 // maxTabTitle is the tab-title ceiling the real API enforces (#178). The fake

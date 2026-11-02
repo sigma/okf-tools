@@ -94,6 +94,9 @@ type Config struct {
 	// means the whole bundle. The repeatable flag and the per-area fan-out land in
 	// #161 — this carries the single-selection case the backend needs today.
 	GDocsSelection string
+	// GDocsPart and GDocsParts place the document in an area split by size: part
+	// GDocsPart of GDocsParts, both zero when the area fits one document (#216).
+	GDocsPart, GDocsParts int
 }
 
 // LoadOptions parameterizes LoadConfig — the resolved flag/env inputs. Paths are
